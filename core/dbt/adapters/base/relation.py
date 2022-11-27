@@ -1,5 +1,5 @@
 from collections.abc import Hashable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, TypeVar, Any, Type, Dict, Union, Iterator, Tuple, Set
 
 from dbt.contracts.graph.compiled import CompiledNode
@@ -27,8 +27,8 @@ class BaseRelation(FakeAPIObject, Hashable):
     path: Path
     type: Optional[RelationType] = None
     quote_character: str = '"'
-    include_policy: Policy = Policy()
-    quote_policy: Policy = Policy()
+    include_policy: Policy = field(default_factory=Policy)
+    quote_policy: Policy = field(default_factory=Policy)
     dbt_created: bool = False
 
     def _is_exactish_match(self, field: ComponentName, value: str) -> bool:

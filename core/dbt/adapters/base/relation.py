@@ -52,11 +52,11 @@ class BaseRelation(FakeAPIObject, Hashable):
 
     @classmethod
     def get_default_quote_policy(cls) -> Policy:
-        return cls._get_field_named("quote_policy").default
+        return cls._get_field_named("quote_policy").default_factory
 
     @classmethod
     def get_default_include_policy(cls) -> Policy:
-        return cls._get_field_named("include_policy").default
+        return cls._get_field_named("include_policy").default_factory
 
     def get(self, key, default=None):
         """Override `.get` to return a metadata object so we don't break
@@ -188,7 +188,7 @@ class BaseRelation(FakeAPIObject, Hashable):
         source_quoting = source.quoting.to_dict(omit_none=True)
         source_quoting.pop("column", None)
         quote_policy = deep_merge(
-            cls.get_default_quote_policy().to_dict(omit_none=True),
+            cls.get_default_quote_policy()().to_dict(omit_none=True),
             source_quoting,
             kwargs.get("quote_policy", {}),
         )

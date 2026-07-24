@@ -2658,75 +2658,138 @@ impl AdapterImpl {
                 Ok(result)
             }
             Redshift => {
-                let mut result = IndexMap::new();
+                // Redshift grants vary along two axes: datasharing selects
+                // SHOW GRANTS vs. catalog views, and redshift_grants_extended
+                // selects legacy users vs. identity-prefixed grantees.
+                #[derive(Clone, Copy)]
+                enum GrantsMode {
+                    Legacy,
+                    ShowUsers,
+                    SvvIdentities,
+                    ShowIdentities,
+                }
+
+                let datasharing_enabled = get_bool_config(self.engine().as_ref(), "datasharing")?;
+                let grants_extended = self
+                    .behavior_object()
+                    .get_value(&Value::from("redshift_grants_extended"))
+                    .is_some_and(|flag| flag.is_true());
+                let grants_mode = match (datasharing_enabled, grants_extended) {
+                    (false, false) => GrantsMode::Legacy,
+                    (true, false) => GrantsMode::ShowUsers,
+                    (false, true) => GrantsMode::SvvIdentities,
+                    (true, true) => GrantsMode::ShowIdentities,
+                };
                 let privilege_cols = record_batch.column_values::<StringArray>("privilege_type")?;
+                let mut result: IndexMap<String, Vec<String>> = IndexMap::new();
 
-                if get_bool_config(self.engine().as_ref(), "datasharing")? {
-                    let identity_name_cols =
-                        record_batch.column_values::<StringArray>("identity_name")?;
-                    let identity_type_cols =
-                        record_batch.column_values::<StringArray>("identity_type")?;
+                // The legacy and SVV SQL paths filter out current_user in the macro.
+                // SHOW GRANTS does not support adding a WHERE predicate, so filter it here.
+                let current_user = match grants_mode {
+                    GrantsMode::ShowUsers | GrantsMode::ShowIdentities => {
+                        Some(match self.engine().as_ref().config("user") {
+                            Some(user) if !user.is_empty() => user.into_owned(),
+                            _ => {
+                                let mut conn = self.borrow_tlocal_connection(None, None)?;
+                                let ctx = QueryCtx::default()
+                                    .with_desc("standardize_grants_dict current_user");
+                                let batch = self.engine().execute(
+                                    None,
+                                    conn.as_mut(),
+                                    &ctx,
+                                    "SELECT current_user AS current_user",
+                                    CancellationToken::never_cancels(),
+                                )?;
+                                let users = batch.column_values::<StringArray>("current_user")?;
+                                debug_assert_eq!(
+                                    batch.num_rows(),
+                                    1,
+                                    "SELECT current_user must return exactly one row"
+                                );
+                                users.value(0).to_string()
+                            }
+                        })
+                    }
+                    GrantsMode::Legacy | GrantsMode::SvvIdentities => None,
+                };
 
-                    for i in 0..record_batch.num_rows() {
-                        let identity_name = identity_name_cols.value(i);
-                        let identity_type = identity_type_cols.value(i);
-                        let privilege = privilege_cols.value(i);
-
-                        if identity_type.eq_ignore_ascii_case("user") {
-                            // Legacy macro returned lowercase privilege_type; SHOW GRANTS returns uppercase. Lowercase here to preserve the contract.
-                            let grantees = result
-                                .entry(privilege.to_lowercase())
-                                .or_insert_with(Vec::new);
-                            grantees.push(identity_name.to_string());
+                match grants_mode {
+                    GrantsMode::Legacy => {
+                        let grantee_cols = record_batch.column_values::<StringArray>("grantee")?;
+                        for row in 0..record_batch.num_rows() {
+                            result
+                                .entry(privilege_cols.value(row).to_string())
+                                .or_default()
+                                .push(grantee_cols.value(row).to_string());
                         }
                     }
+                    GrantsMode::ShowUsers => {
+                        let identity_name_cols =
+                            record_batch.column_values::<StringArray>("identity_name")?;
+                        let identity_type_cols =
+                            record_batch.column_values::<StringArray>("identity_type")?;
+                        let current_user = current_user
+                            .as_deref()
+                            .expect("current user is resolved when show APIs are enabled");
 
-                    // Resolve the current user so we can filter it out of the
-                    // grantees. Prefer the `user` from the profile; when it is
-                    // absent (e.g. Identity Center / browser-based auth) fall
-                    // back to asking the warehouse who we are.
-                    //
-                    // `current_user` resolves to the initial connection user
-                    // on Redshift.
-                    let current_user = match self.engine().as_ref().config("user") {
-                        Some(user) if !user.is_empty() => user.into_owned(),
-                        _ => {
-                            let mut conn = self.borrow_tlocal_connection(None, None)?;
-                            let ctx = QueryCtx::default()
-                                .with_desc("standardize_grants_dict current_user");
-                            let batch = self.engine().execute(
-                                None,
-                                conn.as_mut(),
-                                &ctx,
-                                "SELECT current_user AS current_user",
-                                CancellationToken::never_cancels(),
-                            )?;
-                            let users = batch.column_values::<StringArray>("current_user")?;
-                            debug_assert_eq!(
-                                batch.num_rows(),
-                                1,
-                                "SELECT current_user must return exactly one row"
-                            );
-                            users.value(0).to_string()
+                        for row in 0..record_batch.num_rows() {
+                            let identity_name = identity_name_cols.value(row);
+                            if identity_type_cols.value(row).eq_ignore_ascii_case("user")
+                                && !identity_name.eq_ignore_ascii_case(current_user)
+                            {
+                                result
+                                    .entry(privilege_cols.value(row).to_ascii_lowercase())
+                                    .or_default()
+                                    .push(identity_name.to_string());
+                            }
                         }
-                    };
-                    debug_assert!(
-                        !current_user.is_empty(),
-                        "current_user must resolve to a non-empty value"
-                    );
-                    for grantees in result.values_mut() {
-                        grantees.retain(|g| !g.eq_ignore_ascii_case(&current_user));
                     }
-                    result.retain(|_, grantees| !grantees.is_empty());
-                } else {
-                    let grantee_cols = record_batch.column_values::<StringArray>("grantee")?;
+                    GrantsMode::SvvIdentities | GrantsMode::ShowIdentities => {
+                        let identity_name_cols =
+                            record_batch.column_values::<StringArray>("identity_name")?;
+                        let identity_type_cols =
+                            record_batch.column_values::<StringArray>("identity_type")?;
 
-                    for i in 0..record_batch.num_rows() {
-                        let privilege = privilege_cols.value(i);
-                        let grantee = grantee_cols.value(i);
+                        let grantees = (0..record_batch.num_rows()).filter_map(|row| {
+                            let identity_name = identity_name_cols.value(row);
+                            let identity_type = identity_type_cols.value(row);
+                            let is_current_user = current_user.as_deref().is_some_and(|user| {
+                                identity_type.eq_ignore_ascii_case("user")
+                                    && identity_name.eq_ignore_ascii_case(user)
+                            });
 
-                        let grantees = result.entry(privilege.to_string()).or_insert_with(Vec::new);
-                        grantees.push(grantee.to_string());
+                            // PUBLIC and Redshift-reserved identities cannot be managed by dbt grants.
+                            if identity_type.eq_ignore_ascii_case("public")
+                                || identity_name.starts_with("ds:")
+                                || identity_name.starts_with("sys:")
+                                || is_current_user
+                            {
+                                return None;
+                            }
+
+                            let grantee = if matches!(grants_mode, GrantsMode::ShowIdentities)
+                                && identity_type.eq_ignore_ascii_case("role")
+                            {
+                                // SHOW GRANTS reports groups as role identities with a
+                                // leading '/', so translate them back to dbt's group: shape.
+                                identity_name.strip_prefix('/').map_or_else(
+                                    || {
+                                        format!(
+                                            "{}:{identity_name}",
+                                            identity_type.to_ascii_lowercase()
+                                        )
+                                    },
+                                    |group| format!("group:{group}"),
+                                )
+                            } else {
+                                format!("{}:{identity_name}", identity_type.to_ascii_lowercase())
+                            };
+                            Some((privilege_cols.value(row).to_ascii_lowercase(), grantee))
+                        });
+
+                        for (privilege, grantee) in grantees {
+                            result.entry(privilege).or_default().push(grantee);
+                        }
                     }
                 }
 
@@ -4823,7 +4886,7 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
         }
         Redshift => {
             // TODO: https://github.com/dbt-labs/fs/issues/11871
-            let flag = BehaviorFlag::new(
+            let skip_autocommit_transaction_statements = BehaviorFlag::new(
                 "redshift_skip_autocommit_transaction_statements",
                 false,
                 Some(
@@ -4832,7 +4895,17 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
                 None,
                 None,
             );
-            vec![flag]
+            // https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-redshift/src/dbt/adapters/redshift/impl.py#L56-L66
+            let grants_extended = BehaviorFlag::new(
+                "redshift_grants_extended",
+                false,
+                Some(
+                    "Enable Redshift grants for groups and roles using 'user:', 'group:', and 'role:' prefixes. Unprefixed grantees remain users for backward compatibility.",
+                ),
+                None,
+                None,
+            );
+            vec![skip_autocommit_transaction_statements, grants_extended]
         }
         Postgres | Salesforce | Spark | DuckDB | Alt | ClickHouse | Exasol | Starburst | Athena
         | Trino | Datafusion | Dremio | Oracle => vec![],
@@ -5314,6 +5387,14 @@ mod tests {
     }
 
     fn build_engine(adapter_type: AdapterType, config: Mapping) -> Arc<dyn AdapterEngine> {
+        build_engine_with_behavior(adapter_type, config, BTreeMap::new())
+    }
+
+    fn build_engine_with_behavior(
+        adapter_type: AdapterType,
+        config: Mapping,
+        behavior_flag_overrides: BTreeMap<String, bool>,
+    ) -> Arc<dyn AdapterEngine> {
         let auth = auth_for_backend(Box::new(NoopAuthWarningPrinter), backend_of(adapter_type));
         let resolved_quoting = match adapter_type {
             Snowflake => SNOWFLAKE_RESOLVED_QUOTING,
@@ -5328,7 +5409,7 @@ mod tests {
             Arc::new(DefaultTypeOps::new(adapter_type)), // XXX: NaiveTypeOpsImpl
             Arc::new(DefaultStmtSplitter), // XXX: may cause bugs if these tests run SQL
             Arc::new(RelationCache::default()),
-            BTreeMap::new(),
+            behavior_flag_overrides,
             None,
         ))
     }
@@ -5834,9 +5915,10 @@ mod tests {
 
     // -- Redshift standardize_grants_dict tests -------------------------------
 
-    /// Mirrors the column shape of `SHOW GRANTS ON TABLE` per the Redshift
-    /// reference: https://docs.aws.amazon.com/redshift/latest/dg/r_SHOW_GRANTS.html
-    fn show_grants_table(
+    /// Mirrors the shared columns returned by Redshift's grants APIs:
+    /// https://docs.aws.amazon.com/redshift/latest/dg/r_SHOW_GRANTS.html
+    /// https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_RELATION_PRIVILEGES.html
+    fn identity_grants_table(
         identity_names: Vec<&str>,
         identity_types: Vec<&str>,
         privilege_types: Vec<&str>,
@@ -5883,6 +5965,28 @@ mod tests {
         AdapterImpl::new(build_engine(Redshift, config), None)
     }
 
+    enum GrantsSource {
+        Svv,
+        Show,
+    }
+
+    fn redshift_adapter_with_extended_grants(source: GrantsSource) -> AdapterImpl {
+        let config = Mapping::from_iter([
+            ("database".into(), "mydb".into()),
+            (
+                "datasharing".into(),
+                matches!(source, GrantsSource::Show).into(),
+            ),
+            ("user".into(), "dbt_runner".into()),
+        ]);
+        let behavior_flag_overrides =
+            BTreeMap::from([("redshift_grants_extended".to_string(), true)]);
+        AdapterImpl::new(
+            build_engine_with_behavior(Redshift, config, behavior_flag_overrides),
+            None,
+        )
+    }
+
     #[test]
     fn test_redshift_standardize_grants_dict_legacy() {
         let adapter = AdapterImpl::new(engine(Redshift), None);
@@ -5901,7 +6005,7 @@ mod tests {
     #[test]
     fn test_redshift_standardize_grants_dict_datasharing() {
         let adapter = redshift_adapter_with_datasharing();
-        let table = show_grants_table(
+        let table = identity_grants_table(
             vec!["alice", "bob", "alice"],
             vec!["user", "user", "user"],
             vec!["SELECT", "SELECT", "INSERT"],
@@ -5917,7 +6021,7 @@ mod tests {
     #[test]
     fn test_redshift_standardize_grants_dict_datasharing_filters_non_user_identities() {
         let adapter = redshift_adapter_with_datasharing();
-        let table = show_grants_table(
+        let table = identity_grants_table(
             vec!["alice", "analyst_role", "everyone", "ds:foo"],
             vec!["user", "role", "public", "role"],
             vec!["SELECT", "SELECT", "SELECT", "SELECT"],
@@ -5929,7 +6033,7 @@ mod tests {
     #[test]
     fn test_redshift_standardize_grants_dict_datasharing_filters_current_user() {
         let adapter = redshift_adapter_with_datasharing();
-        let table = show_grants_table(
+        let table = identity_grants_table(
             vec!["dbt_runner", "DBT_RUNNER", "alice"],
             vec!["user", "user", "user"],
             vec!["SELECT", "INSERT", "SELECT"],
@@ -5937,6 +6041,61 @@ mod tests {
         let result = adapter.standardize_grants_dict(table).unwrap();
         assert_eq!(result["select"], vec!["alice".to_string()]);
         assert!(!result.contains_key("insert"));
+    }
+
+    #[test]
+    fn test_redshift_standardize_grants_dict_extended_svv() {
+        let adapter = redshift_adapter_with_extended_grants(GrantsSource::Svv);
+        let table = identity_grants_table(
+            vec![
+                "alice",
+                "readonly_group",
+                "readonly_role",
+                "PUBLIC",
+                "ds:named_datashare",
+                "sys:dba",
+            ],
+            vec!["user", "group", "role", "public", "role", "role"],
+            vec!["SELECT", "SELECT", "SELECT", "SELECT", "SELECT", "SELECT"],
+        );
+        let result = adapter.standardize_grants_dict(table).unwrap();
+        assert_eq!(
+            result["select"],
+            vec![
+                "user:alice".to_string(),
+                "group:readonly_group".to_string(),
+                "role:readonly_role".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_redshift_standardize_grants_dict_extended_datasharing() {
+        let adapter = redshift_adapter_with_extended_grants(GrantsSource::Show);
+        let table = identity_grants_table(
+            vec![
+                "alice",
+                "/readonly_group",
+                "readonly_role",
+                "PUBLIC",
+                "ds:named_datashare",
+                "sys:dba",
+                "DBT_RUNNER",
+            ],
+            vec!["user", "role", "role", "public", "role", "role", "user"],
+            vec![
+                "SELECT", "SELECT", "SELECT", "SELECT", "SELECT", "SELECT", "SELECT",
+            ],
+        );
+        let result = adapter.standardize_grants_dict(table).unwrap();
+        assert_eq!(
+            result["select"],
+            vec![
+                "user:alice".to_string(),
+                "group:readonly_group".to_string(),
+                "role:readonly_role".to_string(),
+            ]
+        );
     }
 
     #[test]

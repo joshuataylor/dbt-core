@@ -10,8 +10,9 @@ use dbt_common::tracing::metrics::increment_metric;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::service_client::{
-    ClientVersionStatus, GrpcRunCacheServiceClient, SharedRunCacheServiceClient,
-    format_error_chain, shared_run_cache_service_client, validate_client_version_fail_open,
+    ClientVersionStatus, GrpcRunCacheServiceClient, RunCacheClientMetadata,
+    SharedRunCacheServiceClient, format_error_chain, shared_run_cache_service_client,
+    validate_client_version_fail_open,
 };
 use dbt_state::service_config::RunCacheServiceConfig;
 use std::sync::Arc;
@@ -134,34 +135,42 @@ async fn initialize_run_cache_service(
         1,
     );
 
-    let client = match GrpcRunCacheServiceClient::connect(config.clone()).await {
-        Ok(client) => {
-            increment_metric(
-                FusionMetricKey::RunCacheService(RunCacheServiceMetricKey::ClientInitSuccess),
-                1,
-            );
-            client
-        }
-        Err(err) => {
-            increment_metric(
-                FusionMetricKey::RunCacheService(RunCacheServiceMetricKey::ClientInitFailure),
-                1,
-            );
-            emit_warn_log_message(
-                ErrorCode::StateServiceWarn,
-                format!(
-                    "dbt State service client initialization failed: {}; executing normally",
-                    format_error_chain(&err)
-                ),
-                None,
-            );
-            return RunCacheServiceLifecycle {
-                requested: true,
-                config: Some(config),
-                client: None,
-            };
-        }
+    // Thread dbt's per-invocation UUID (and the dbt platform run ID when present)
+    // through to the service as request metadata so telemetry can be correlated
+    // back to a single invocation end to end.
+    let metadata = RunCacheClientMetadata {
+        dbt_invocation_id: arg.io.invocation_id.to_string(),
+        ..RunCacheClientMetadata::default()
     };
+    let client =
+        match GrpcRunCacheServiceClient::connect_with_metadata(config.clone(), metadata).await {
+            Ok(client) => {
+                increment_metric(
+                    FusionMetricKey::RunCacheService(RunCacheServiceMetricKey::ClientInitSuccess),
+                    1,
+                );
+                client
+            }
+            Err(err) => {
+                increment_metric(
+                    FusionMetricKey::RunCacheService(RunCacheServiceMetricKey::ClientInitFailure),
+                    1,
+                );
+                emit_warn_log_message(
+                    ErrorCode::StateServiceWarn,
+                    format!(
+                        "dbt State service client initialization failed: {}; executing normally",
+                        format_error_chain(&err)
+                    ),
+                    None,
+                );
+                return RunCacheServiceLifecycle {
+                    requested: true,
+                    config: Some(config),
+                    client: None,
+                };
+            }
+        };
 
     let validation_status = validate_client_version_fail_open(&client).await;
     match validation_status {

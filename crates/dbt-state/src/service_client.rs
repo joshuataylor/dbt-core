@@ -24,6 +24,8 @@ use crate::proto::query_cache::{client_telemetry_client::ClientTelemetryClient, 
 use crate::service_config::{RunCacheServiceConfig, RunCacheServiceConfigError};
 
 const AUTHORIZATION_HEADER: &str = "authorization";
+const CLOUD_RUN_ID_HEADER: &str = "x-dbt-cloud-run-id";
+const INVOCATION_ID_HEADER: &str = "x-dbt-invocation-id";
 const ORG_ID_HEADER: &str = "x-organization-id";
 const OS_NAME_HEADER: &str = "x-os-name";
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -86,6 +88,10 @@ pub struct RunCacheClientMetadata {
     pub session_id: String,
     pub system_user_id: String,
     pub os_name: String,
+    /// dbt's per-invocation UUID for this run.
+    pub dbt_invocation_id: String,
+    /// dbt platform run ID, if running on the dbt platform (else empty).
+    pub dbt_cloud_run_id: String,
 }
 
 impl RunCacheClientMetadata {
@@ -93,11 +99,15 @@ impl RunCacheClientMetadata {
         session_id: impl Into<String>,
         system_user_id: impl Into<String>,
         os_name: impl Into<String>,
+        dbt_invocation_id: impl Into<String>,
+        dbt_cloud_run_id: impl Into<String>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
             system_user_id: system_user_id.into(),
             os_name: os_name.into(),
+            dbt_invocation_id: dbt_invocation_id.into(),
+            dbt_cloud_run_id: dbt_cloud_run_id.into(),
         }
     }
 
@@ -112,6 +122,15 @@ impl RunCacheClientMetadata {
         )?;
         insert_metadata(metadata, SYSTEM_USER_ID_HEADER, &self.system_user_id)?;
         insert_metadata(metadata, OS_NAME_HEADER, &self.os_name)?;
+        // Both identifiers are constant for the lifetime of a single dbt invocation.
+        // The dbt_cloud_run_id is only present when running on the dbt platform, so
+        // each header is omitted entirely when its value is empty.
+        if !self.dbt_invocation_id.is_empty() {
+            insert_metadata(metadata, INVOCATION_ID_HEADER, &self.dbt_invocation_id)?;
+        }
+        if !self.dbt_cloud_run_id.is_empty() {
+            insert_metadata(metadata, CLOUD_RUN_ID_HEADER, &self.dbt_cloud_run_id)?;
+        }
         Ok(request)
     }
 }
@@ -122,8 +141,15 @@ impl Default for RunCacheClientMetadata {
             session_id: new_request_id(),
             system_user_id: String::new(),
             os_name: std::env::consts::OS.to_string(),
+            dbt_invocation_id: String::new(),
+            dbt_cloud_run_id: get_cloud_run_id(),
         }
     }
+}
+
+/// Return the dbt platform run ID, or an empty string when not running there.
+pub fn get_cloud_run_id() -> String {
+    std::env::var("DBT_CLOUD_RUN_ID").unwrap_or_default()
 }
 
 #[derive(Debug, Clone)]
@@ -584,7 +610,8 @@ mod tests {
 
     #[test]
     fn request_metadata_matches_python_client_headers() {
-        let metadata = RunCacheClientMetadata::new("session-1", "system-user-1", "test-os");
+        let metadata =
+            RunCacheClientMetadata::new("session-1", "system-user-1", "test-os", "inv-1", "run-1");
         let request = metadata.attach(Request::new(())).unwrap();
 
         assert!(
@@ -635,5 +662,43 @@ mod tests {
                 .unwrap(),
             "test-os"
         );
+        assert_eq!(
+            request
+                .metadata()
+                .get(INVOCATION_ID_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "inv-1"
+        );
+        assert_eq!(
+            request
+                .metadata()
+                .get(CLOUD_RUN_ID_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "run-1"
+        );
+    }
+
+    #[test]
+    fn invocation_info_headers_are_omitted_when_empty() {
+        // cloud_run_id is absent when not running on the dbt platform; an empty
+        // invocation_id (fails-soft) is likewise not sent.
+        let metadata =
+            RunCacheClientMetadata::new("session-1", "system-user-1", "test-os", "inv-1", "");
+        let request = metadata.attach(Request::new(())).unwrap();
+
+        assert_eq!(
+            request
+                .metadata()
+                .get(INVOCATION_ID_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "inv-1"
+        );
+        assert!(request.metadata().get(CLOUD_RUN_ID_HEADER).is_none());
     }
 }

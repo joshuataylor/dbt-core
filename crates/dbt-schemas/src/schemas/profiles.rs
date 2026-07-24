@@ -49,10 +49,7 @@ pub enum DbConfig {
     Databricks(Box<DatabricksDbConfig>),
     Salesforce(Box<SalesforceDbConfig>),
     DuckDB(Box<DuckDbConfig>),
-    // `type: alt` — the alternate compute target. DuckDB-backed for the MVP, so
-    // it reuses the DuckDB config shape and maps to the `AdapterType::Alt`
-    // backend.
-    Alt(Box<DuckDbConfig>),
+    Alt(Box<AltConfig>),
     // Hive,
     Exasol(Box<ExasolDbConfig>),
     // Oracle,
@@ -249,11 +246,10 @@ impl DbConfig {
                 "path",
                 "database",
                 "schema",
-                "extensions",
-                "settings",
-                "secrets",
-                "attach",
-                "motherduck_token",
+                "base_url",
+                "method",
+                "token",
+                "organization",
             ],
             // TODO(serramatutu): Spark connection keys
             DbConfig::Spark(_) => &[],
@@ -1013,6 +1009,28 @@ pub struct DuckDbAttachment {
     /// managed DuckLake where the path uses `md:` instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_ducklake: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct AltConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub organization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
 }
 
 /// DuckDB adapter configuration

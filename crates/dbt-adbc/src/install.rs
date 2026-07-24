@@ -742,6 +742,7 @@ mod tests {
         for backend in [
             Backend::Athena,
             Backend::Exasol,
+            Backend::Alt,
             Backend::Generic {
                 library_name: "adbc_driver_sqlite",
                 entrypoint: Some(b"SqliteDriverInit"),

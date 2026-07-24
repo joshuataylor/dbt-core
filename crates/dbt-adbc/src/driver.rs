@@ -377,7 +377,7 @@ impl AdbcDriver {
             (
                 load_strategy @ (CdnCache | SystemThenCdnCache),
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | Alt | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | Salesforce | SQLServer | ClickHouse,
             ) => {
                 #[cfg(debug_assertions)]
                 {
@@ -402,6 +402,23 @@ impl AdbcDriver {
                 {
                     load_strategy
                 }
+            }
+            // FIXME: not CDN-installable yet, always require the local-build override
+            // (ADBC_REPOSITORY / sibling lib/ dir). Blocked on adding a quack-driver
+            // publish-to-CDN step in fs's GHA, which needs a read token first.
+            (CdnCache | SystemThenCdnCache, Alt) => {
+                let name = backend.adbc_library_name().unwrap();
+                let load_flags = 0;
+                return Self::try_load_driver_from_name(backend, name, load_flags, adbc_version)
+                    .map_err(|e| {
+                        Error::with_message_and_status(
+                            format!(
+                                "Alt adapter requires the dbt Compute driver, which isn't available via CDN yet. Build it locally (see quack/docs/local-driver-build.md) and set ADBC_REPOSITORY to point at it.\n\
+Underlying error:\n{e}"
+                            ),
+                            Status::Internal,
+                        )
+                    });
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
             (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol) => System(None),

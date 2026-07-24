@@ -17,7 +17,7 @@ use crate::time_machine::AdapterCallEvent;
 
 use super::event::{MetadataCallArgs, SaoEvent};
 use super::event_recorder::EventRecorder;
-use super::event_replay::{Recording, ReplayError, ReplayMode};
+use super::event_replay::{Recording, ReplayError, ReplayMode, is_read_only_execute_call};
 use super::semantic::SemanticCategory;
 use super::serde::{ReplayCallContext, ReplayContext, json_to_value_with_context};
 use super::validation::{IncomingEvent, TimeMachineEventValidationEngine, ValidationResult};
@@ -127,7 +127,8 @@ impl EventReplayer {
                 adapter_type,
                 quoting: ResolvedQuoting::default(),
             },
-            validation_engine: TimeMachineEventValidationEngine::new(),
+            validation_engine: TimeMachineEventValidationEngine::new()
+                .with_adapter_type(adapter_type),
         }
     }
 
@@ -174,12 +175,39 @@ impl EventReplayer {
         let call_category = SemanticCategory::from_adapter_method(method);
         let serialized_args = super::serde::serialize_args(args);
 
+        // Detect execute/run_query calls whose SQL is read-only (SELECT, SHOW, ...).
+        // These are compile-time probe queries from dbt macros (e.g. dbt_utils.date_spine
+        // runs `SELECT datediff(...)` to compute n_periods). Python dbt records them after
+        // SHOW PARAMETERS, but Fusion emits them earlier during Jinja compilation, causing
+        // an ordering mismatch. We match them globally as unordered reads in both modes.
+        let is_ro_exec =
+            call_category.is_mutating() && is_read_only_execute_call(method, &serialized_args);
+
         // Dispatch to the appropriate matching strategy
         let event = match self.replay_mode {
             ReplayMode::Strict => {
-                self.get_result_strict(node_id, method, &serialized_args, call_category)?
+                if is_ro_exec {
+                    // Use global unordered matching so the sequential position is not
+                    // corrupted by out-of-order probe queries.
+                    self.recording
+                        .take_ro_exec_read(node_id, method, &serialized_args)
+                        .ok_or_else(|| ReplayCallError {
+                            message: format!(
+                                "No recorded event for read-only {} call '{}' on node '{}'. \
+                                 The recording may be outdated or this probe was not captured.",
+                                call_category, method, node_id
+                            ),
+                            recorded_error: None,
+                        })?
+                } else {
+                    self.get_result_strict(node_id, method, &serialized_args, call_category)?
+                }
             }
             ReplayMode::Semantic => {
+                // In semantic mode, take_semantic_match handles the read-only execute
+                // redirect internally (Write category with SELECT SQL → untracked read).
+                // The effective category passed here is the original call_category; the
+                // redirect happens inside take_semantic_match.
                 match self.get_result_semantic(node_id, method, &serialized_args, call_category) {
                     Ok(event) => event,
                     Err(_)

@@ -1655,7 +1655,11 @@ fn yml_value_to_sql_literal(
         // A string fixture for a type that cannot be produced by casting a
         // string literal (e.g. BigQuery STRUCT/GEOGRAPHY) is a SQL expression
         // that must be injected verbatim. See dbt-labs/dbt-core#14625.
-        YmlValue::String(s, _) if type_ops.cast_from_string_unsupported_for(data_type) => Ok(s),
+        YmlValue::String(s, _)
+            if type_ops.cast_from_quoted_string_literal_unsupported_for(data_type) =>
+        {
+            Ok(s)
+        }
         YmlValue::String(s, _) => Ok(literal_formatter.format_str(&s)),
         // Mappings/sequences have per-dialect customizations
         YmlValue::Mapping(m, _) => {

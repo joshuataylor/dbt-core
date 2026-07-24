@@ -141,7 +141,6 @@ pub(crate) fn create_mock_describe_extended_table<'a>(
 ) -> AgateTable {
     let mut csv_data = "key,value\n".to_string();
 
-    // Add regular table info rows
     csv_data.push_str("Table,test_table\n");
     csv_data.push_str("Owner,test_user\n");
 
@@ -149,7 +148,6 @@ pub(crate) fn create_mock_describe_extended_table<'a>(
         csv_data.push_str(&format!("{label},{value}\n"))
     }
 
-    // Add partition information section
     let partition_columns_vec = Vec::from_iter(partition_columns);
     if !partition_columns_vec.is_empty() {
         csv_data.push_str("# Partition Information,\n");
@@ -160,7 +158,6 @@ pub(crate) fn create_mock_describe_extended_table<'a>(
         csv_data.push_str(",\n");
     }
 
-    // Add remaining info
     csv_data.push_str("# Detailed Table Information,\n");
 
     let schema = Arc::new(Schema::new(vec![

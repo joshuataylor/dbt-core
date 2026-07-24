@@ -116,7 +116,6 @@ fn try_to_int_col(col: &arrow_array::Float64Array) -> bool {
     })
 }
 
-/// Returns a callback that emits a warning when duplicate column names are renamed.
 fn warn_duplicate_columns(node_id: Option<String>) -> impl FnOnce(&[RenamedColumn<'_>]) {
     use std::fmt::Write;
 
@@ -215,7 +214,7 @@ pub fn quote_component(
     }
 }
 
-/// Returns the relation name for current node from the state.
+/// Returns the FQN for the current node's model.
 pub fn database_schema_alias_from_state(state: &State) -> Option<(String, String, String)> {
     let model = state.lookup("model", &[])?;
     let database = model.get_attr("database").ok()?.as_str()?.to_string();
@@ -462,7 +461,6 @@ impl AdapterImpl {
         Ok(none_value())
     }
 
-    /// Get DB config by key
     pub fn get_db_config(&self, key: &str) -> Option<Cow<'_, str>> {
         self.engine().config(key)
     }
@@ -1291,8 +1289,6 @@ impl AdapterImpl {
         )
     }
 
-    /// Get all relevant metadata about a dynamic table
-    ///
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L559
     pub fn describe_dynamic_table(
         &self,
@@ -1544,11 +1540,6 @@ impl AdapterImpl {
         Ok(result)
     }
 
-    /// Get the full macro name for check_schema_exists
-    ///
-    /// # Returns
-    ///
-    /// Returns (package_name, macro_name)
     pub fn check_schema_exists_macro(
         &self,
         _state: &State,
@@ -1600,7 +1591,6 @@ impl AdapterImpl {
         Ok(false)
     }
 
-    /// Returns true if the adapter supports the given feature.
     pub fn has_feature(
         &self,
         state: &State,
@@ -1695,8 +1685,6 @@ impl AdapterImpl {
         }
     }
 
-    /// Returns the columns that exist in the source_relations but not in the target_relations
-    ///
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L862
     pub fn get_missing_columns(
         &self,
@@ -1953,8 +1941,6 @@ impl AdapterImpl {
         }
     }
 
-    /// Get columns in relation
-    ///
     /// SQLAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/sql/impl.py#L161
     /// AthenaAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-athena/src/dbt/adapters/athena/impl.py#L1217
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/fe308ee83cfc200b6ff196f8662b9882d7cec505/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L330
@@ -2472,7 +2458,6 @@ impl AdapterImpl {
         })
     }
 
-    /// Given a constraint, return the support status of the constraint on this adapter.
     /// https://github.com/dbt-labs/dbt-adapters/blob/5379513bad9c75661b990a5ed5f32ac9c62a0758/dbt-adapters/src/dbt/adapters/base/impl.py#L293
     pub fn get_constraint_support(&self, ct: ConstraintType) -> ConstraintSupport {
         use ConstraintSupport::*;
@@ -3306,8 +3291,6 @@ impl AdapterImpl {
         }
     }
 
-    /// Get columns in select sql
-    ///
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L541
     pub fn get_columns_in_select_sql(
         &self,
@@ -4146,12 +4129,8 @@ impl AdapterImpl {
         }
     }
 
-    /// Resolve file format from model config.
-    ///
-    /// Returns the file_format from config, or adapter-specific default.
-    /// Databricks default: "delta". Used by clone materialization.
-    ///
-    /// DatabricksConfig has file_format: str = "delta"
+    /// When config omits file_format, falls back to this adapter's default (Databricks
+    /// defaults to "delta"). Used by clone materialization.
     ///
     /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L994
     pub fn resolve_file_format(&self, config: ModelConfig) -> AdapterResult<String> {
@@ -4674,7 +4653,6 @@ impl AdapterImpl {
         }
     }
 
-    /// Get the default ADBC statement options
     pub fn get_adbc_execute_options(&self, state: &State) -> ExecuteOptions {
         match self.adapter_type() {
             Bigquery => {

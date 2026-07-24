@@ -38,26 +38,10 @@ pub type ParentChildPair = (Arc<dyn BaseRelation>, Arc<dyn BaseRelation>);
 
 /// Adapter that supports metadata query.
 ///
-/// # Recording Pattern
-///
 /// Methods that perform I/O follow the `*_inner` pattern for transparent recording:
-/// - Implementers override `*_inner` methods with the actual implementation
-/// - Public methods are provided by the trait and wrap `_inner` with recording
-/// - Call sites use the public methods and don't need to know about recording
-///
-/// Example:
-/// ```ignore
-/// impl MetadataAdapter for MyAdapter {
-///     fn list_relations_schemas_inner(
-///         &self,
-///         unique_id: Option<String>,
-///         phase: Option<ExecutionPhase>,
-///         relations: &[Arc<dyn BaseRelation>],
-///     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
-///         // Actual implementation here
-///     }
-/// }
-/// ```
+/// implementers override the `*_inner` methods with the real implementation, the trait's
+/// public methods wrap those with recording, and call sites just use the public methods
+/// without needing to know recording is happening.
 pub trait MetadataAdapter: Send + Sync {
     /// The adapter type backing this metadata adapter (Snowflake, BigQuery, ...).
     /// Used by callers (e.g. `ViewDefinitionTraverser`) that need to construct
@@ -75,7 +59,6 @@ pub trait MetadataAdapter: Send + Sync {
         _: Arc<RecordBatch>,
     ) -> AdapterResult<BTreeMap<String, BTreeMap<String, ColumnMetadata>>>;
 
-    /// Check if the returned error is due to insufficient permissions.
     #[allow(unused_variables)]
     fn is_permission_error(&self, e: &AdapterError) -> bool {
         #[cfg(debug_assertions)]
@@ -342,20 +325,7 @@ pub trait MetadataAdapter: Send + Sync {
         self.freshness_with_overrides(relations, overrides, token)
     }
 
-    /// Fetch freshness for **all** tables in the given schema without
-    /// per-table filtering.
-    ///
-    /// This mirrors the plugin's
-    /// `_fetch_last_modified_epochs_from_schemas_in_catalog` which uses a
-    /// `table_schema IN (...)` filter rather than per-table predicates.  For
-    /// large projects the per-table OR-predicate on `INFORMATION_SCHEMA.TABLES`
-    /// can be slower than a plain schema dump; adapters that have validated
-    /// this approach should override this method.
-    ///
-    /// The default implementation returns an empty map, signalling to the
-    /// caller that it should fall back to `freshness_with_overrides_and_options`.
-    /// Fetch freshness for **all** tables in the given schema without
-    /// per-table filtering.
+    /// Fetch freshness for all tables in the given schema without per-table filtering.
     ///
     /// This mirrors the plugin's
     /// `_fetch_last_modified_epochs_from_schemas_in_catalog` which uses a
@@ -446,9 +416,6 @@ pub trait MetadataAdapter: Send + Sync {
     ///
     /// Override this method with your adapter's implementation.
     /// Call `list_relations_in_parallel` for the recorded version.
-    ///
-    /// # Arguments
-    /// * `db_schemas` - List of (catalog, schema) pairs to discover relations in
     fn list_relations_in_parallel_inner(
         &self,
         db_schemas: &[CatalogAndSchema],
@@ -459,9 +426,6 @@ pub trait MetadataAdapter: Send + Sync {
     ///
     /// This is a provided method that wraps `list_relations_in_parallel_inner`
     /// with time machine recording.
-    ///
-    /// # Arguments
-    /// * `db_schemas` - List of (catalog, schema) pairs to discover relations in
     fn list_relations_in_parallel<'a>(
         &'a self,
         db_schemas: &'a [CatalogAndSchema],

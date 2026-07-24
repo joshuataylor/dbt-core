@@ -307,14 +307,12 @@ impl TimeMachineEventValidationEngine {
         incoming: &IncomingEvent,
         recorded: &AdapterCallEvent,
     ) -> ValidationResult<'_> {
-        // 1. Check for known deviations first
         for deviation in &self.deviations {
             if let DeviationMatch::Matched(matched) = deviation.check(incoming, recorded) {
                 return ValidationResult::Skipped(matched);
             }
         }
 
-        // 2. Check method match
         if incoming.method != recorded.method {
             return ValidationResult::Mismatch(ValidationMismatch {
                 kind: MismatchKind::Method,
@@ -323,12 +321,10 @@ impl TimeMachineEventValidationEngine {
             });
         }
 
-        // 3. For SQL methods, do SQL comparison
         if is_sql_method(incoming.method) {
             return self.validate_sql_event(incoming, recorded);
         }
 
-        // 4. For non SQL methods, compare args directly
         if !super::event_replay::adapter_args_match(incoming.method, &recorded.args, incoming.args)
         {
             return ValidationResult::Mismatch(ValidationMismatch {
@@ -386,7 +382,6 @@ impl TimeMachineEventValidationEngine {
     }
 }
 
-/// Check if a method executes SQL.
 fn is_sql_method(method: &str) -> bool {
     method == "execute" || method == "run_query" || method == "add_query"
 }

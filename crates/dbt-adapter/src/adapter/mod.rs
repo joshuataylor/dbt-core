@@ -86,31 +86,17 @@ pub enum NodeOverride {
     Warehouse,
 }
 
-/// Type bridge adapter
+/// Converts untyped (Value-based) method calls to typed calls, validating argument count
+/// and types along the way, and reproduces what method annotations do in the dbt Core
+/// Python implementation (e.g. returning simple values during the parsing phase).
 ///
-/// This adapter converts untyped method calls (those that use Value)
-/// to typed method calls, which we expect most adapters to implement.
-/// As inseperable part of this process, this adapter also checks
-/// arguments of all methods, their numbers, and types.
+/// Caches the thread's database connection in a thread-local so Jinja code doesn't have to
+/// pass connections explicitly.
 ///
-/// This adapter also takes care of what method annotations would do
-/// in the dbt Core Python implementation. Things like returning
-/// simple values during the parsing phase.
+/// Use [ConcreateAdapter::borrow_tlocal_connection], whose guard returns the connection to
+/// the thread-local on drop.
 ///
-/// # Connection Management
-///
-/// This adapter caches the database connection used by the thread in a
-/// thread-local. This allows Jinja code to use the connection without
-/// explicitly referring to database connections.
-///
-/// Use the [ConcreateAdapter::borrow_tlocal_connection] function, which returns
-/// a guard that can be dereferenced into a mutable [Box<dyn Connection>]. When
-/// the guard instance is destroyed, the connection returns to the thread-local
-/// variable.
-///
-/// # Relation Cache
-///
-/// The relation cache is now managed by the engine. Access via `engine().relation_cache()`.
+/// The relation cache lives on the engine now — access via `engine().relation_cache()`.
 #[derive(Clone)]
 pub struct Adapter {
     inner: InnerAdapter,
@@ -162,7 +148,6 @@ impl Adapter {
         }
     }
 
-    /// Create an instance of [Adapter] that operates in parse phase mode.
     pub fn new_parse_phase_adapter(
         adapter_type: AdapterType,
         config: dbt_yaml::Mapping,
@@ -233,7 +218,6 @@ impl Adapter {
         self.cancellation_token.clone()
     }
 
-    /// Get a reference to the time machine, if enabled.
     pub fn time_machine(&self) -> Option<&TimeMachine> {
         self.time_machine.as_ref()
     }
@@ -1226,8 +1210,6 @@ impl Adapter {
         }
     }
 
-    /// Gets the macro for the given incremental strategy.
-    ///
     /// Additionally some validations are done:
     /// 1. Assert that if the given strategy is a "builtin" strategy, then it must
     ///    also be defined as a "valid" strategy for the associated adapter
@@ -1331,8 +1313,6 @@ impl Adapter {
         }
     }
 
-    /// Get hard deletes behavior.
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/impl.py#L1964
     ///
     /// ```python
@@ -1382,8 +1362,6 @@ impl Adapter {
         }
     }
 
-    /// Get relation.
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/5fba80c621c3f0f732dba71aa6cf9055792b6495/dbt-adapters/src/dbt/adapters/base/impl.py#L1014
     ///
     /// ```python
@@ -1556,8 +1534,6 @@ impl Adapter {
         }
     }
 
-    /// Get a catalog relation object.
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/c16cc7047e8678f8bb88ae294f43da2c68e9f5cc/dbt-adapters/src/dbt/adapters/base/impl.py#L338
     ///
     /// ```python
@@ -1588,8 +1564,6 @@ impl Adapter {
         }
     }
 
-    /// Get missing columns.
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/impl.py#L852
     ///
     /// ```python
@@ -1624,8 +1598,6 @@ impl Adapter {
         }
     }
 
-    /// Get columns in relation.
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/impl.py#L741
     ///
     /// ```python
@@ -1693,8 +1665,6 @@ impl Adapter {
         }
     }
 
-    /// Get relations by pattern
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/impl.py#L858
     ///
     /// ```python
@@ -1742,7 +1712,6 @@ impl Adapter {
         }
     }
 
-    /// Get column schema from query
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn get_column_schema_from_query(
         &self,
@@ -1772,8 +1741,6 @@ impl Adapter {
         }
     }
 
-    /// Get columns in select sql
-    ///
     /// reference: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L443-L444
     /// Shares the same input and output as get_column_schema_from_query.
     #[tracing::instrument(skip(self, state), level = "trace")]
@@ -2039,8 +2006,7 @@ impl Adapter {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L579-L586
     ///
-    /// # Panics
-    /// This method will panic if called on a non-BigQuery adapter
+    /// Panics if called on a non-BigQuery adapter.
     #[tracing::instrument(skip_all, level = "trace")]
     pub fn parse_partition_by(
         &self,
@@ -2061,8 +2027,6 @@ impl Adapter {
         }
     }
 
-    /// Get table options
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/57b131a11ea24b79cfebda003c15456972892427/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L793
     ///
     /// ```python
@@ -2575,7 +2539,6 @@ impl Adapter {
         }
     }
 
-    /// Returns true if the adapter supports the given feature.
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn has_feature(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
         match &self.inner {
@@ -2937,10 +2900,8 @@ impl Adapter {
         }
     }
 
-    /// Resolve file format from model config.
-    ///
-    /// Returns the file_format from config, or adapter-specific default.
-    /// Databricks default: "delta". Used by clone materialization.
+    /// When config omits file_format, falls back to this adapter's default (Databricks
+    /// defaults to "delta"). Used by clone materialization.
     ///
     /// https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/impl.py
     /// DatabricksConfig has file_format: str = "delta"
@@ -3063,7 +3024,6 @@ impl Adapter {
         }
     }
 
-    /// Get the list of valid incremental strategies for this adapter.
     #[tracing::instrument(skip(self, _state), level = "trace")]
     pub fn valid_incremental_strategies(&self, _state: &State) -> Result<Value, minijinja::Error> {
         match &self.inner {
@@ -3128,8 +3088,6 @@ impl Adapter {
         }
     }
 
-    /// Get columns to persist documentation for.
-    ///
     /// Given existing columns and columns from the model, determines which columns
     /// to update and persist docs for. Only supported by Databricks.
     #[tracing::instrument(skip(self, state), level = "trace")]
@@ -3330,10 +3288,6 @@ impl Adapter {
     }
 
     /// Used internally to attempt executing a Snowflake `use warehouse [name]` statement.
-    ///
-    /// # Returns
-    ///
-    /// Returns the required reset state if the warehouse was switched.
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn use_warehouse(
         &self,
@@ -3580,8 +3534,6 @@ impl Adapter {
         }
     }
 
-    /// Get a catalog integration object.
-    ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/c16cc7047e8678f8bb88ae294f43da2c68e9f5cc/dbt-adapters/src/dbt/adapters/base/impl.py#L334
     ///
     /// ```python
@@ -3882,7 +3834,6 @@ impl Adapter {
             // capability_name: str
             "has_dbr_capability" => self.has_dbr_capability(state, args),
             "table_format" => {
-                // Returns the table format for a relation's database (e.g. "ducklake", "iceberg", "default").
                 // relation: Relation
                 let iter = ArgsIter::new(name, &["relation"], args);
                 let relation_val = iter.next_arg::<&Value>()?;

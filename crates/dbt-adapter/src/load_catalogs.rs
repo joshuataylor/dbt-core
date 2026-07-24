@@ -1,3 +1,5 @@
+//! Loads and validates `<project_root>/catalogs.yml` into a global holder.
+
 use dbt_common::io_utils::StatusReporter;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::warn_error_options::project_flags_get_value;
@@ -14,7 +16,6 @@ const CATALOGS_V2_DISCUSSION_URL: &str = "https://github.com/dbt-labs/dbt-core/d
 static CATALOGS: RwLock<Option<Arc<DbtCatalogs>>> = RwLock::new(None);
 static USE_CATALOGS_V2: RwLock<bool> = RwLock::new(false);
 
-/// Reader: returns a read guard to loaded catalogs.yml if present
 pub fn fetch_catalogs() -> Option<Arc<DbtCatalogs>> {
     match CATALOGS.read() {
         Ok(g) => g.as_ref().cloned(),
@@ -22,7 +23,6 @@ pub fn fetch_catalogs() -> Option<Arc<DbtCatalogs>> {
     }
 }
 
-/// Reader: returns whether the use_catalogs_v2 behavior flag was set at load time.
 pub fn fetch_use_catalogs_v2() -> bool {
     match USE_CATALOGS_V2.read() {
         Ok(g) => *g,
@@ -45,7 +45,6 @@ pub fn set_use_catalogs_v2_from_flags(project_flags: Option<&yml::Value>) {
     } = enabled;
 }
 
-/// Load <project_root>/catalogs.yml, validate, and return a validated mapping holder.
 pub fn load_catalogs(
     text_yml: yml::Value,
     path: &Path,

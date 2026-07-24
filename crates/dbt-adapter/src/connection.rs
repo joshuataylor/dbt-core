@@ -726,8 +726,8 @@ mod tests {
     fn tls_container_stores_tlocal_connections() {
         let c = pri::TlsConnectionContainer::new();
         assert!(c.take().is_none());
-        c.replace(Some(make_conn())); // replace
-        assert!(c.take().is_some()); // take
+        c.replace(Some(make_conn()));
+        assert!(c.take().is_some());
         assert!(c.take().is_none());
     }
 
@@ -740,7 +740,7 @@ mod tests {
         assert!(pool.recycle().is_some());
         assert!(pool.recycle().is_some());
         assert!(pool.recycle().is_some());
-        assert!(pool.recycle().is_none()); // none
+        assert!(pool.recycle().is_none());
     }
 
     // Tests that touch the global thread-locals (CONNECTION / RECYCLING_POOL)

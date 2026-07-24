@@ -139,7 +139,6 @@ pub fn json_to_value_with_context(
             minijinja::Value::from_iter(arr.iter().map(|v| json_to_value_with_context(v, ctx)))
         }
         serde_json::Value::Object(obj) => {
-            // Check for typed objects
             if let Some(type_name) = obj.get("__type__").and_then(|v| v.as_str())
                 && let Some(value) = reconstruct_typed_object(type_name, json, ctx)
             {

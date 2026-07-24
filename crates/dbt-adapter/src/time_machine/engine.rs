@@ -42,22 +42,14 @@ impl TimeMachine {
         Self::Replay(replayer)
     }
 
-    /// Check if this is in recording mode.
     pub fn is_recording(&self) -> bool {
         matches!(self, Self::Record(_))
     }
 
-    /// Check if this is in replay mode.
     pub fn is_replaying(&self) -> bool {
         matches!(self, Self::Replay(_))
     }
 
-    /// Try to get a replay result for an adapter call.
-    ///
-    /// Returns:
-    /// - `Some(Ok(value))` - Use this recorded result instead of calling the real adapter
-    /// - `Some(Err(e))` - The recorded call failed with this error
-    /// - `None` - Not in replay mode
     pub fn try_replay(
         &self,
         node_id: &str,
@@ -265,12 +257,9 @@ impl EventReplayer {
             .expect("event should exist after peek"))
     }
 
-    /// Get result using semantic segment-based matching.
-    ///
-    /// Semantic mode has relaxed matching constraints:
-    /// - **Writes**: Must match the next write barrier in sequence (error if mismatch)
-    /// - **Reads**: Can match any read in segment with matching args, same read can match 0 or more times.
-    ///   If no matching read found, returns error (can't service the request).
+    /// Writes must match the next write barrier in sequence; reads can match any read in
+    /// the current segment with matching args (and the same recorded read can satisfy
+    /// multiple calls).
     fn get_result_semantic(
         &self,
         node_id: &str,
@@ -300,7 +289,6 @@ impl EventReplayer {
 
     /// Convert a matched event to a replay result.
     fn convert_event_to_result(&self, event: &AdapterCallEvent) -> Result<Value, ReplayCallError> {
-        // Check if the recorded call succeeded
         if !event.success {
             return Err(ReplayCallError {
                 message: "Recorded call failed".to_string(),
@@ -314,20 +302,14 @@ impl EventReplayer {
         Ok(value)
     }
 
-    /// Get the result for a metadata adapter call.
-    ///
-    /// Returns:
-    /// - `Some(Ok(json))` - The recorded result as JSON
-    /// - `Some(Err(e))` - The recorded call failed
-    /// - `None` - No recorded event found for this call
+    /// Falls back from `caller_id` to "global" because recording and replay can see
+    /// different node IDs for what's semantically the same call.
     pub fn get_metadata_result(
         &self,
         caller_id: &str,
         method: &str,
         args: &MetadataCallArgs,
     ) -> Option<Result<serde_json::Value, ReplayCallError>> {
-        // Try exact caller_id first, then fall back to "global"
-        // This handles cases where recording used "global" but replay uses specific node IDs
         let caller_ids_to_try = if caller_id == "global" {
             vec![caller_id]
         } else {
@@ -409,16 +391,9 @@ impl EventReplayer {
         self.convert_metadata_event_to_result(event)
     }
 
-    /// Internal helper to try getting a metadata result using semantic matching.
-    ///
-    /// Same semantics as adapter calls:
-    /// - Writes must match in order (error if no match)
-    /// - Reads can match 0 or more times with matching args
-    ///
-    /// Returns:
-    /// - `Some(Ok(...))` - Found matching event
-    /// - `Some(Err(...))` - Caller has events but no match
-    /// - `None` - Caller has no events
+    /// Same write/read matching semantics as [`get_result_semantic`]. A caller with no
+    /// recorded events at all is treated as a non-match so the search can fall back to
+    /// other callers, rather than as an error.
     fn try_get_metadata_result_semantic(
         &self,
         caller_id: &str,
@@ -465,7 +440,6 @@ impl EventReplayer {
         &self,
         event: &super::event::MetadataCallEvent,
     ) -> Option<Result<serde_json::Value, ReplayCallError>> {
-        // Check if the recorded call succeeded
         if !event.success {
             return Some(Err(ReplayCallError {
                 message: "Recorded metadata call failed".to_string(),
@@ -476,7 +450,6 @@ impl EventReplayer {
         Some(Ok(event.result.clone()))
     }
 
-    /// Check if there are any metadata events recorded.
     pub fn has_metadata_events(&self) -> bool {
         self.recording.total_metadata_events() > 0
     }
@@ -489,7 +462,6 @@ impl EventReplayer {
         self.recording.get_sao_event(node_id)
     }
 
-    /// Check if a node has a recorded SAO skip event.
     pub fn has_sao_event(&self, node_id: &str) -> bool {
         self.recording.has_sao_event(node_id)
     }

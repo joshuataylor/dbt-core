@@ -208,24 +208,11 @@ impl TrieNode {
     }
 }
 
-/// Example:
-///
-///     columns: {
-///         "a": {"name": "a", "data_type": "string", "description": ...},
-///         "b.nested": {"name": "b.nested", "data_type": "string"},
-///         "b.nested2": {"name": "b.nested2", "data_type": "string"}
-///     }
-///     returns: {
-///         "a": {"name": "a", "data_type": "string"},
-///         "b": {"name": "b": "data_type": "struct<nested string, nested2 string>}
-///     }
-///
-/// arbitrarily nested struct/array types are allowed, for more details check out the
-/// tests/data/nest_column_data_types example
-/// reference: https://github.com/dbt-labs/dbt-core/blob/main/env/lib/python3.12/site-packages/dbt/adapters/bigquery/column.py#L131-L132
-/// The implementation is purely based on the pydoc and the limited observations of how dbt
-/// compile behehaves on the test example so there probably exist corner cases not handled
-/// properly
+/// Collapses dotted-path nested columns like `{"b.nested": ..., "b.nested2": ...}` into a
+/// single struct column `b: struct<nested ..., nested2 ...>`, arbitrarily deep (see
+/// tests/data/nest_column_data_types). Based on pydoc and observed dbt-core behavior
+/// (https://github.com/dbt-labs/dbt-core/blob/main/env/lib/python3.12/site-packages/dbt/adapters/bigquery/column.py#L131-L132),
+/// not a full spec, so corner cases may not be handled.
 ///
 /// When `constraints` is supplied (keyed by top-level column name), the rendered constraint
 /// clause is appended to the column's data type so that the resulting DDL emits e.g.
@@ -343,18 +330,13 @@ static QO_DS_OR_REGION_TF: QualifierOptions =
 ///
 /// NOTE: BY_PROJECT views have an alias stripping that suffix.
 ///
-/// NOTE: On the necessity of the `region` qualifier, per BigQuery's docs:
-/// - You MUST specify a region to query _some_ views in `INFORMATION_SCHEMA` [1]
-/// - Some other views (like `TABLES`) either need region or dataset [2]
-/// - Generally, if you don't specify a region, the engine defaults to
-///   the US macro location (which might be routed to any region within the US) [3]
+/// NOTE: on the `region` qualifier: some `INFORMATION_SCHEMA` views require it [1], others
+/// (like `TABLES`) accept region or dataset instead [2], and if omitted the engine defaults
+/// to the US macro location, which may route to any US region [3].
 ///
-/// On the ability to specify a project
 /// [1] https://cloud.google.com/bigquery/docs/information-schema-intro#syntax
 /// [2] https://cloud.google.com/bigquery/docs/information-schema-intro#dataset_qualifier
 /// [3] https://cloud.google.com/bigquery/docs/locations#specify_locations
-///
-/// See https://cloud.google.com/bigquery/docs/information-schema-intro
 fn qualifier_options_for_info_schema_view(
     sys_identifier: &str,
 ) -> Option<&'static QualifierOptions> {
@@ -1108,10 +1090,10 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             let dataset = relation.schema_as_resolved_str()?;
             let table = relation.identifier_as_resolved_str()?;
 
-            // To download the schemas of the Information schema tables
-            // we cannot use `get_table_schema` (since the adbc connection, via the googleapi doesn't support this)
-            // and we cannot query a the COLUMNS INFORMATION_SCHEMA view either
-            // The workaround is to issue a query that returns the minimum data, then use returns the Arrow schema of the batch
+            // We can't use `get_table_schema` for INFORMATION_SCHEMA tables (the adbc
+            // connection's googleapi backend doesn't support it) or query the COLUMNS
+            // INFORMATION_SCHEMA view directly, so instead issue a query that returns the
+            // minimum data and read the Arrow schema off the resulting batch.
             // TODO(jason): This needs to be resolved within the driver itself - querying this way returns IPC directly from the
             // storage API within the driver where it's currently not annotated with the original type text
             if relation.is_system() {

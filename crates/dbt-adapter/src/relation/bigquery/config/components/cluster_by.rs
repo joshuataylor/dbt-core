@@ -11,7 +11,7 @@ use serde_json;
 
 pub(crate) const TYPE_NAME: &str = "cluster";
 
-/// Component for BigQuery relation labels
+/// Component for BigQuery cluster by columns.
 pub(crate) type ClusterBy = SimpleComponentConfigImpl<Vec<String>>;
 
 fn to_jinja(v: &Vec<String>) -> Value {

@@ -74,12 +74,10 @@ impl RelationObject {
         }
     }
 
-    /// Check if this relation has a filter applied.
     pub fn has_filter(&self) -> bool {
         self.run_filter.is_some()
     }
 
-    /// Get the event_time column name if configured.
     pub fn event_time(&self) -> Option<&str> {
         self.event_time.as_deref()
     }
@@ -771,7 +769,6 @@ pub trait StaticBaseRelation: fmt::Debug + Send + Sync {
         )
     }
 
-    /// Get the SCD arguments for the relation
     fn scd_args(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
         let iter = ArgsIter::new("Relation.scd_args", &[], args);
         let primary_key = iter.next_kwarg::<Value>("primary_key")?;
@@ -779,7 +776,6 @@ pub trait StaticBaseRelation: fmt::Debug + Send + Sync {
         iter.finish()?;
 
         let mut scd_args = vec![];
-        // Check if minijinja value is a vector
         match primary_key.kind() {
             ValueKind::Seq => {
                 scd_args.extend(primary_key.try_iter()?.enumerate().map(|s| s.1.to_string()));

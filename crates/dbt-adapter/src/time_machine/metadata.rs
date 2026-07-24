@@ -60,31 +60,8 @@ use super::{global_recorder, global_replayer};
 
 /// Wrap an async MetadataAdapter call with automatic recording and replay.
 ///
-/// This function handles both recording and replay modes:
-///
-/// **Replay mode** (when `global_replayer()` returns Some):
-/// 1. Looks up the recorded result for this call
-/// 2. Deserializes and returns it without executing the actual implementation
-///
-/// **Recording mode** (when `global_recorder()` returns Some):
-/// 1. Executes the provided future
-/// 2. Records the call with its result
-/// 3. Returns the result
-///
-/// **Normal mode** (neither recording nor replay):
-/// 1. Executes the provided future and returns the result
-///
-/// # Type Parameters
-///
-/// - `T`: The success type that must implement both serialization and deserialization
-/// - `F`: The future type
-///
-/// # Arguments
-///
-/// - `caller_id`: Identifier for the caller (usually unique_id or "global")
-/// - `method`: Name of the MetadataAdapter method being called
-/// - `args`: Structured arguments for recording
-/// - `fut`: The actual async operation to execute
+/// Looks up and returns a recorded result during replay, records the call during
+/// recording, and otherwise just runs `fut` directly.
 pub fn with_time_machine_metadata_wrapper<'a, T, F>(
     caller_id: impl Into<String> + Send + 'a,
     method: &'static str,
@@ -103,7 +80,6 @@ where
             // In replay mode - look up the recorded result
             match replayer.get_metadata_result(&caller_id, method, &args) {
                 Some(Ok(json)) => {
-                    // Found a recorded result - deserialize and return it
                     return T::from_recording_json(&json).map_err(|e| {
                         Cancellable::Error(AdapterError::new(
                             AdapterErrorKind::Internal,
@@ -112,8 +88,7 @@ where
                     });
                 }
                 Some(Err(e)) => {
-                    // Recorded call failed - return the original error message so
-                    // replay output matches the recording exactly.
+                    // Use the original error message so replay output matches the recording exactly.
                     let original_msg = e.recorded_error.unwrap_or(e.message);
                     return Err(Cancellable::Error(AdapterError::new(
                         AdapterErrorKind::Driver,

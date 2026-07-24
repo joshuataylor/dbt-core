@@ -1,22 +1,9 @@
 //! Replay infrastructure for time-machine recordings.
 //!
-//! This module provides functionality to load and navigate recorded adapter events.
-//!
-//! # Replay Modes
-//!
-//! The replay system supports two ordering modes:
-//!
-//! - **Strict**: Events must match in exact recorded sequence order.
-//!   This is the default and ensures deterministic replay.
-//!
-//! - **Semantic**: Events are matched based on semantic constraints:
-//!   - Write operations are barriers and must match in strict order
-//!   - Read operations can match flexibly within a "segment" (between writes)
-//!   - This enables replay tolerance for minor ordering variations
-//!
-//! The semantic mode treats the recording as a graph segmentation problem where
-//! write operations create ordering constraints (barriers) while read operations
-//! within a segment can be matched in any order.
+//! Loads and navigates recorded adapter events. Replay defaults to strict mode, where
+//! events must match in exact recorded order. Semantic mode relaxes this: writes still
+//! act as ordering barriers that must match in sequence, but reads between two barriers
+//! (a "segment") can match in any order, so minor read reordering doesn't break replay.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufRead, BufReader};
@@ -49,7 +36,6 @@ fn extract_sql_from_args(args: &serde_json::Value) -> Option<&str> {
     }
 }
 
-/// Check if a method executes input SQL.
 fn is_sql_method(method: &str) -> bool {
     method == "execute" || method == "run_query"
 }
@@ -245,7 +231,6 @@ pub enum ReplayMode {
 }
 
 impl ReplayMode {
-    /// Returns true if this mode allows flexible matching of reads.
     pub fn allows_flexible_reads(&self) -> bool {
         matches!(self, Self::Semantic)
     }
@@ -478,24 +463,19 @@ impl Recording {
     // SAO (State Aware Orchestration) methods
     // -------------------------------------------------------------------------
 
-    /// Get SAO skip event for a node, if one was recorded.
-    ///
-    /// Returns the SAO event if the node was skipped due to a cache hit during recording.
+    /// Present only when the node was skipped due to a cache hit during recording.
     pub fn get_sao_event(&self, node_id: &str) -> Option<&SaoEvent> {
         self.sao_events.get(node_id)
     }
 
-    /// Check if a node has a recorded SAO skip event.
     pub fn has_sao_event(&self, node_id: &str) -> bool {
         self.sao_events.contains_key(node_id)
     }
 
-    /// Get all node IDs that have SAO skip events.
     pub fn sao_node_ids(&self) -> impl Iterator<Item = &str> {
         self.sao_events.keys().map(|s| s.as_str())
     }
 
-    /// Get total number of SAO skip events.
     pub fn total_sao_events(&self) -> usize {
         self.sao_events.len()
     }
@@ -511,7 +491,6 @@ impl Recording {
         self.adapter_events_by_node.get(node_id)?.get(pos)
     }
 
-    /// Get the next recorded adapter event for a node and advance the position.
     pub fn take_next(&self, node_id: &str) -> Option<&AdapterCallEvent> {
         let events = self.adapter_events_by_node.get(node_id)?;
         let mut positions = self.adapter_positions.write();
@@ -521,14 +500,12 @@ impl Recording {
         Some(event)
     }
 
-    /// Get all recorded adapter events for a node.
     pub fn events_for_node(&self, node_id: &str) -> Option<&[AdapterCallEvent]> {
         self.adapter_events_by_node
             .get(node_id)
             .map(|v| v.as_slice())
     }
 
-    /// Get all node IDs in the recording.
     pub fn node_ids(&self) -> impl Iterator<Item = &str> {
         self.adapter_events_by_node.keys().map(|s| s.as_str())
     }
@@ -702,13 +679,11 @@ impl Recording {
             .map(|pos| search_start + pos)
             .unwrap_or(events.len());
 
-        // Check if there are any non-write events in the segment
         events[search_start..segment_end]
             .iter()
             .any(|e| !e.semantic_category.is_mutating())
     }
 
-    /// Check if there is a pending write barrier for a node.
     pub fn has_pending_write(&self, node_id: &str) -> bool {
         let Some(events) = self.adapter_events_by_node.get(node_id) else {
             return false;
@@ -815,7 +790,6 @@ impl Recording {
     // Metadata call methods (strict mode)
     // -------------------------------------------------------------------------
 
-    /// Check if we have any recorded metadata events for a caller.
     pub fn has_metadata_events_for_caller(&self, caller_id: &str) -> bool {
         self.metadata_events_by_caller.contains_key(caller_id)
     }
@@ -870,14 +844,12 @@ impl Recording {
         Some(event)
     }
 
-    /// Get all recorded metadata events for a caller.
     pub fn metadata_events_for_caller(&self, caller_id: &str) -> Option<&[MetadataCallEvent]> {
         self.metadata_events_by_caller
             .get(caller_id)
             .map(|v| v.as_slice())
     }
 
-    /// Get all caller IDs for metadata events.
     pub fn metadata_caller_ids(&self) -> impl Iterator<Item = &str> {
         self.metadata_events_by_caller.keys().map(|s| s.as_str())
     }
@@ -901,12 +873,10 @@ impl Recording {
             + self.run_remote_adhoc_events.len()
     }
 
-    /// Get total adapter events count.
     pub fn total_adapter_events(&self) -> usize {
         self.adapter_events_by_node.values().map(|v| v.len()).sum()
     }
 
-    /// Get total metadata events count.
     pub fn total_metadata_events(&self) -> usize {
         self.metadata_events_by_caller
             .values()
@@ -914,7 +884,6 @@ impl Recording {
             .sum()
     }
 
-    /// Get total run_remote_adhoc events count.
     pub fn total_run_remote_adhoc_events(&self) -> usize {
         self.run_remote_adhoc_events.len()
     }
@@ -1078,7 +1047,6 @@ pub fn validate_replay(
 ) -> ReplayResult {
     let mut differences = Vec::new();
 
-    // Check method name
     if recorded.method != method {
         differences.push(ReplayDifference::MethodMismatch {
             expected: recorded.method.clone(),

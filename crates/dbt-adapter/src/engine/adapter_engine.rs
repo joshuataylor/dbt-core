@@ -140,7 +140,6 @@ pub trait AdapterEngine: Send + Sync {
         None
     }
 
-    /// Whether this is a mock engine
     fn is_mock(&self) -> bool {
         false
     }
@@ -150,7 +149,6 @@ pub trait AdapterEngine: Send + Sync {
         false
     }
 
-    /// Whether this is a replay engine
     fn is_replay(&self) -> bool {
         false
     }

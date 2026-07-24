@@ -11,9 +11,7 @@ use minijinja::Value;
 pub(crate) const TYPE_NAME: &str = "query";
 
 // TODO(serramatutu): reuse this for `query` or `sql` in other warehouses
-/// Component for Databricks query
-///
-/// Holds a string representing the SQL query.
+/// Component for Databricks query.
 pub type Query = SimpleComponentConfigImpl<String>;
 
 fn new_component(query: &str) -> Query {

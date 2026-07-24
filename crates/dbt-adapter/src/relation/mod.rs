@@ -3,7 +3,6 @@
 pub(crate) mod config;
 pub use config::{BaseRelationChangeSet, BaseRelationConfig, ComponentConfig, RelationChangeSet};
 
-// Relation and RelationConfig for different data warehouses
 pub mod bigquery;
 pub mod databricks;
 pub mod redshift;

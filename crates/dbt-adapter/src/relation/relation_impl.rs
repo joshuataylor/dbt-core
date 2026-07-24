@@ -528,7 +528,6 @@ impl Relation {
 }
 
 impl BaseRelation for Relation {
-    /// Whether the relation is a system table or not
     fn is_system(&self) -> bool {
         use AdapterType::*;
         match self.adapter_type {
@@ -704,14 +703,7 @@ impl BaseRelation for Relation {
         matches!(self.table_format, TableFormat::Iceberg)
     }
 
-    /// Returns the appropriate DDL prefix for creating a table
-    ///
-    /// # Arguments
-    /// * `model_config` - The RunConfig containing model configuration
-    /// * `temporary` - Whether the table should be temporary
-    ///
-    /// # Returns
-    /// One of: "temporary", "iceberg", "transient", or "" (empty string)
+    /// Returns the DDL prefix: one of "temporary", "iceberg", "transient", or "".
     fn get_ddl_prefix_for_create(
         &self,
         config: Value,

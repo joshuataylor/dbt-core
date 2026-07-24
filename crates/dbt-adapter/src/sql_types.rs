@@ -51,7 +51,6 @@ impl SdfSchema {
 }
 
 pub trait TypeOps: Send + Sync {
-    /// Returns the adapter type this [TypeOps] instance is for.
     fn adapter_type(&self) -> AdapterType;
 
     /// Picks a SQL type for a given Arrow DataType and renders it as SQL.
@@ -119,9 +118,7 @@ pub trait TypeOps: Send + Sync {
         Ok(true)
     }
 
-    /// Return whether this adapter cannot cast a quoted string literal to the
-    /// given type.
-    fn cast_from_string_unsupported_for(&self, data_type: &DataType) -> bool {
+    fn cast_from_quoted_string_literal_unsupported_for(&self, data_type: &DataType) -> bool {
         use AdapterType::*;
 
         match self.adapter_type() {
@@ -143,7 +140,6 @@ pub trait TypeOps: Send + Sync {
         crate::format_ident::format_ident(id, self.adapter_type())
     }
 
-    /// Determine whether a SQL identifier needs to be quoted for this dialect.
     fn need_quotes_for_ident(&self, id: &str) -> bool {
         need_quotes(self.adapter_type(), id)
     }
@@ -647,9 +643,7 @@ impl SdfSchemaBuilder {
                     let sdf_field = self.convert_field(type_ops, field)?;
                     sdf_fields.push(sdf_field);
                 }
-                // preserve original metadata
                 let sdf_arrow_schema = Arc::new(Schema::new(sdf_fields));
-                // build the SdfSchema
                 let sdf_schema =
                     SdfSchema::from_sdf_arrow_schema(Some(self.original), sdf_arrow_schema);
                 Ok(sdf_schema)
@@ -660,7 +654,6 @@ impl SdfSchemaBuilder {
                 //
                 // TODO: move conversion logic for other adapters here
                 let sdf_arrow_schema = Arc::clone(&self.original);
-                // build the SdfSchema
                 let sdf_schema =
                     SdfSchema::from_sdf_arrow_schema(Some(self.original), sdf_arrow_schema);
                 Ok(sdf_schema)
@@ -1206,24 +1199,6 @@ pub fn numeric_precision_scale(
             Some((precision.into(), None))
         }
         // XXX: maybe numeric_precision must be extract in this case too?
-        // (Snowflake, dt) if snowflake::is_timestamp_ntz(dt).is_yes()
-        //     || snowflake::is_timestamp_ltz(dt).is_yes()
-        //     || snowflake::is_timestamp_tz(dt).is_yes() =>
-        // {
-        //     // For timestamp types, the precision is the fractional seconds precision
-        //     // For compatibility with dbt core column type rendering code, precision is stored as char_size
-        //     let time_precision = if snowflake::is_timestamp_ntz(dt).is_yes() {
-        //         snowflake::is_timestamp_ntz(dt).unwrap()
-        //     } else if snowflake::is_timestamp_ltz(dt).is_yes() {
-        //         snowflake::is_timestamp_ltz(dt).unwrap()
-        //     } else if snowflake::is_timestamp_tz(dt).is_yes() {
-        //         snowflake::is_timestamp_tz(dt).unwrap()
-        //     } else {
-        //         return None;
-        //     };
-        //     let char_size: u8 = time_precision.into();
-        //     Some(char_size as usize)
-        // }
 
         // Handle general timestamp types
         (Snowflake, DataType::Timestamp(unit, _)) => {

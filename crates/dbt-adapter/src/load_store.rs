@@ -22,7 +22,6 @@ impl ResultStore {
         results.clear();
     }
 
-    /// Returns a callable function that stores results in the internal map
     /// https://github.com/dbt-labs/dbt-core/blob/34bb3f94dde716a3f9c36481d2ead85c211075dd/core/dbt/context/providers.py#L1043
     pub fn store_result(
         &self,
@@ -65,7 +64,6 @@ impl ResultStore {
         }
     }
 
-    /// Returns a callable function that loads results from the internal map
     /// https://github.com/dbt-labs/dbt-core/blob/34bb3f94dde716a3f9c36481d2ead85c211075dd/core/dbt/context/providers.py#L1022
     pub fn load_result(
         &self,
@@ -100,7 +98,6 @@ impl ResultStore {
         }
     }
 
-    /// Returns a callable function that stores raw results in the internal map
     /// https://github.com/dbt-labs/dbt-core/blob/34bb3f94dde716a3f9c36481d2ead85c211075dd/core/dbt/context/providers.py#L1043
     pub fn store_raw_result(
         &self,
@@ -144,7 +141,6 @@ impl ResultStore {
                 rows_affected,
                 query_id: None,
             };
-            // Call store_result directly instead of using function
             let mut results = store.results.lock().unwrap();
             let value = Value::from_object(ResultObject::new(
                 response,

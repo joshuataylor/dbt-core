@@ -49,7 +49,6 @@ pub enum EngineMode {
 }
 
 impl EngineMode {
-    /// Whether this mode connects to a real warehouse.
     pub fn has_real_connections(&self) -> bool {
         matches!(self, EngineMode::Live)
     }

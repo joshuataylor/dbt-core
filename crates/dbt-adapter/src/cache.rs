@@ -183,7 +183,6 @@ impl RelationCache {
         }
     }
 
-    /// Drops an entire schema
     pub fn evict_schema_for_relation(&self, relation: &dyn BaseRelation) {
         let schema_key = Self::get_schema_cache_key_from_relation(relation);
         self.schemas_and_relations.remove(&schema_key);
@@ -200,7 +199,6 @@ impl RelationCache {
             .unwrap_or(false)
     }
 
-    /// Checks if the entire schema was cached
     pub fn contains_full_schema(&self, schema: &CatalogAndSchema) -> bool {
         self.schemas_and_relations
             .get(&schema.to_string())
@@ -208,7 +206,6 @@ impl RelationCache {
             .unwrap_or(false)
     }
 
-    /// Checks if a relation exists in the cache
     pub fn contains_relation(&self, relation: &dyn BaseRelation) -> bool {
         let (schema_key, relation_key) = Self::get_relation_cache_keys(relation);
         if let Some(relation_cache) = self.schemas_and_relations.get(&schema_key) {
@@ -569,7 +566,6 @@ mod tests {
 
         let cache = RelationCache::default();
 
-        // With DEFAULT_RESOLVED_QUOT: Arc<dyn BaseRelation> =
         let relation_quoted: Arc<dyn BaseRelation> = do_create_relation(
             AdapterType::Postgres,
             "MyDB".to_string(),

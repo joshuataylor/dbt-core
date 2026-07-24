@@ -45,8 +45,6 @@ pub enum RequestBuildError {
     SemanticExtra(#[from] serde_json::Error),
     #[error("failed to read seed data for dbt State hash: {0}")]
     SeedHash(#[from] io::Error),
-    #[error("unsupported dbt State execution type: {0}")]
-    UnsupportedExecutionType(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,8 +102,9 @@ pub fn execution_type_from_input(
             return Ok(ModelExecutionType::Append);
         }
 
-        return ModelExecutionType::from_str_name(&strategy)
-            .ok_or(RequestBuildError::UnsupportedExecutionType(strategy));
+        return Ok(
+            ModelExecutionType::from_str_name(&strategy).unwrap_or(ModelExecutionType::DbtCustom)
+        );
     }
 
     Ok(ModelExecutionType::Full)
@@ -503,19 +502,39 @@ mod tests {
     }
 
     #[test]
-    fn unknown_incremental_strategy_is_an_error_for_fail_open_callers() {
-        let err = execution_type_from_input(&ExecutionTypeInput {
-            resource_type: NodeType::Model,
-            is_view: false,
-            is_custom_materialization: false,
-            is_incremental: true,
-            full_refresh: false,
-            incremental_strategy: Some("custom_strategy".to_string()),
-            has_unique_key: true,
-        })
-        .unwrap_err();
+    fn custom_incremental_strategy_maps_to_dbt_custom() {
+        // A user-defined `get_incremental_<name>_sql` strategy has no dedicated
+        // execution type, so it is submitted opaquely as DBT_CUSTOM rather than
+        // failing and forfeiting dbt State.
+        assert_eq!(
+            execution_type_from_input(&ExecutionTypeInput {
+                resource_type: NodeType::Model,
+                is_view: false,
+                is_custom_materialization: false,
+                is_incremental: true,
+                full_refresh: false,
+                incremental_strategy: Some("insert_only".to_string()),
+                has_unique_key: true,
+            })
+            .unwrap(),
+            ModelExecutionType::DbtCustom
+        );
 
-        assert!(err.to_string().contains("CUSTOM_STRATEGY"));
+        // Adapter-native strategies the service does not model directly take the
+        // same opaque path.
+        assert_eq!(
+            execution_type_from_input(&ExecutionTypeInput {
+                resource_type: NodeType::Model,
+                is_view: false,
+                is_custom_materialization: false,
+                is_incremental: true,
+                full_refresh: false,
+                incremental_strategy: Some("replace_where".to_string()),
+                has_unique_key: false,
+            })
+            .unwrap(),
+            ModelExecutionType::DbtCustom
+        );
     }
 
     #[test]

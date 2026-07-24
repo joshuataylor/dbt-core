@@ -773,6 +773,21 @@ mod tests {
     }
 
     #[test]
+    fn custom_incremental_strategy_maps_to_custom_execution_type() {
+        // A standard `incremental` model with a user-defined
+        // `get_incremental_<name>_sql` strategy is submitted as DBT_CUSTOM so it
+        // still benefits from dbt State instead of failing open.
+        let mut model = make_model(DbtMaterialization::Incremental);
+        let strategy = DbtIncrementalStrategy::Custom("insert_only".to_string());
+        model.__model_attr__.incremental_strategy = Some(strategy.clone());
+        model.deprecated_config.incremental_strategy = Some(strategy);
+
+        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+
+        assert_eq!(request.execution_type, ModelExecutionType::DbtCustom as i32);
+    }
+
+    #[test]
     fn snapshot_request_uses_snapshot_execution_type_during_full_refresh() {
         let snapshot = make_snapshot();
 

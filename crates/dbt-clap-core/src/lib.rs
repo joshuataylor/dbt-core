@@ -854,6 +854,14 @@ pub struct TestArgs {
     #[arg(long, hide = true)]
     pub aggregate_tests: bool,
 
+    /// Select nodes of a specific type;
+    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["resource-types"], env = "DBT_RESOURCE_TYPES")]
+    pub resource_type: Option<Vec<ClapResourceType>>,
+
+    /// Exclude nodes of a specific type;
+    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    pub exclude_resource_type: Option<Vec<ClapResourceType>>,
+
     /// Force node selection
     #[arg(long, default_value = "false")]
     pub force_node_selection: bool,
@@ -899,7 +907,14 @@ impl TestArgs {
                 .optimize_tests
                 .insert(OptimizeTestsOptions::TestAggregation);
         }
-        eval_args.resource_types = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        if let Some(resource_type) = &self.resource_type {
+            eval_args.resource_types = resource_type.clone();
+        } else {
+            eval_args.resource_types = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
+        }
+        if let Some(exclude_resource_type) = &self.exclude_resource_type {
+            eval_args.exclude_resource_types = exclude_resource_type.clone();
+        }
         configure_run_cache(
             &mut eval_args,
             &self.common_args,

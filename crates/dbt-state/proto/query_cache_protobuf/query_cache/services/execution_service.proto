@@ -60,6 +60,7 @@ message SQLExecution {
   map<string, string> labels = 9;
   optional DbtNodeState dbt_node_state = 10;
   optional string default_schema = 11;
+  bool from_speculative_submit = 12;
 }
 
 // Mirrors SubmitValuesRequest minus cache-decision-only fields. Note that

@@ -16,9 +16,10 @@ use crate::proto::query_cache::{
     CloneRequest, CloneResponse, ConfirmExecutionRequest, ConfirmExecutionResponse,
     GetExplainMessagesRequest, GetExplainMessagesResponse, RecordExecutionsRequest,
     RecordExecutionsResponse, SubmitEnrichedSqlRequest, SubmitSqlResponse,
-    SubmitTelemetryBatchRequest, SubmitTelemetryBatchResponse, SubmitValuesRequest,
-    ValidateClientVersionRequest, client_validation_client::ClientValidationClient,
-    execution_client::ExecutionClient, explain_client::ExplainClient, sql_client::SqlClient,
+    SubmitSqlSpeculativeResponse, SubmitTelemetryBatchRequest, SubmitTelemetryBatchResponse,
+    SubmitValuesRequest, ValidateClientVersionRequest,
+    client_validation_client::ClientValidationClient, execution_client::ExecutionClient,
+    explain_client::ExplainClient, sql_client::SqlClient,
 };
 use crate::proto::query_cache::{client_telemetry_client::ClientTelemetryClient, clone_client};
 use crate::service_config::{RunCacheServiceConfig, RunCacheServiceConfigError};
@@ -214,6 +215,15 @@ pub trait RunCacheServiceClient: Send + Sync {
         request: SubmitEnrichedSqlRequest,
     ) -> Result<SubmitSqlResponse, RunCacheServiceError>;
 
+    /// Speculative-submit RPC used while the dependency last-modified prefetch
+    /// is still in flight, returning an early verdict based on cache reads only.
+    async fn submit_enriched_sql_speculative(
+        &self,
+        _request: SubmitEnrichedSqlRequest,
+    ) -> Result<SubmitSqlSpeculativeResponse, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
+
     async fn submit_values(
         &self,
         request: SubmitValuesRequest,
@@ -339,6 +349,19 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
             .sql
             .clone()
             .submit_enriched_sql(request)
+            .await?
+            .into_inner())
+    }
+
+    async fn submit_enriched_sql_speculative(
+        &self,
+        request: SubmitEnrichedSqlRequest,
+    ) -> Result<SubmitSqlSpeculativeResponse, RunCacheServiceError> {
+        let request = self.attach(Request::new(request)).await?;
+        Ok(self
+            .sql
+            .clone()
+            .submit_enriched_sql_speculative(request)
             .await?
             .into_inner())
     }
@@ -530,6 +553,18 @@ mod tests {
             validate_client_version_fail_open(&client).await,
             ClientVersionStatus::Skipped
         );
+    }
+
+    #[tokio::test]
+    async fn speculative_submit_defaults_to_disabled() {
+        let client = FailingValidationClient;
+
+        assert!(matches!(
+            client
+                .submit_enriched_sql_speculative(SubmitEnrichedSqlRequest::default())
+                .await,
+            Err(RunCacheServiceError::Disabled)
+        ));
     }
 
     #[tokio::test]

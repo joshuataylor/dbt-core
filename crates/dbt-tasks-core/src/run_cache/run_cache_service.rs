@@ -44,7 +44,7 @@ use dbt_state::proto::query_cache::{
     ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping, QueryDependency,
     RecordExecutionsRequest, SkipExecutionResponse, Struct, SubmitEnrichedSqlRequest,
     SubmitSqlResponse, SubmitValuesRequest, TableModifiedInfo, Value, submit_sql_response,
-    value::Kind,
+    submit_sql_speculative_response, value::Kind,
 };
 use dbt_state::request_builder::{
     ExecutionOutcomeInput, sql_execution_record_from_submit_request,
@@ -234,6 +234,12 @@ pub struct RunCacheExecutionConfirmation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunCachePendingExecutionRecord {
     input: RunCachePendingExecutionInput,
+    /// Set when the record originates from a speculative submit whose verdict
+    /// was `ReadyToExecuteUntracked`. Such records were built from a partial
+    /// (prefetch-in-flight) dependency snapshot, so their epochs are finalized
+    /// against the warm cache before recording, and the `SqlExecution` carries
+    /// `from_speculative_submit = true`.
+    speculative: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -592,11 +598,6 @@ fn collect_global_prefetch_relations(
     let mut relations: BTreeMap<String, Arc<dyn BaseRelation>> = BTreeMap::new();
     let mut overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
 
-    let trimmed_nonempty = |s: &str| {
-        let t = s.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    };
-
     for node_id in runnable_set {
         let Some(node) = nodes.get_node(node_id) else {
             continue;
@@ -630,24 +631,10 @@ fn collect_global_prefetch_relations(
                 continue;
             };
             let fqn = relation.semantic_fqn();
-            if let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>() {
-                let override_kind = source
-                    .__source_attr__
-                    .loaded_at_query
-                    .as_deref()
-                    .and_then(trimmed_nonempty)
-                    .map(FreshnessOverride::Query)
-                    .or_else(|| {
-                        source
-                            .__source_attr__
-                            .loaded_at_field
-                            .as_deref()
-                            .and_then(trimmed_nonempty)
-                            .map(FreshnessOverride::Field)
-                    });
-                if let Some(kind) = override_kind {
-                    overrides.insert(fqn.clone(), kind);
-                }
+            if let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>()
+                && let Some(kind) = source_freshness_override(source)
+            {
+                overrides.insert(fqn.clone(), kind);
             }
             relations.entry(fqn).or_insert_with(|| relation.into());
         }
@@ -663,8 +650,10 @@ fn collect_global_prefetch_relations(
 /// After this call, `last_modified_epoch_for_relation` returns a cache hit
 /// for every relation in the prefetch set, eliminating the per-node warehouse
 /// round-trips that `collect_table_modified_infos` would otherwise incur.
-/// A failed prefetch is a hard error: the command is aborted so that
-/// stale or missing metadata cannot silently produce incorrect results.
+///
+/// This runs in the background (see `run_cache_service_before_run`); a failure
+/// no longer aborts the run. The error is propagated to the caller, which logs
+/// it and lets the per-node paths fall back to their own freshness lookups.
 async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<()> {
     let (relations, overrides) = collect_global_prefetch_relations(
         ctx.adapter_type(),
@@ -838,10 +827,16 @@ async fn bulk_prefetch_last_modified_by_schema(
 
 /// Start-of-run hook. Fires once before any model executes.
 ///
-/// Batch-prefetches `last_modified_epoch` for all selected nodes and their
-/// runtime dependencies into `run_cache_metadata`, so per-node submits
-/// resolve freshness from the in-process cache instead of issuing individual
-/// warehouse queries.
+/// Starts a background task that batch-prefetches `last_modified_epoch` for all
+/// selected nodes and their runtime dependencies into `run_cache_metadata`, so
+/// per-node submits resolve freshness from the in-process cache instead of
+/// issuing individual warehouse queries.
+///
+/// The prefetch runs concurrently with node execution rather than blocking the
+/// whole run: while it is in flight, a node issues a speculative submit using
+/// only the dependency epochs already resolved (see `submit_model` and friends).
+/// A failed prefetch no longer aborts the run — it is logged and the per-node
+/// paths fall back to their own freshness lookups.
 ///
 /// Note: the view-definition traversal that was previously run here as a
 /// pre-warm has been removed. It used `collect_view_traversal_roots` (a
@@ -856,19 +851,63 @@ async fn bulk_prefetch_last_modified_by_schema(
 /// fetched at most once per run. Total IO is identical — only the timing
 /// changes from eager/pre-run to lazy/per-node.
 pub async fn run_cache_service_before_run(ctx: &TaskRunnerCtx) -> AdapterResult<()> {
-    prefetch_global_last_modified_epochs(ctx)
-        .await
-        .map_err(|e| {
-            dbt_adapter::errors::AdapterError::new(
-                dbt_adapter::errors::AdapterErrorKind::UnexpectedResult,
-                e.to_string(),
-            )
-        })?;
+    let prefetch = ctx.inner.run_cache_ctx.prefetch.clone();
+    prefetch.mark_started();
+
+    let prefetch_ctx = ctx.clone();
+    let handle = dbt_common::tracing::spawn_traced(async move {
+        if let Err(err) = prefetch_global_last_modified_epochs(&prefetch_ctx).await {
+            emit_warn_log_message(
+                ErrorCode::StateServiceWarn,
+                format!(
+                    "dbt State dependency last-modified prefetch failed: {err}; \
+                     falling back to per-node freshness lookups"
+                ),
+                None,
+            );
+        }
+        prefetch_ctx.inner.run_cache_ctx.prefetch.mark_done();
+    });
+    prefetch.set_handle(handle).await;
 
     if let Some(clock) = HeuristicClock::bootstrap(ctx).await {
         let _ = ctx.inner.run_cache_ctx.heuristic_clock.set(clock);
     }
     Ok(())
+}
+
+/// Whether the background dependency prefetch has completed.
+///
+/// Returns `false` before the prefetch is started and while it is in flight;
+/// `true` once the background task has finished (or there was nothing to
+/// prefetch). A node uses this to decide whether to issue a speculative submit
+/// (prefetch still pending) or a regular one (prefetch already complete).
+fn is_prefetch_ready(ctx: &TaskRunnerCtx) -> bool {
+    let prefetch = &ctx.inner.run_cache_ctx.prefetch;
+    prefetch.is_started() && prefetch.is_done()
+}
+
+/// Await the background dependency prefetch to completion.
+///
+/// Joins the background task once: the first call takes and awaits the handle,
+/// and subsequent calls find no handle and return without waiting. When the
+/// prefetch was never started (no handle was ever set) this also returns
+/// immediately. In every case the call is fail-open — a join error or task
+/// panic is logged and swallowed, and the prefetch is marked done so callers
+/// can always proceed — so it never blocks the command from making progress.
+async fn await_prefetch(ctx: &TaskRunnerCtx) {
+    let prefetch = &ctx.inner.run_cache_ctx.prefetch;
+    if let Err(err) = prefetch.join().await {
+        emit_warn_log_message(
+            ErrorCode::StateServiceWarn,
+            format!(
+                "dbt State dependency last-modified prefetch task did not complete cleanly: {err}; \
+                 continuing"
+            ),
+            None,
+        );
+    }
+    prefetch.mark_done();
 }
 
 /// Submits a runnable node to the dbt State service before local execution.
@@ -963,23 +1002,28 @@ pub async fn run_cache_service_before_execution(
     };
 
     match result {
-        Ok(Some(outcome)) => {
+        Ok(Some(RunCacheSubmitResult::Outcome(outcome))) => {
             let decision = record_service_decision(
                 node.unique_id().as_str(),
                 &outcome.response,
                 outcome.freshness_tolerance_seconds,
                 should_honor_service_skip(ctx),
             );
-            // A node that completed a dev clone earlier in this invocation
-            // should surface as "Cloned from cached relation" when the
-            // service decides Skip, matching the dbt-core plugin's
-            // `_dev_cloned_nodes` mapping.
+            // A node that completed a dev clone earlier in this invocation should
+            // surface as "Cloned from cached relation" when the service decides
+            // Skip, matching the dbt-core plugin's `_dev_cloned_nodes` mapping.
             let is_dev_cloned = ctx
                 .inner
                 .run_cache_ctx
                 .run_cache_dev_cloned_nodes
                 .contains_key(node.unique_id().as_str());
             relabel_skip_for_dev_cloned_node(is_dev_cloned, decision)
+        }
+        Ok(Some(RunCacheSubmitResult::ExecuteUntracked(record))) => {
+            // A speculative `ReadyToExecuteUntracked` verdict: execute now and
+            // record the outcome after the fact. Never a Skip, so no dev-cloned
+            // relabel applies.
+            RunCacheServiceDecision::execute_with_record(record)
         }
         Ok(None) => {
             let unique_id = node.unique_id();
@@ -1283,6 +1327,29 @@ struct RunCacheSubmitOutcome {
     freshness_tolerance_seconds: i64,
 }
 
+/// Outcome of a per-node submit helper.
+///
+/// Most submits produce a service `response` fed to `record_service_decision`.
+/// The speculative `ReadyToExecuteUntracked` verdict has no counterpart there:
+/// the node executes now and its outcome is recorded after the fact, so the
+/// helper hands back the pending record directly. It is never a Skip/Clone, so
+/// it bypasses both the decision translation and the dev-cloned relabel.
+enum RunCacheSubmitResult {
+    // Boxed: `RunCacheSubmitOutcome` carries a full `SubmitSqlResponse`, far
+    // larger than the `ExecuteUntracked` variant, so box it to keep the enum small.
+    Outcome(Box<RunCacheSubmitOutcome>),
+    ExecuteUntracked(RunCachePendingExecutionRecord),
+}
+
+impl RunCacheSubmitResult {
+    fn outcome(response: SubmitSqlResponse, freshness_tolerance_seconds: i64) -> Self {
+        Self::Outcome(Box::new(RunCacheSubmitOutcome {
+            response,
+            freshness_tolerance_seconds,
+        }))
+    }
+}
+
 impl RunCacheExecutionConfirmation {
     async fn into_confirm_execution_request(
         self,
@@ -1325,12 +1392,21 @@ impl RunCachePendingExecutionRecord {
     fn sql(request: SubmitEnrichedSqlRequest) -> Self {
         Self {
             input: RunCachePendingExecutionInput::Sql(Box::new(request)),
+            speculative: false,
+        }
+    }
+
+    fn sql_speculative(request: SubmitEnrichedSqlRequest) -> Self {
+        Self {
+            input: RunCachePendingExecutionInput::Sql(Box::new(request)),
+            speculative: true,
         }
     }
 
     fn values(request: SubmitValuesRequest) -> Self {
         Self {
             input: RunCachePendingExecutionInput::Values(Box::new(request)),
+            speculative: false,
         }
     }
 
@@ -1340,6 +1416,21 @@ impl RunCachePendingExecutionRecord {
         node: &dyn InternalDbtNodeAttributes,
         execution_runtime_ms: Option<i64>,
     ) -> FsResult<Option<RecordExecutionsRequest>> {
+        let speculative = self.speculative;
+
+        // A speculative record was built from a partial dependency snapshot
+        // while the prefetch was still in flight. Finalize the dependency epochs
+        // against the now-warm cache before recording, so the persisted record
+        // reflects the real upstream state rather than the speculative one.
+        let input = match self.input {
+            RunCachePendingExecutionInput::Sql(request) if speculative => {
+                RunCachePendingExecutionInput::Sql(Box::new(
+                    finalize_speculative_sql_request(ctx, node, *request).await,
+                ))
+            }
+            other => other,
+        };
+
         let last_modified_epoch = refresh_final_last_modified_epoch_for_node(ctx, node).await?;
         let Some(last_modified_epoch) = last_modified_epoch else {
             let unique_id = node.unique_id();
@@ -1356,9 +1447,9 @@ impl RunCachePendingExecutionRecord {
             table_type: table_type_for_node(ctx, node).await?,
             execution_runtime_ms,
         };
-        let record = match self.input {
+        let record = match input {
             RunCachePendingExecutionInput::Sql(request) => {
-                sql_execution_record_from_submit_request(*request, outcome)
+                sql_execution_record_from_submit_request(*request, outcome, speculative)
             }
             RunCachePendingExecutionInput::Values(request) => {
                 values_execution_record_from_submit_request(*request, outcome)
@@ -1369,6 +1460,121 @@ impl RunCachePendingExecutionRecord {
             records: vec![record],
         }))
     }
+}
+
+/// Finalize the dependency last-modified epochs on a speculative SQL request.
+///
+/// A speculative request is built from cache reads only while the global
+/// prefetch is still running, so some dependency epochs may be unset. Before the
+/// outcome is recorded, this refreshes those epochs to their real values so the
+/// persisted record reflects the true upstream state rather than the partial
+/// speculative snapshot:
+/// 1. await the global prefetch so the cache is fully warm;
+/// 2. reconstruct a relation for each recorded table name and re-fetch any
+///    epochs still missing from the cache, using the node's source-freshness
+///    overrides so sources keep their custom freshness strategy;
+/// 3. re-read the cache per table name, using the resolved entry whenever the
+///    relation is present — including an explicit resolved-unknown, which clears
+///    the epoch to unset — and falling back to the existing speculative epoch
+///    only on a genuine cache miss.
+///
+/// Table names are canonical `semantic_fqn` strings, the same key the metadata
+/// cache and the miss-refresh planner use.
+async fn finalize_speculative_sql_request(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    mut request: SubmitEnrichedSqlRequest,
+) -> SubmitEnrichedSqlRequest {
+    await_prefetch(ctx).await;
+    if request.tables.is_empty() {
+        return request;
+    }
+
+    // Reconstruct a relation per recorded table name so the miss-refresh can
+    // issue real warehouse lookups for anything the global prefetch didn't
+    // resolve (e.g. parser-discovered raw references outside the DAG).
+    let mut relations: BTreeMap<String, Arc<dyn BaseRelation>> = BTreeMap::new();
+    for table in &request.tables {
+        if let Ok(relation) = relation_from_rendered_name(ctx, node, &table.name) {
+            relations.insert(table.name.clone(), relation);
+        }
+    }
+
+    let overrides = collect_source_freshness_overrides(ctx, node);
+    prefetch_last_modified_epochs(ctx, &relations, &overrides).await;
+
+    for table in &mut request.tables {
+        // `last_modified_epoch` is `Some(resolved)` when the cache has an entry
+        // for the relation (`resolved` may be `None` — a resolved-unknown that
+        // must clear the speculative epoch to unset) and `None` on a genuine
+        // miss. Only a genuine miss keeps the best-effort speculative value.
+        if let Some(resolved) = ctx
+            .inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .last_modified_epoch(&table.name)
+        {
+            table.last_modified_epoch = resolved;
+        }
+    }
+    request
+}
+
+/// Collect source-freshness overrides for a node's runtime dependencies.
+///
+/// Mirrors the override collection in `collect_table_modified_infos`: sources
+/// declaring `loaded_at_query` or `loaded_at_field` get a `FreshnessOverride`
+/// keyed by the relation's `semantic_fqn` — the key `freshness_with_overrides`
+/// and the miss-refresh planner expect. Query takes precedence over field
+/// (matching the dbt-core plugin); empty strings from the deserializer are
+/// treated as "not set".
+fn collect_source_freshness_overrides(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+) -> BTreeMap<String, FreshnessOverride> {
+    let mut overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
+    let Some(deps) = ctx.inner.runtime_deps.get(node.unique_id().as_str()) else {
+        return overrides;
+    };
+    for dep_id in deps {
+        let Some(dep_node) = ctx.nodes().get_node(dep_id) else {
+            continue;
+        };
+        let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>() else {
+            continue;
+        };
+        let Ok((name, _)) = relation_for_node(ctx, dep_node) else {
+            continue;
+        };
+        if let Some(kind) = source_freshness_override(source) {
+            overrides.insert(name, kind);
+        }
+    }
+    overrides
+}
+
+/// The source-freshness override a source declares via `loaded_at_query` /
+/// `loaded_at_field`, if any. Query takes precedence over field (matching the
+/// dbt-core plugin); empty strings from the deserializer are treated as unset.
+fn source_freshness_override(source: &DbtSource) -> Option<FreshnessOverride> {
+    let trimmed_nonempty = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    source
+        .__source_attr__
+        .loaded_at_query
+        .as_deref()
+        .and_then(trimmed_nonempty)
+        .map(FreshnessOverride::Query)
+        .or_else(|| {
+            source
+                .__source_attr__
+                .loaded_at_field
+                .as_deref()
+                .and_then(trimmed_nonempty)
+                .map(FreshnessOverride::Field)
+        })
 }
 
 /// Guard against cloning from a source that was modified out-of-band since the
@@ -1486,7 +1692,7 @@ async fn submit_model(
     task_result: &TaskResult,
     client: &dbt_state::service_client::SharedRunCacheServiceClient,
     microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
-) -> FsResult<Option<RunCacheSubmitOutcome>> {
+) -> FsResult<Option<RunCacheSubmitResult>> {
     let full_refresh = effective_full_refresh(
         ctx.inner.arg.full_refresh,
         model.deprecated_config.full_refresh,
@@ -1506,21 +1712,184 @@ async fn submit_model(
         return Ok(None);
     }
 
-    let mut context = build_sql_context(
+    submit_sql_with_speculation(
         ctx,
         model,
         task_result.sql_instruction.sql.clone(),
         model.materialized() == DbtMaterialization::View,
         full_refresh,
+        microbatch_window,
+        client,
+        |context| build_model_sql_request(model, context),
     )
-    .await?;
-    if !context.metadata_complete {
-        record_submit_skipped(model, "missing metadata");
-        return Ok(None);
+    .await
+}
+
+/// Submit a SQL node, using the speculative fast-path while the global
+/// dependency prefetch is still in flight.
+///
+/// When the prefetch is already complete this awaits it (a no-op) and submits
+/// regularly. Otherwise it builds a speculative request from cache reads only
+/// and branches on the verdict:
+/// - `SkipExecution` / `ReadyToClone` — returned as a synthetic regular
+///   response (identical inner types) so the caller's `record_service_decision`
+///   handles it unchanged. Sound because a missing dependency epoch can only
+///   make a candidate look staler, never fresher.
+/// - `ReadyToExecuteUntracked` — the node must execute now; a speculative
+///   pending record is returned so the outcome is recorded after the fact with
+///   finalized epochs. The prefetch is intentionally not awaited here.
+/// - `Undecided` / RPC error / empty — await the prefetch and resubmit a
+///   regular (non-speculative) request.
+#[allow(clippy::too_many_arguments)]
+async fn submit_sql_with_speculation(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    sql: String,
+    is_view: bool,
+    full_refresh: bool,
+    microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    client: &dbt_state::service_client::SharedRunCacheServiceClient,
+    build_request: impl Fn(SqlRunCacheRequestContext) -> FsResult<SubmitEnrichedSqlRequest>,
+) -> FsResult<Option<RunCacheSubmitResult>> {
+    if is_prefetch_ready(ctx) {
+        return build_and_submit_non_speculative(
+            ctx,
+            node,
+            sql,
+            is_view,
+            full_refresh,
+            microbatch_window,
+            client,
+            &build_request,
+        )
+        .await;
     }
-    context.request.microbatch_window = microbatch_window;
-    let freshness_tolerance_seconds = context.request.freshness_tolerance_seconds;
-    let request = build_model_sql_request(model, context.request)?;
+
+    let Some((request, freshness_tolerance_seconds)) = build_sql_request(
+        ctx,
+        node,
+        &sql,
+        is_view,
+        full_refresh,
+        microbatch_window,
+        true,
+        &build_request,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+
+    let unique_id = node.unique_id();
+    let verdict = client
+        .submit_enriched_sql_speculative(request.clone())
+        .await;
+    match verdict {
+        Ok(response) => match response.response {
+            Some(submit_sql_speculative_response::Response::SkipExecution(skip)) => {
+                emit_trace_log_message(|| {
+                    format!("dbt State speculative decision: skip execution for node {unique_id}")
+                });
+                Ok(Some(RunCacheSubmitResult::outcome(
+                    SubmitSqlResponse {
+                        response: Some(submit_sql_response::Response::SkipExecution(skip)),
+                    },
+                    freshness_tolerance_seconds,
+                )))
+            }
+            Some(submit_sql_speculative_response::Response::ReadyToClone(clone)) => {
+                emit_trace_log_message(|| {
+                    format!("dbt State speculative decision: ready to clone for node {unique_id}")
+                });
+                Ok(Some(RunCacheSubmitResult::outcome(
+                    SubmitSqlResponse {
+                        response: Some(submit_sql_response::Response::ReadyToClone(clone)),
+                    },
+                    freshness_tolerance_seconds,
+                )))
+            }
+            Some(submit_sql_speculative_response::Response::ReadyToExecuteUntracked(_)) => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State speculative decision: ready to execute untracked for node {unique_id}; recording after execution"
+                    )
+                });
+                Ok(Some(RunCacheSubmitResult::ExecuteUntracked(
+                    RunCachePendingExecutionRecord::sql_speculative(request),
+                )))
+            }
+            Some(submit_sql_speculative_response::Response::Undecided(_)) | None => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State speculative decision: undecided for node {unique_id}; awaiting prefetch and resubmitting"
+                    )
+                });
+                await_prefetch(ctx).await;
+                build_and_submit_non_speculative(
+                    ctx,
+                    node,
+                    sql,
+                    is_view,
+                    full_refresh,
+                    microbatch_window,
+                    client,
+                    &build_request,
+                )
+                .await
+            }
+        },
+        Err(err) => {
+            emit_trace_log_message(|| {
+                format!(
+                    "dbt State speculative submit failed for node {unique_id}: {err}; awaiting prefetch and resubmitting"
+                )
+            });
+            await_prefetch(ctx).await;
+            build_and_submit_non_speculative(
+                ctx,
+                node,
+                sql,
+                is_view,
+                full_refresh,
+                microbatch_window,
+                client,
+                &build_request,
+            )
+            .await
+        }
+    }
+}
+
+/// Build and issue a regular (non-speculative) SQL submit, awaiting the global
+/// prefetch first so freshness resolves from the warm cache. Idempotent with
+/// respect to the prefetch await, so it is safe to call after the speculative
+/// path already awaited it.
+#[allow(clippy::too_many_arguments)]
+async fn build_and_submit_non_speculative(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    sql: String,
+    is_view: bool,
+    full_refresh: bool,
+    microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    client: &dbt_state::service_client::SharedRunCacheServiceClient,
+    build_request: &impl Fn(SqlRunCacheRequestContext) -> FsResult<SubmitEnrichedSqlRequest>,
+) -> FsResult<Option<RunCacheSubmitResult>> {
+    await_prefetch(ctx).await;
+    let Some((request, freshness_tolerance_seconds)) = build_sql_request(
+        ctx,
+        node,
+        &sql,
+        is_view,
+        full_refresh,
+        microbatch_window,
+        false,
+        build_request,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
 
     let response = client.submit_enriched_sql(request).await.map_err(|e| {
         fs_err!(
@@ -1529,10 +1898,42 @@ async fn submit_model(
             e
         )
     })?;
-    Ok(Some(RunCacheSubmitOutcome {
+    Ok(Some(RunCacheSubmitResult::outcome(
         response,
         freshness_tolerance_seconds,
-    }))
+    )))
+}
+
+/// Build a SQL submit request, returning `None` when required metadata is
+/// missing (the submit is then skipped and the node executes normally).
+#[allow(clippy::too_many_arguments)]
+async fn build_sql_request(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    sql: &str,
+    is_view: bool,
+    full_refresh: bool,
+    microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    speculative: bool,
+    build_request: &impl Fn(SqlRunCacheRequestContext) -> FsResult<SubmitEnrichedSqlRequest>,
+) -> FsResult<Option<(SubmitEnrichedSqlRequest, i64)>> {
+    let mut context = build_sql_context(
+        ctx,
+        node,
+        sql.to_string(),
+        is_view,
+        full_refresh,
+        speculative,
+    )
+    .await?;
+    if !context.metadata_complete {
+        record_submit_skipped(node, "missing metadata");
+        return Ok(None);
+    }
+    context.request.microbatch_window = microbatch_window;
+    let freshness_tolerance_seconds = context.request.freshness_tolerance_seconds;
+    let request = build_request(context.request)?;
+    Ok(Some((request, freshness_tolerance_seconds)))
 }
 
 /// Builds the dbt State record input for write-only mode without contacting the
@@ -1548,6 +1949,12 @@ async fn prepare_write_only_execution_record(
     task_result: &TaskResult,
     microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
 ) -> FsResult<Option<RunCachePendingExecutionRecord>> {
+    // Write-only makes no speculative decision: it only records executions and
+    // needs fully resolved dependency freshness. Block on the background prefetch
+    // so the record is built from the warm cache rather than racing it with
+    // redundant per-node freshness queries.
+    await_prefetch(ctx).await;
+
     if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
         if is_no_op_model_materialization(model.materialized()) {
             record_submit_skipped(model, "no-op model materialization");
@@ -1573,6 +1980,7 @@ async fn prepare_write_only_execution_record(
             task_result.sql_instruction.sql.clone(),
             model.materialized() == DbtMaterialization::View,
             full_refresh,
+            false,
         )
         .await?;
         if !context.metadata_complete {
@@ -1594,6 +2002,7 @@ async fn prepare_write_only_execution_record(
                 ctx.inner.arg.full_refresh,
                 snapshot.deprecated_config.full_refresh,
             ),
+            false,
         )
         .await?;
         if !context.metadata_complete {
@@ -1628,43 +2037,29 @@ async fn submit_snapshot(
     snapshot: &DbtSnapshot,
     task_result: &TaskResult,
     client: &dbt_state::service_client::SharedRunCacheServiceClient,
-) -> FsResult<Option<RunCacheSubmitOutcome>> {
-    let context = build_sql_context(
+) -> FsResult<Option<RunCacheSubmitResult>> {
+    let full_refresh = effective_full_refresh(
+        ctx.inner.arg.full_refresh,
+        snapshot.deprecated_config.full_refresh,
+    );
+    submit_sql_with_speculation(
         ctx,
         snapshot,
         task_result.sql_instruction.sql.clone(),
         false,
-        effective_full_refresh(
-            ctx.inner.arg.full_refresh,
-            snapshot.deprecated_config.full_refresh,
-        ),
+        full_refresh,
+        None,
+        client,
+        |context| build_snapshot_sql_request(snapshot, context),
     )
-    .await?;
-    if !context.metadata_complete {
-        record_submit_skipped(snapshot, "missing metadata");
-        return Ok(None);
-    }
-    let freshness_tolerance_seconds = context.request.freshness_tolerance_seconds;
-    let request = build_snapshot_sql_request(snapshot, context.request)?;
-
-    let response = client.submit_enriched_sql(request).await.map_err(|e| {
-        fs_err!(
-            ErrorCode::Generic,
-            "dbt State service SubmitEnrichedSQL failed: {}",
-            e
-        )
-    })?;
-    Ok(Some(RunCacheSubmitOutcome {
-        response,
-        freshness_tolerance_seconds,
-    }))
+    .await
 }
 
 async fn submit_seed(
     ctx: &TaskRunnerCtx,
     seed: &DbtSeed,
     client: &dbt_state::service_client::SharedRunCacheServiceClient,
-) -> FsResult<Option<RunCacheSubmitOutcome>> {
+) -> FsResult<Option<RunCacheSubmitResult>> {
     if effective_full_refresh(
         ctx.inner.arg.full_refresh,
         seed.deprecated_config.full_refresh,
@@ -1672,6 +2067,10 @@ async fn submit_seed(
         record_submit_skipped(seed, "full refresh");
         return Ok(None);
     }
+
+    // Seeds never speculate; make sure the target's freshness has been resolved
+    // by the background prefetch before reading it from the cache.
+    await_prefetch(ctx).await;
 
     // Mirrors dbt-core's `_build_submit_values_request`: always submit, even
     // when the target table doesn't exist yet. The service treats a None
@@ -1705,10 +2104,7 @@ async fn submit_seed(
             e
         )
     })?;
-    Ok(Some(RunCacheSubmitOutcome {
-        response,
-        freshness_tolerance_seconds: 0,
-    }))
+    Ok(Some(RunCacheSubmitResult::outcome(response, 0)))
 }
 
 /// Mirrors dbt-core's `_DataTestAdapterProxy._on_data_test_query`: submit a
@@ -1722,33 +2118,18 @@ async fn submit_test(
     test: &DbtTest,
     task_result: &TaskResult,
     client: &dbt_state::service_client::SharedRunCacheServiceClient,
-) -> FsResult<Option<RunCacheSubmitOutcome>> {
-    let context = build_sql_context(
+) -> FsResult<Option<RunCacheSubmitResult>> {
+    submit_sql_with_speculation(
         ctx,
         test,
         task_result.sql_instruction.sql.clone(),
         false, // tests aren't views
         false, // full_refresh is meaningless for tests
+        None,
+        client,
+        |context| build_test_sql_request(test, context),
     )
-    .await?;
-    if !context.metadata_complete {
-        record_submit_skipped(test, "missing metadata");
-        return Ok(None);
-    }
-    let freshness_tolerance_seconds = context.request.freshness_tolerance_seconds;
-    let request = build_test_sql_request(test, context.request)?;
-
-    let response = client.submit_enriched_sql(request).await.map_err(|e| {
-        fs_err!(
-            ErrorCode::Generic,
-            "dbt State service SubmitEnrichedSQL failed: {}",
-            e
-        )
-    })?;
-    Ok(Some(RunCacheSubmitOutcome {
-        response,
-        freshness_tolerance_seconds,
-    }))
+    .await
 }
 
 struct BuiltSqlRunCacheContext {
@@ -1762,6 +2143,7 @@ async fn build_sql_context(
     sql: String,
     is_view: bool,
     full_refresh: bool,
+    speculative: bool,
 ) -> FsResult<BuiltSqlRunCacheContext> {
     let Some(config) = ctx.inner.run_cache_ctx.run_cache_service_config.as_ref() else {
         return Err(fs_err!(
@@ -1777,6 +2159,7 @@ async fn build_sql_context(
         is_view,
         &query_dependencies.seen_tables,
         &query_dependencies.parser_seen_relations,
+        speculative,
     )
     .await?;
     let metadata_complete = tables.metadata_complete && query_dependencies.metadata_complete;
@@ -2071,6 +2454,7 @@ async fn collect_table_modified_infos(
     target_only: bool,
     leaf_tables: &BTreeSet<String>,
     parser_seen_relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
+    speculative: bool,
 ) -> FsResult<CollectedTableModifiedInfos> {
     let mut relations = BTreeMap::new();
     let mut metadata_complete = true;
@@ -2096,30 +2480,10 @@ async fn collect_table_modified_infos(
                     // that's what MetadataAdapter::freshness_with_overrides expects.
                     // Empty strings come from the deserializer for absent values, so
                     // treat empty as "not set" (matches the dbt-core plugin guard).
-                    if let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>() {
-                        // Query takes precedence over field (matches dbt-core plugin),
-                        // so only look at field when no query is set.
-                        let trimmed_nonempty = |s: &str| {
-                            let t = s.trim();
-                            (!t.is_empty()).then(|| t.to_string())
-                        };
-                        let override_kind = source
-                            .__source_attr__
-                            .loaded_at_query
-                            .as_deref()
-                            .and_then(trimmed_nonempty)
-                            .map(FreshnessOverride::Query)
-                            .or_else(|| {
-                                source
-                                    .__source_attr__
-                                    .loaded_at_field
-                                    .as_deref()
-                                    .and_then(trimmed_nonempty)
-                                    .map(FreshnessOverride::Field)
-                            });
-                        if let Some(kind) = override_kind {
-                            freshness_overrides.insert(relation.semantic_fqn(), kind);
-                        }
+                    if let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>()
+                        && let Some(kind) = source_freshness_override(source)
+                    {
+                        freshness_overrides.insert(relation.semantic_fqn(), kind);
                     }
                     relations.insert(name, relation);
                 } else {
@@ -2155,7 +2519,16 @@ async fn collect_table_modified_infos(
         })
         .map(|(fqn, rel)| (fqn.clone(), Arc::clone(rel)))
         .collect();
-    prefetch_last_modified_epochs(ctx, &leaf_table_relations, &freshness_overrides).await;
+    // Speculative builds run while the global prefetch is still in flight, so
+    // they must not issue their own blocking per-node warehouse queries. They
+    // read whatever the prefetch has already resolved and leave cache misses
+    // unset; the service treats a missing epoch as "now", keeping any Skip/Clone
+    // verdict sound (a missing dep can only look staler, never fresher). Missing
+    // epochs must not mark the metadata incomplete here — a speculative submit
+    // tolerates unresolved dependencies.
+    if !speculative {
+        prefetch_last_modified_epochs(ctx, &leaf_table_relations, &freshness_overrides).await;
+    }
 
     let mut table_infos = Vec::new();
     for (name, relation) in leaf_table_relations {
@@ -3091,7 +3464,8 @@ mod tests {
     use dbt_state::metadata_cache::RunCacheMetadataCache;
     use dbt_state::proto::query_cache::{
         ConfirmExecutionResponse, ReadyToCloneResponse, ReadyToExecuteResponse,
-        RecordExecutionsRequest, RecordExecutionsResponse,
+        ReadyToExecuteUntrackedResponse, RecordExecutionsRequest, RecordExecutionsResponse,
+        SubmitSqlSpeculativeResponse, UndecidedResponse, execution_record,
     };
     use dbt_state::service_client::{
         ClientVersionStatus, RunCacheServiceClient, RunCacheServiceError,
@@ -3908,6 +4282,7 @@ mod tests {
             false,
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
+            false,
         )
         .await
         .unwrap();
@@ -3921,6 +4296,449 @@ mod tests {
             name: upstream_fqn,
             last_modified_epoch: None,
         }));
+    }
+
+    // ── speculative submit tests ─────────────────────────────────────────────
+
+    /// A model with a single upstream dependency whose last-modified epoch is
+    /// deliberately left unresolved (a genuine cache miss). The target's epoch
+    /// is pre-resolved so only the upstream exercises the miss path.
+    fn ctx_model_with_unresolved_upstream() -> (TaskRunnerCtx, Arc<DbtModel>, String) {
+        let mut model = make_model(
+            "model.test.fact_orders",
+            "db",
+            "analytics",
+            "fact_orders",
+            DbtMaterialization::Table,
+        );
+        Arc::make_mut(&mut model)
+            .__base_attr__
+            .depends_on
+            .nodes
+            .push("source.test.raw.orders".to_string());
+        let source = make_source("source.test.raw.orders", "db", "raw", "orders");
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes_from(vec![model.clone()], vec![source]),
+            ["model.test.fact_orders".to_string()].into_iter().collect(),
+        );
+        let target_fqn = fqn_of("db", "analytics", "fact_orders");
+        let upstream_fqn = fqn_of("db", "raw", "orders");
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&target_fqn, Some(123));
+        (ctx, model, upstream_fqn)
+    }
+
+    #[tokio::test]
+    async fn speculative_build_leaves_unresolved_upstream_unrefreshed() {
+        let (ctx, model, upstream_fqn) = ctx_model_with_unresolved_upstream();
+
+        let tables = collect_table_modified_infos(
+            &ctx,
+            model.as_ref(),
+            false,
+            &BTreeSet::from([upstream_fqn.clone()]),
+            &BTreeMap::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert!(tables.metadata_complete);
+        assert!(tables.tables.contains(&TableModifiedInfo {
+            name: upstream_fqn.clone(),
+            last_modified_epoch: None,
+        }));
+        // A speculative build issues no blocking per-node freshness query, so an
+        // unresolved upstream stays a genuine cache miss (never inserted).
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&upstream_fqn),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn non_speculative_build_refreshes_unresolved_upstream() {
+        let (ctx, model, upstream_fqn) = ctx_model_with_unresolved_upstream();
+
+        let tables = collect_table_modified_infos(
+            &ctx,
+            model.as_ref(),
+            false,
+            &BTreeSet::from([upstream_fqn.clone()]),
+            &BTreeMap::new(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(tables.metadata_complete);
+        assert!(tables.tables.contains(&TableModifiedInfo {
+            name: upstream_fqn.clone(),
+            last_modified_epoch: None,
+        }));
+        // A non-speculative build resolves the miss with a blocking freshness
+        // lookup; with no adapter wired in the test env it records an explicit
+        // unresolved entry, distinguishing it from the speculative peek above.
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&upstream_fqn),
+            Some(None),
+        );
+    }
+
+    fn speculative_test_model() -> Arc<DbtModel> {
+        make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        )
+    }
+
+    #[tokio::test]
+    async fn speculative_skip_verdict_returns_skip_without_regular_submit() {
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_skip_response(),
+        ));
+        let ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            decision,
+            RunCacheServiceDecision::Skip {
+                status: NodeStatus::ReusedNoChanges(_),
+                ..
+            }
+        ));
+        assert_eq!(client.speculative_submitted_count(), 1);
+        assert_eq!(
+            client.submitted_count(),
+            0,
+            "a speculative skip verdict must not fall through to a regular submit"
+        );
+    }
+
+    #[tokio::test]
+    async fn speculative_clone_verdict_returns_clone_without_regular_submit() {
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_clone_response(),
+        ));
+        let ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        let RunCacheServiceDecision::Clone { clone } = decision else {
+            panic!("expected clone decision from speculative verdict");
+        };
+        assert_eq!(clone.request_id, "clone-request");
+        assert_eq!(client.speculative_submitted_count(), 1);
+        assert_eq!(
+            client.submitted_count(),
+            0,
+            "a speculative clone verdict must not fall through to a regular submit"
+        );
+    }
+
+    #[tokio::test]
+    async fn speculative_untracked_verdict_executes_and_records_speculatively() {
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_untracked_response(),
+        ));
+        let ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        match decision {
+            RunCacheServiceDecision::Execute {
+                after_success: RunCacheAfterSuccess::Record(record),
+                sao_guard: None,
+            } => {
+                assert!(
+                    record.speculative,
+                    "an untracked-execute verdict must record after the fact from the speculative request"
+                );
+            }
+            other => panic!("expected execute-with-record decision, got {other:?}"),
+        }
+        assert_eq!(client.speculative_submitted_count(), 1);
+        assert_eq!(
+            client.submitted_count(),
+            0,
+            "the untracked-execute path executes now and does not issue a regular submit"
+        );
+        // The untracked-execute path intentionally does not await the prefetch.
+        assert!(
+            !ctx.inner.run_cache_ctx.prefetch.is_done(),
+            "the untracked-execute path must not block on the prefetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn speculative_undecided_verdict_falls_back_to_regular_submit() {
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_undecided_response(),
+        ));
+        let ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            decision,
+            RunCacheServiceDecision::Execute {
+                after_success: RunCacheAfterSuccess::Confirm(_),
+                sao_guard: None,
+            }
+        ));
+        assert_eq!(client.speculative_submitted_count(), 1);
+        assert_eq!(
+            client.submitted_count(),
+            1,
+            "an undecided verdict must fall back to a regular submit"
+        );
+        assert!(
+            ctx.inner.run_cache_ctx.prefetch.is_done(),
+            "the fallback path awaits the prefetch before resubmitting"
+        );
+    }
+
+    #[tokio::test]
+    async fn speculative_rpc_error_falls_back_to_regular_submit() {
+        // A default client answers the speculative RPC with `Disabled`.
+        let client = Arc::new(RecordingRunCacheClient::default());
+        let ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            decision,
+            RunCacheServiceDecision::Execute {
+                after_success: RunCacheAfterSuccess::Confirm(_),
+                sao_guard: None,
+            }
+        ));
+        assert_eq!(client.speculative_submitted_count(), 1);
+        assert_eq!(
+            client.submitted_count(),
+            1,
+            "a speculative RPC error must gracefully fall back to a regular submit"
+        );
+    }
+
+    #[tokio::test]
+    async fn prefetch_ready_skips_speculation_and_uses_regular_submit() {
+        // Canned speculative skip verdict that must never be consulted because
+        // the prefetch is already complete.
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_skip_response(),
+        ));
+        let ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        ctx.inner.run_cache_ctx.prefetch.mark_started();
+        ctx.inner.run_cache_ctx.prefetch.mark_done();
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        assert!(matches!(
+            decision,
+            RunCacheServiceDecision::Execute {
+                after_success: RunCacheAfterSuccess::Confirm(_),
+                sao_guard: None,
+            }
+        ));
+        assert_eq!(
+            client.speculative_submitted_count(),
+            0,
+            "a ready prefetch must skip the speculative RPC entirely"
+        );
+        assert_eq!(client.submitted_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn write_only_mode_skips_speculation_and_produces_record() {
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_skip_response(),
+        ));
+        let ctx = test_task_runner_ctx_with_mode(
+            Some(client.clone() as dbt_state::service_client::SharedRunCacheServiceClient),
+            RunCacheMode::WriteOnly,
+        );
+        let model = speculative_test_model();
+
+        let decision = run_cache_service_before_execution(
+            &ctx,
+            model.as_ref(),
+            &task_result_with_sql("select 'alice' as first_name"),
+            None,
+        )
+        .await;
+
+        match decision {
+            RunCacheServiceDecision::Execute {
+                after_success: RunCacheAfterSuccess::Record(record),
+                sao_guard: None,
+            } => {
+                assert!(
+                    !record.speculative,
+                    "a write-only record is built from a full snapshot, not a speculative one"
+                );
+            }
+            other => panic!("expected execute-with-record decision, got {other:?}"),
+        }
+        assert_eq!(
+            client.speculative_submitted_count(),
+            0,
+            "write-only mode never asks the service for a decision"
+        );
+        assert_eq!(client.submitted_count(), 0);
+    }
+
+    #[test]
+    fn is_prefetch_ready_requires_started_and_done() {
+        let ctx = test_task_runner_ctx(None);
+        assert!(
+            !is_prefetch_ready(&ctx),
+            "not ready before the prefetch is started"
+        );
+        ctx.inner.run_cache_ctx.prefetch.mark_started();
+        assert!(
+            !is_prefetch_ready(&ctx),
+            "not ready while the prefetch is in flight"
+        );
+        ctx.inner.run_cache_ctx.prefetch.mark_done();
+        assert!(
+            is_prefetch_ready(&ctx),
+            "ready once the prefetch is both started and done"
+        );
+    }
+
+    #[tokio::test]
+    async fn finalize_speculative_request_fills_real_epochs_and_marks_flag() {
+        let ctx = test_task_runner_ctx(None);
+        let model = speculative_test_model();
+
+        // One dependency the warm cache has resolved to a real epoch, and one
+        // the post-prefetch refresh resolves as unknown (the test env has no
+        // adapter, so the miss refresh caches an explicit `Some(None)`).
+        let warm_fqn = fqn_of("db", "analytics", "warm_dep");
+        let cold_fqn = fqn_of("db", "raw", "cold_dep");
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&warm_fqn, Some(999));
+
+        // The speculative request carries partial epochs: a stale placeholder for
+        // the warm dep and a best-effort value for the cold dep.
+        let request = SubmitEnrichedSqlRequest {
+            tables: vec![
+                TableModifiedInfo {
+                    name: warm_fqn.clone(),
+                    last_modified_epoch: Some(111),
+                },
+                TableModifiedInfo {
+                    name: cold_fqn.clone(),
+                    last_modified_epoch: Some(222),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let finalized = finalize_speculative_sql_request(&ctx, model.as_ref(), request).await;
+
+        assert_eq!(
+            finalized.tables,
+            vec![
+                // Refreshed to the real epoch the warm cache now holds.
+                TableModifiedInfo {
+                    name: warm_fqn.clone(),
+                    last_modified_epoch: Some(999),
+                },
+                // The post-prefetch refresh resolved this as unknown, so the
+                // stale speculative value is cleared to unset rather than kept.
+                TableModifiedInfo {
+                    name: cold_fqn.clone(),
+                    last_modified_epoch: None,
+                },
+            ],
+        );
+
+        // The recorded execution built from a finalized speculative request must
+        // carry `from_speculative_submit = true`.
+        let outcome = ExecutionOutcomeInput {
+            last_modified_epoch: Some(123),
+            table_type: None,
+            execution_runtime_ms: None,
+        };
+        let record = sql_execution_record_from_submit_request(finalized, outcome, true);
+        let Some(execution_record::Input::EnrichedSql(sql)) = record.input else {
+            panic!("expected an enriched-SQL execution record");
+        };
+        assert!(sql.from_speculative_submit);
     }
 
     #[test]
@@ -4312,16 +5130,66 @@ mod tests {
         SubmitSqlResponse { response: None }
     }
 
+    fn speculative_skip_response() -> SubmitSqlSpeculativeResponse {
+        SubmitSqlSpeculativeResponse {
+            response: Some(submit_sql_speculative_response::Response::SkipExecution(
+                SkipExecutionResponse::default(),
+            )),
+        }
+    }
+
+    fn speculative_clone_response() -> SubmitSqlSpeculativeResponse {
+        SubmitSqlSpeculativeResponse {
+            response: Some(submit_sql_speculative_response::Response::ReadyToClone(
+                ReadyToCloneResponse {
+                    request_id: "clone-request".to_string(),
+                    clone_sqls: vec!["create table target clone source".to_string()],
+                    clone_source: "source".to_string(),
+                    clone_target: "target".to_string(),
+                    clone_required_last_modified_epoch: Some(123),
+                    clone_execution_results: Some(Struct::default()),
+                    execution_runtime_ms: Some(456),
+                    ..Default::default()
+                },
+            )),
+        }
+    }
+
+    fn speculative_untracked_response() -> SubmitSqlSpeculativeResponse {
+        SubmitSqlSpeculativeResponse {
+            response: Some(
+                submit_sql_speculative_response::Response::ReadyToExecuteUntracked(
+                    ReadyToExecuteUntrackedResponse {},
+                ),
+            ),
+        }
+    }
+
+    fn speculative_undecided_response() -> SubmitSqlSpeculativeResponse {
+        SubmitSqlSpeculativeResponse {
+            response: Some(submit_sql_speculative_response::Response::Undecided(
+                UndecidedResponse {},
+            )),
+        }
+    }
+
     struct RecordingRunCacheClient {
         submitted: Mutex<Vec<SubmitEnrichedSqlRequest>>,
+        speculative_submitted: Mutex<Vec<SubmitEnrichedSqlRequest>>,
         response: SubmitSqlResponse,
+        /// Canned speculative verdict. `None` makes the speculative RPC report
+        /// `Disabled` (the trait default), mirroring a server that does not
+        /// answer speculatively so the caller falls back to a regular submit.
+        speculative_response: Option<SubmitSqlSpeculativeResponse>,
     }
 
     impl Default for RecordingRunCacheClient {
         fn default() -> Self {
             Self {
                 submitted: Mutex::new(Vec::new()),
+                speculative_submitted: Mutex::new(Vec::new()),
                 response: ready_to_execute_response(),
+                speculative_response: None,
             }
         }
     }
@@ -4330,6 +5198,13 @@ mod tests {
         fn with_response(response: SubmitSqlResponse) -> Self {
             Self {
                 response,
+                ..Self::default()
+            }
+        }
+
+        fn with_speculative_response(speculative_response: SubmitSqlSpeculativeResponse) -> Self {
+            Self {
+                speculative_response: Some(speculative_response),
                 ..Self::default()
             }
         }
@@ -4351,6 +5226,14 @@ mod tests {
                 .map(|request| request.execution_type)
                 .collect()
         }
+
+        fn submitted_count(&self) -> usize {
+            self.submitted.lock().unwrap().len()
+        }
+
+        fn speculative_submitted_count(&self) -> usize {
+            self.speculative_submitted.lock().unwrap().len()
+        }
     }
 
     #[async_trait::async_trait]
@@ -4367,6 +5250,17 @@ mod tests {
         ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
             self.submitted.lock().unwrap().push(request);
             Ok(self.response.clone())
+        }
+
+        async fn submit_enriched_sql_speculative(
+            &self,
+            request: SubmitEnrichedSqlRequest,
+        ) -> Result<SubmitSqlSpeculativeResponse, RunCacheServiceError> {
+            self.speculative_submitted.lock().unwrap().push(request);
+            match &self.speculative_response {
+                Some(response) => Ok(response.clone()),
+                None => Err(RunCacheServiceError::Disabled),
+            }
         }
 
         async fn submit_values(
@@ -4669,6 +5563,7 @@ mod tests {
                 run_cache_service_client,
                 view_traverser: None,
                 heuristic_clock: std::sync::OnceLock::new(),
+                prefetch: Default::default(),
             },
         );
 

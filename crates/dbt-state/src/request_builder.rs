@@ -240,6 +240,7 @@ impl ExecutionOutcomeInput {
 pub fn sql_execution_record_from_submit_request(
     request: SubmitEnrichedSqlRequest,
     outcome: ExecutionOutcomeInput,
+    from_speculative_submit: bool,
 ) -> ExecutionRecord {
     ExecutionRecord {
         outcome: Some(outcome.into_proto()),
@@ -256,6 +257,7 @@ pub fn sql_execution_record_from_submit_request(
                 labels: request.labels,
                 default_schema: None, //todo: implement
                 dbt_node_state: None, //todo: implement
+                from_speculative_submit,
             },
         ))),
     }
@@ -644,6 +646,7 @@ mod tests {
                 table_type: Some("TABLE".to_string()),
                 execution_runtime_ms: Some(789),
             },
+            false,
         );
 
         assert_eq!(record.outcome.unwrap().last_modified_epoch, Some(456));
@@ -653,6 +656,7 @@ mod tests {
         assert_eq!(sql.target_table.as_deref(), Some("analytics.orders"));
         assert_eq!(sql.execution_type, ModelExecutionType::Merge as i32);
         assert_eq!(sql.labels.get("dbt_node_name").unwrap(), "orders");
+        assert!(!sql.from_speculative_submit);
     }
 
     #[test]

@@ -53,6 +53,80 @@ pub struct RunCacheCtx {
     /// When present, `confirm_run_cache_service_execution` uses it to stamp
     /// freshly-executed tables without an additional warehouse round-trip.
     pub heuristic_clock: std::sync::OnceLock<HeuristicClock>,
+    /// Tracks the background dependency last-modified prefetch so per-node
+    /// submits can observe its progress and await it on demand.
+    pub prefetch: RunCachePrefetchState,
+}
+
+/// Lifecycle handle for the background dependency last-modified prefetch.
+///
+/// The prefetch is started once at run start and runs concurrently with node
+/// execution. This handle is `Arc`-shared so the spawned prefetch task and the
+/// per-node submit paths observe the same started/done flags and can join the
+/// task to completion.
+#[derive(Clone, Default)]
+pub struct RunCachePrefetchState {
+    inner: Arc<RunCachePrefetchStateInner>,
+}
+
+#[derive(Default)]
+struct RunCachePrefetchStateInner {
+    /// Set once the prefetch has been kicked off (or determined to be a no-op).
+    started: std::sync::atomic::AtomicBool,
+    /// Set once the prefetch has finished (or there was nothing to fetch).
+    done: std::sync::atomic::AtomicBool,
+    /// Handle to the background prefetch task, taken and joined the first time
+    /// the prefetch is awaited. `None` when there was nothing to spawn or it
+    /// has already been joined.
+    handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl RunCachePrefetchState {
+    /// Whether the prefetch has been started.
+    pub fn is_started(&self) -> bool {
+        self.inner
+            .started
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the prefetch as started.
+    pub fn mark_started(&self) {
+        self.inner
+            .started
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether the prefetch has finished (or there was nothing to fetch).
+    pub fn is_done(&self) -> bool {
+        self.inner.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Mark the prefetch as finished.
+    pub fn mark_done(&self) {
+        self.inner
+            .done
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Store the handle to the background prefetch task.
+    pub async fn set_handle(&self, handle: tokio::task::JoinHandle<()>) {
+        *self.inner.handle.lock().await = Some(handle);
+    }
+
+    /// Await the background prefetch task to completion.
+    ///
+    /// The join handle is awaited while holding the internal lock so that
+    /// concurrent callers serialize and every caller observes completion before
+    /// returning (the handle itself can only be joined once). A no-op once the
+    /// handle has already been joined or was never set. Returns an error
+    /// description if the task did not complete cleanly.
+    pub async fn join(&self) -> Result<(), String> {
+        let mut guard = self.inner.handle.lock().await;
+        if let Some(handle) = guard.take() {
+            return handle.await.map_err(|err| err.to_string());
+        }
+        Ok(())
+    }
 }
 
 /// Information about a rendered node, used for unit test hash computation.

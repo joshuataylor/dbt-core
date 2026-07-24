@@ -134,6 +134,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     ))
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
+                prefetch: Default::default(),
             };
 
             Ok(TaskRunnerCtx {

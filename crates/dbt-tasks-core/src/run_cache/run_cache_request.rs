@@ -58,6 +58,7 @@ pub struct SqlRunCacheRequestContext {
     pub full_refresh: bool,
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
+    pub default_schema: String,
     /// How the service should aggregate per-dependency freshness checks for
     /// this request. Derived from the model's
     /// `freshness.build_after.updates_on` config (defaults to ANY).
@@ -312,6 +313,7 @@ fn build_sql_request_input(
         target_table: Some(target_table_for_node(context.adapter_type, node)?),
         dialect: context.dialect,
         default_catalog: node.database(),
+        default_schema: Some(context.default_schema),
         execution_type,
         sql: context.sql,
         tables: context.tables,
@@ -490,8 +492,8 @@ mod tests {
     use dbt_schemas::schemas::nodes::AdapterAttr;
     use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
     use dbt_schemas::schemas::{
-        CommonAttributes, DbtModelAttr, DbtSeedAttr, DbtSnapshotAttr, IntrospectionKind,
-        NodeBaseAttributes,
+        CommonAttributes, DbtModelAttr, DbtSeedAttr, DbtSnapshotAttr, DbtTestAttr,
+        IntrospectionKind, NodeBaseAttributes,
     };
     use dbt_state::proto::query_cache::ModelExecutionType;
     use dbt_state::request_builder::{execution_type_from_input, seed_values_hash};
@@ -585,6 +587,19 @@ mod tests {
         }
     }
 
+    fn make_test() -> DbtTest {
+        DbtTest {
+            __common_attr__: make_common(
+                "test.jaffle_shop.not_null_orders_id",
+                "not_null_orders_id",
+            ),
+            __base_attr__: make_base(DbtMaterialization::Test, "not_null_orders_id"),
+            __test_attr__: DbtTestAttr::default(),
+            __adapter_attr__: AdapterAttr::default(),
+            ..Default::default()
+        }
+    }
+
     fn sql_context(full_refresh: bool) -> SqlRunCacheRequestContext {
         SqlRunCacheRequestContext {
             adapter_type: AdapterType::Snowflake,
@@ -601,6 +616,7 @@ mod tests {
             full_refresh,
             clone_time_travel_limit: None,
             clone_table_properties: None,
+            default_schema: "marts".to_string(),
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             microbatch_window: None,
         }
@@ -800,6 +816,24 @@ mod tests {
 
         let request = build_snapshot_sql_request(&snapshot, sql_context(true)).unwrap();
         assert_eq!(request.execution_type, ModelExecutionType::Snapshot as i32);
+    }
+
+    #[test]
+    fn data_test_request_keeps_default_schema_without_target_table() {
+        let mut test = make_test();
+        test.__base_attr__.schema = "ANALYTICS".to_string();
+        let mut context = sql_context(false);
+        context.default_schema = test.schema();
+
+        let request = build_test_sql_request(&test, context).unwrap();
+
+        assert_eq!(request.target_table, None);
+        assert_eq!(request.default_catalog, "analytics");
+        assert_eq!(request.default_schema.as_deref(), Some("ANALYTICS"));
+        assert_eq!(
+            request.execution_type,
+            ModelExecutionType::DbtDataTest as i32
+        );
     }
 
     #[test]

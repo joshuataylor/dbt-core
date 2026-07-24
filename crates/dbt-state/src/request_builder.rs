@@ -149,6 +149,7 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub target_table: Option<String>,
     pub dialect: String,
     pub default_catalog: String,
+    pub default_schema: Option<String>,
     pub execution_type: ModelExecutionType,
     pub sql: String,
     pub tables: Vec<TableModifiedInfo>,
@@ -169,6 +170,7 @@ impl SubmitEnrichedSqlRequestInput {
             target_table: self.target_table,
             dialect: self.dialect,
             default_catalog: self.default_catalog,
+            default_schema: self.default_schema,
             execution_type: self.execution_type as i32,
             sql: self.sql,
             tables: self.tables,
@@ -183,7 +185,6 @@ impl SubmitEnrichedSqlRequestInput {
             stale_upstream_policy: self.stale_upstream_policy as i32,
             clone_chain_depth_limit: None,  //todo: implement
             dbt_node_state: None,           //todo: implement
-            default_schema: None,           //todo: implement
             compare_unrendered_code: false, //todo: implement
         }
     }
@@ -255,7 +256,7 @@ pub fn sql_execution_record_from_submit_request(
                 query_dependencies: request.query_dependencies,
                 semantic_extras: request.semantic_extras,
                 labels: request.labels,
-                default_schema: None, //todo: implement
+                default_schema: request.default_schema,
                 dbt_node_state: None, //todo: implement
                 from_speculative_submit,
             },
@@ -551,6 +552,7 @@ mod tests {
             target_table: Some("analytics.orders".to_string()),
             dialect: "snowflake".to_string(),
             default_catalog: "analytics".to_string(),
+            default_schema: Some("marts".to_string()),
             execution_type: ModelExecutionType::Merge,
             sql: "select * from raw.orders".to_string(),
             tables: vec![TableModifiedInfo {
@@ -581,6 +583,7 @@ mod tests {
         .into_proto();
 
         assert_eq!(request.target_table.as_deref(), Some("analytics.orders"));
+        assert_eq!(request.default_schema.as_deref(), Some("marts"));
         assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
         assert_eq!(request.labels, labels);
         assert_eq!(request.tables[0].last_modified_epoch, Some(123));
@@ -621,6 +624,7 @@ mod tests {
             target_table: Some("analytics.orders".to_string()),
             dialect: "snowflake".to_string(),
             default_catalog: "analytics".to_string(),
+            default_schema: Some("marts".to_string()),
             execution_type: ModelExecutionType::Merge,
             sql: "select * from raw.orders".to_string(),
             tables: vec![TableModifiedInfo {
@@ -654,6 +658,7 @@ mod tests {
             panic!("expected SQL execution input");
         };
         assert_eq!(sql.target_table.as_deref(), Some("analytics.orders"));
+        assert_eq!(sql.default_schema.as_deref(), Some("marts"));
         assert_eq!(sql.execution_type, ModelExecutionType::Merge as i32);
         assert_eq!(sql.labels.get("dbt_node_name").unwrap(), "orders");
         assert!(!sql.from_speculative_submit);

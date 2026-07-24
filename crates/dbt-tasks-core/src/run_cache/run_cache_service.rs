@@ -2192,6 +2192,7 @@ async fn build_sql_context(
             full_refresh,
             clone_time_travel_limit: config.clone_time_travel_limit_seconds,
             clone_table_properties: None,
+            default_schema: node.schema(),
             stale_upstream_policy,
             // Populated by the model submit paths for microbatch models; other
             // node types never carry a window.

@@ -3243,17 +3243,15 @@ impl AdapterImpl {
                     return Ok(none_value());
                 }
 
-                let table = relation.identifier_as_str()?;
-                let schema = relation.schema_as_str()?;
-
                 let add_columns: Vec<String> = columns
                     .iter()
                     .map(|col| format!("ADD COLUMN {} {}", col.name(), &col.dtype()))
                     .collect();
 
                 let sql = format!(
-                    "ALTER TABLE {schema}.{table}
+                    "ALTER TABLE {}
             {}",
+                    relation.render_self_as_str(),
                     add_columns.join("\n,")
                 );
                 let ctx =

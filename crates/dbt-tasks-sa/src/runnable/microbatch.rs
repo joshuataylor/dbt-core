@@ -63,7 +63,7 @@ pub fn extend_microbatch_node_context(
         .cloned()
         .collect::<BTreeSet<_>>();
 
-    let microbatch_ref = RefFunction::new_with_microbatch_context(
+    let microbatch_ref = Value::from_object(RefFunction::new_with_microbatch_context(
         node_resolver.clone(),
         model.__common_attr__.package_name.clone(),
         runtime_config.clone().into(),
@@ -72,20 +72,33 @@ pub fn extend_microbatch_node_context(
             .allow_dependencies(allowed_deps.iter()),
         microbatch_ctx.clone(),
         model.common().unique_id.clone(),
-    );
+    ));
 
     // Insert the microbatch-aware ref into context
-    jinja_context.insert("ref".to_string(), Value::from_object(microbatch_ref));
+    jinja_context.insert("ref".to_string(), microbatch_ref.clone());
 
     // Replace the source function with one that has microbatch context
-    let microbatch_source = SourceFunction::new_with_microbatch_context(
+    let microbatch_source = Value::from_object(SourceFunction::new_with_microbatch_context(
         node_resolver,
         model.__common_attr__.package_name.clone(),
         microbatch_ctx,
-    );
+    ));
 
     // Insert the microbatch-aware source into context
-    jinja_context.insert("source".to_string(), Value::from_object(microbatch_source));
+    jinja_context.insert("source".to_string(), microbatch_source.clone());
+
+    // User overrides call through builtins.ref and builtins.source, so keep
+    // those callables aligned with the batch-aware top-level context.
+    if let Some(mut builtins) = jinja_context.get("builtins").and_then(|builtins| {
+        builtins
+            .as_object()?
+            .downcast_ref::<BTreeMap<String, Value>>()
+            .cloned()
+    }) {
+        builtins.insert("ref".to_string(), microbatch_ref);
+        builtins.insert("source".to_string(), microbatch_source);
+        jinja_context.insert("builtins".to_string(), Value::from_object(builtins));
+    }
 
     // Add batch-specific context variables
     jinja_context.insert(

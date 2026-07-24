@@ -22,6 +22,7 @@ use dbt_jinja_utils::phases::compile::{
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::UpdatesOn;
+use dbt_schemas::schemas::nodes::TestMetadata;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{BatchResults, InternalDbtNode, InternalDbtNodeAttributes, Nodes};
 use dbt_schemas::state::{DbtProfile, DbtRuntimeConfig, NodeResolverTracker, ResolverState};
@@ -34,7 +35,7 @@ use minijinja::Value;
 use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
 use crate::task::Task;
-use crate::test_aggregation::{GenericTestRelationships, is_data_test_optimizable};
+use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::visitor::SkipReason;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -300,7 +301,7 @@ pub trait ExtendedCtx: Send + Sync + Any {
     fn should_statically_skip_data_test(
         &self,
         _model_unique_id: &str,
-        _test_name: &str,
+        _test_metadata: &TestMetadata,
         _column_name: &str,
     ) -> bool {
         false
@@ -339,7 +340,7 @@ impl TaskRunnerCtx {
         let Some(test) = self.nodes().tests.get(unique_id) else {
             return false;
         };
-        if !is_data_test_optimizable(test) {
+        if !is_data_test_static_analysis_eligible(test) {
             return false;
         }
 
@@ -355,7 +356,7 @@ impl TaskRunnerCtx {
 
         self.inner.extended_ctx.should_statically_skip_data_test(
             model_unique_id,
-            test_metadata.name.as_str(),
+            test_metadata,
             column,
         )
     }

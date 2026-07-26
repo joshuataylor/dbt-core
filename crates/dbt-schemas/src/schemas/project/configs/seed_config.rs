@@ -287,6 +287,12 @@ pub struct ProjectSeedConfig {
     // Postgres specific fields
     #[serde(default, rename = "+indexes")]
     pub indexes: IndexesConfig,
+    #[serde(
+        default,
+        rename = "+unlogged",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub unlogged: Option<bool>,
 
     // Schedule (Databricks streaming tables)
     #[serde(rename = "+schedule")]
@@ -465,6 +471,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 table_type: config.table_type,
 
                 indexes: config.indexes,
+                unlogged: config.unlogged,
 
                 // seed is unsupported for Salesforce yet
                 primary_key: PrimaryKeyConfig::default(),
@@ -587,6 +594,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
 
             table_type: config.__warehouse_specific_config__.table_type,
             indexes: config.__warehouse_specific_config__.indexes,
+            unlogged: config.__warehouse_specific_config__.unlogged,
             schedule: config.__warehouse_specific_config__.schedule,
             __additional_properties__: BTreeMap::new(),
         }

@@ -501,6 +501,14 @@ pub struct ProjectModelConfig {
     #[serde(default, rename = "+indexes")]
     pub indexes: IndexesConfig,
 
+    // Postgres unlogged table
+    #[serde(
+        default,
+        rename = "+unlogged",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub unlogged: Option<bool>,
+
     // Schedule (Databricks streaming tables)
     #[serde(rename = "+schedule")]
     pub schedule: Option<Schedule>,
@@ -818,6 +826,7 @@ impl From<ProjectModelConfig> for ModelConfig {
 
                 table_type: config.table_type,
                 indexes: config.indexes,
+                unlogged: config.unlogged,
 
                 primary_key: config.primary_key,
                 category: config.category,
@@ -999,6 +1008,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             as_columnstore: config.__warehouse_specific_config__.as_columnstore,
             table_type: config.__warehouse_specific_config__.table_type,
             indexes: config.__warehouse_specific_config__.indexes,
+            unlogged: config.__warehouse_specific_config__.unlogged,
             schedule: config.__warehouse_specific_config__.schedule,
             incremental_apply_config_changes: config
                 .__warehouse_specific_config__

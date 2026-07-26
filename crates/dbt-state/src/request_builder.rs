@@ -22,6 +22,17 @@ pub const SQL_SEMANTIC_EXTRA_KEYS: &[&str] = &[
     "incremental_predicates",
     "merge_update_columns",
     "merge_exclude_columns",
+    "contract",
+    "constraints",
+    "cluster_by",
+    "unique_key",
+    "grants",
+    "event_time",
+    "sql_header",
+    "lookback",
+    "partition_by",
+    "table_format",
+    // Test attributes
     "severity",
     "limit",
     "where",
@@ -33,6 +44,31 @@ pub const SQL_SEMANTIC_EXTRA_KEYS: &[&str] = &[
     // Databricks attributes
     "auto_liquid_cluster",
     "databricks_tags",
+    "file_format",
+    "location_root",
+    "include_full_name_in_path",
+    "clustered_by",
+    "buckets",
+    "liquid_clustered_by",
+    "tblproperties",
+    // Snowflake attributes
+    "transient",
+    "target_lag",
+    "refresh_mode",
+    "immutable_where",
+    "copy_grants",
+    "tmp_relation_type",
+    // Postgres attributes
+    "unlogged",
+    "indexes",
+    // Bigquery attributes
+    "require_partition_filter",
+    "partition_expiration_days",
+    "hours_to_expiration",
+    // Redshift attributes
+    "dist",
+    "sort",
+    "sort_type",
 ];
 
 pub const SEED_SEMANTIC_EXTRA_KEYS: &[&str] = &["column_types", "quote_columns", "delimiter"];
@@ -385,7 +421,7 @@ mod tests {
             "[\"updated_at >= current_date\",\"deleted_at is null\"]"
         );
         assert_eq!(extras.get("merge_update_columns").unwrap(), "");
-        assert!(!extras.contains_key("unique_key"));
+        assert_eq!(extras.get("unique_key").unwrap(), "\"id\"");
     }
 
     #[test]
@@ -404,6 +440,88 @@ mod tests {
             extras.get("databricks_tags").unwrap(),
             "{\"team\":\"analytics\"}"
         );
+    }
+
+    #[test]
+    fn sql_semantic_extras_include_expanded_model_attributes() {
+        let mut config = SemanticExtraConfig::new();
+        config.insert(
+            "contract".to_string(),
+            Some(json!({"alias_types": true, "enforced": false})),
+        );
+        config.insert("constraints".to_string(), Some(json!([])));
+        config.insert("cluster_by".to_string(), Some(json!(["id"])));
+        config.insert("grants".to_string(), Some(json!({})));
+        config.insert("event_time".to_string(), None);
+        config.insert("sql_header".to_string(), Some(json!("/* header */")));
+        config.insert("lookback".to_string(), Some(json!(1)));
+        config.insert(
+            "partition_by".to_string(),
+            Some(json!({"field": "created_at"})),
+        );
+        config.insert("table_format".to_string(), Some(json!("iceberg")));
+
+        let extras = sql_semantic_extras(&config).unwrap();
+
+        assert_eq!(
+            extras.get("contract").unwrap(),
+            "{\"alias_types\":true,\"enforced\":false}"
+        );
+        assert_eq!(extras.get("constraints").unwrap(), "[]");
+        assert_eq!(extras.get("cluster_by").unwrap(), "[\"id\"]");
+        assert_eq!(extras.get("grants").unwrap(), "{}");
+        assert_eq!(extras.get("event_time").unwrap(), "");
+        assert_eq!(extras.get("sql_header").unwrap(), "\"/* header */\"");
+        assert_eq!(extras.get("lookback").unwrap(), "1");
+        assert_eq!(
+            extras.get("partition_by").unwrap(),
+            "{\"field\":\"created_at\"}"
+        );
+        assert_eq!(extras.get("table_format").unwrap(), "\"iceberg\"");
+    }
+
+    #[test]
+    fn sql_semantic_extras_include_snowflake_and_postgres_attributes() {
+        let mut config = SemanticExtraConfig::new();
+        config.insert("transient".to_string(), Some(json!(true)));
+        config.insert("target_lag".to_string(), Some(json!("1 hour")));
+        config.insert("refresh_mode".to_string(), Some(json!("FULL")));
+        config.insert("immutable_where".to_string(), Some(json!("id > 0")));
+        config.insert("copy_grants".to_string(), Some(json!(true)));
+        config.insert("tmp_relation_type".to_string(), Some(json!("TRANSIENT")));
+        config.insert("unlogged".to_string(), Some(json!(true)));
+        config.insert("indexes".to_string(), Some(json!([{"columns": ["id"]}])));
+
+        let extras = sql_semantic_extras(&config).unwrap();
+
+        assert_eq!(extras.get("transient").unwrap(), "true");
+        assert_eq!(extras.get("target_lag").unwrap(), "\"1 hour\"");
+        assert_eq!(extras.get("refresh_mode").unwrap(), "\"FULL\"");
+        assert_eq!(extras.get("immutable_where").unwrap(), "\"id > 0\"");
+        assert_eq!(extras.get("copy_grants").unwrap(), "true");
+        assert_eq!(extras.get("tmp_relation_type").unwrap(), "\"TRANSIENT\"");
+        assert_eq!(extras.get("unlogged").unwrap(), "true");
+        assert_eq!(extras.get("indexes").unwrap(), "[{\"columns\":[\"id\"]}]");
+    }
+
+    #[test]
+    fn sql_semantic_extras_include_bigquery_and_redshift_attributes() {
+        let mut config = SemanticExtraConfig::new();
+        config.insert("require_partition_filter".to_string(), Some(json!(true)));
+        config.insert("partition_expiration_days".to_string(), Some(json!(30)));
+        config.insert("hours_to_expiration".to_string(), Some(json!(24)));
+        config.insert("dist".to_string(), Some(json!("ALL")));
+        config.insert("sort".to_string(), Some(json!(["id"])));
+        config.insert("sort_type".to_string(), Some(json!("COMPOUND")));
+
+        let extras = sql_semantic_extras(&config).unwrap();
+
+        assert_eq!(extras.get("require_partition_filter").unwrap(), "true");
+        assert_eq!(extras.get("partition_expiration_days").unwrap(), "30");
+        assert_eq!(extras.get("hours_to_expiration").unwrap(), "24");
+        assert_eq!(extras.get("dist").unwrap(), "\"ALL\"");
+        assert_eq!(extras.get("sort").unwrap(), "[\"id\"]");
+        assert_eq!(extras.get("sort_type").unwrap(), "\"COMPOUND\"");
     }
 
     #[test]

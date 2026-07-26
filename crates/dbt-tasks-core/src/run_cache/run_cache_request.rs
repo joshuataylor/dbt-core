@@ -15,7 +15,9 @@ use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::common::{DbtIncrementalStrategy, DbtMaterialization, OnSchemaChange};
-use dbt_schemas::schemas::project::{ModelConfig, SeedConfig, SnapshotConfig};
+use dbt_schemas::schemas::project::{
+    DataTestConfig, ModelConfig, SeedConfig, SnapshotConfig, WarehouseSpecificNodeConfig,
+};
 use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
 };
@@ -140,10 +142,13 @@ pub fn build_snapshot_sql_request(
     ))
     .map_err(request_build_error)?;
 
-    Ok(
-        build_sql_request_input(snapshot, context, execution_type, Default::default())?
-            .into_proto(),
+    let semantic_extras = sql_semantic_extras(
+        &snapshot_config_sql_semantic_extra_config(&snapshot.deprecated_config)
+            .map_err(request_build_error)?,
     )
+    .map_err(request_build_error)?;
+
+    Ok(build_sql_request_input(snapshot, context, execution_type, semantic_extras)?.into_proto())
 }
 
 pub fn build_test_sql_request(
@@ -153,6 +158,12 @@ pub fn build_test_sql_request(
     let execution_type =
         execution_type_from_input(&test_execution_type_input()).map_err(request_build_error)?;
 
+    let semantic_extras = sql_semantic_extras(
+        &test_config_sql_semantic_extra_config(&test.deprecated_config)
+            .map_err(request_build_error)?,
+    )
+    .map_err(request_build_error)?;
+
     // Mirrors dbt-core's `_build_submit_enriched_sql_request` (run_cache.py
     // L992-996): data tests submit with `target_table=None` so the service's
     // `_no_target_table_expr` branch fires and Skip can be returned without
@@ -161,7 +172,7 @@ pub fn build_test_sql_request(
     // the request's `tables` list with a `last_modified_epoch` to mark the
     // target as "existing" — which is not possible when
     // `store_failures_as=None` skips the audit relation materialization.
-    let mut input = build_sql_request_input(test, context, execution_type, Default::default())?;
+    let mut input = build_sql_request_input(test, context, execution_type, semantic_extras)?;
     input.target_table = None;
     Ok(input.into_proto())
 }
@@ -282,6 +293,18 @@ pub fn model_sql_semantic_extra_config(
         extras.remove("on_schema_change");
     }
 
+    // `constraints` lives on the resolved model attributes (merging schema.yml
+    // declarations and any `{{ config(constraints=...) }}` override), not on
+    // `ModelConfig` directly, so it can't be picked up in
+    // `model_config_sql_semantic_extra_config`. Only include it when set,
+    // mirroring the Python plugin's `if key in node_config` gating.
+    if !model.__model_attr__.constraints.is_empty() {
+        extras.insert(
+            "constraints".to_string(),
+            Some(serde_json::to_value(&model.__model_attr__.constraints)?),
+        );
+    }
+
     Ok(extras)
 }
 
@@ -363,6 +386,94 @@ fn model_config_sql_semantic_extra_config(
         "merge_exclude_columns",
         config.merge_exclude_columns.as_ref(),
     )?;
+    insert_json(&mut extras, "contract", config.contract.as_ref())?;
+    insert_json(&mut extras, "unique_key", config.unique_key.as_ref())?;
+    insert_json(&mut extras, "grants", config.grants.as_ref())?;
+    insert_json(&mut extras, "event_time", config.event_time.as_ref())?;
+    insert_json(&mut extras, "sql_header", config.sql_header.as_ref())?;
+    insert_json(&mut extras, "lookback", config.lookback.as_ref())?;
+    insert_json(&mut extras, "table_format", config.table_format.as_ref())?;
+
+    extras.extend(warehouse_specific_semantic_extra_config(
+        &config.__warehouse_specific_config__,
+    )?);
+
+    Ok(extras)
+}
+
+/// Extracts the dialect-specific and shared warehouse config keys that mirror
+/// Python's `SEMANTIC_EXTRAS_CONFIG_KEYS` (run_cache.py). Shared across models,
+/// snapshots, and tests since all three embed the same
+/// `WarehouseSpecificNodeConfig`.
+fn warehouse_specific_semantic_extra_config(
+    whc: &WarehouseSpecificNodeConfig,
+) -> Result<SemanticExtraConfig, RequestBuildError> {
+    let mut extras = SemanticExtraConfig::new();
+
+    // Shared
+    insert_json(&mut extras, "cluster_by", whc.cluster_by.as_ref())?;
+    insert_json(&mut extras, "partition_by", whc.partition_by.as_ref())?;
+
+    // Databricks
+    insert_json(
+        &mut extras,
+        "auto_liquid_cluster",
+        whc.auto_liquid_cluster.as_ref(),
+    )?;
+    insert_json(&mut extras, "databricks_tags", whc.databricks_tags.as_ref())?;
+    insert_json(&mut extras, "file_format", whc.file_format.as_ref())?;
+    insert_json(&mut extras, "location_root", whc.location_root.as_ref())?;
+    insert_json(
+        &mut extras,
+        "include_full_name_in_path",
+        whc.include_full_name_in_path.as_ref(),
+    )?;
+    insert_json(&mut extras, "clustered_by", whc.clustered_by.as_ref())?;
+    insert_json(&mut extras, "buckets", whc.buckets.as_ref())?;
+    insert_json(
+        &mut extras,
+        "liquid_clustered_by",
+        whc.liquid_clustered_by.as_ref(),
+    )?;
+    insert_json(&mut extras, "tblproperties", whc.tblproperties.as_ref())?;
+
+    // Snowflake
+    insert_json(&mut extras, "transient", whc.transient.as_ref())?;
+    insert_json(&mut extras, "target_lag", whc.target_lag.as_ref())?;
+    insert_json(&mut extras, "refresh_mode", whc.refresh_mode.as_ref())?;
+    insert_json(&mut extras, "immutable_where", whc.immutable_where.as_ref())?;
+    insert_json(&mut extras, "copy_grants", whc.copy_grants.as_ref())?;
+    insert_json(
+        &mut extras,
+        "tmp_relation_type",
+        whc.tmp_relation_type.as_ref(),
+    )?;
+
+    // Postgres
+    insert_json(&mut extras, "unlogged", whc.unlogged.as_ref())?;
+    insert_json(&mut extras, "indexes", whc.indexes.as_ref().as_ref())?;
+
+    // BigQuery
+    insert_json(
+        &mut extras,
+        "require_partition_filter",
+        whc.require_partition_filter.as_ref(),
+    )?;
+    insert_json(
+        &mut extras,
+        "partition_expiration_days",
+        whc.partition_expiration_days.as_ref(),
+    )?;
+    insert_json(
+        &mut extras,
+        "hours_to_expiration",
+        whc.hours_to_expiration.as_ref(),
+    )?;
+
+    // Redshift
+    insert_json(&mut extras, "dist", whc.dist.as_ref())?;
+    insert_json(&mut extras, "sort", whc.sort.as_ref())?;
+    insert_json(&mut extras, "sort_type", whc.sort_type.as_ref())?;
 
     Ok(extras)
 }
@@ -389,6 +500,52 @@ fn seed_config_semantic_extra_config(
             Some(Value::String(delimiter.clone().into_inner())),
         );
     }
+
+    Ok(extras)
+}
+
+fn snapshot_config_sql_semantic_extra_config(
+    config: &SnapshotConfig,
+) -> Result<SemanticExtraConfig, RequestBuildError> {
+    let mut extras = SemanticExtraConfig::new();
+
+    insert_json(&mut extras, "unique_key", config.unique_key.as_ref())?;
+    insert_json(&mut extras, "grants", config.grants.as_ref())?;
+    insert_json(&mut extras, "event_time", config.event_time.as_ref())?;
+
+    extras.extend(warehouse_specific_semantic_extra_config(
+        &config.__warehouse_specific_config__,
+    )?);
+
+    Ok(extras)
+}
+
+fn test_config_sql_semantic_extra_config(
+    config: &DataTestConfig,
+) -> Result<SemanticExtraConfig, RequestBuildError> {
+    let mut extras = SemanticExtraConfig::new();
+
+    insert_json(&mut extras, "severity", config.severity.as_ref())?;
+    insert_json(&mut extras, "limit", config.limit.as_ref())?;
+    insert_json(&mut extras, "where", config.where_.as_ref())?;
+    insert_json(&mut extras, "fail_calc", config.fail_calc.as_ref())?;
+    insert_json(&mut extras, "warn_if", config.warn_if.as_ref())?;
+    insert_json(&mut extras, "error_if", config.error_if.as_ref())?;
+    insert_json(
+        &mut extras,
+        "store_failures",
+        config.store_failures.as_ref(),
+    )?;
+    insert_json(
+        &mut extras,
+        "store_failures_as",
+        config.store_failures_as.as_ref(),
+    )?;
+    insert_json(&mut extras, "sql_header", config.sql_header.as_ref())?;
+
+    extras.extend(warehouse_specific_semantic_extra_config(
+        &config.__warehouse_specific_config__,
+    )?);
 
     Ok(extras)
 }
@@ -487,7 +644,7 @@ mod tests {
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::{
         Access, DbtIncrementalStrategy, DbtMaterialization, DbtUniqueKey, OnSchemaChange,
-        ResolvedQuoting,
+        ResolvedQuoting, Severity, StoreFailuresAs,
     };
     use dbt_schemas::schemas::nodes::AdapterAttr;
     use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
@@ -566,6 +723,32 @@ mod tests {
         }
     }
 
+    fn make_test() -> DbtTest {
+        DbtTest {
+            __common_attr__: make_common(
+                "test.jaffle_shop.not_null_orders_id",
+                "not_null_orders_id",
+            ),
+            __base_attr__: make_base(DbtMaterialization::Test, "not_null_orders_id"),
+            __test_attr__: DbtTestAttr::default(),
+            __adapter_attr__: AdapterAttr::default(),
+            manifest_original_file_path: DbtPath::from("tests/not_null_orders_id.sql"),
+            deprecated_config: DataTestConfig {
+                severity: Some(Severity::Error),
+                limit: Some(10),
+                where_: Some("id > 0".to_string()),
+                fail_calc: Some("count(*)".to_string()),
+                warn_if: Some(">0".to_string()),
+                error_if: Some(">100".to_string()),
+                store_failures: Some(true),
+                store_failures_as: Some(StoreFailuresAs::Table),
+                sql_header: Some("/* header */".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     fn make_seed() -> DbtSeed {
         let mut column_types = BTreeMap::new();
         column_types.insert(Spanned::new("id".to_string()), "integer".to_string());
@@ -584,19 +767,6 @@ mod tests {
                 ..Default::default()
             },
             __other__: BTreeMap::new(),
-        }
-    }
-
-    fn make_test() -> DbtTest {
-        DbtTest {
-            __common_attr__: make_common(
-                "test.jaffle_shop.not_null_orders_id",
-                "not_null_orders_id",
-            ),
-            __base_attr__: make_base(DbtMaterialization::Test, "not_null_orders_id"),
-            __test_attr__: DbtTestAttr::default(),
-            __adapter_attr__: AdapterAttr::default(),
-            ..Default::default()
         }
     }
 
@@ -656,7 +826,7 @@ mod tests {
             request.semantic_extras.get("merge_update_columns").unwrap(),
             "[\"status\",\"updated_at\"]"
         );
-        assert!(!request.semantic_extras.contains_key("unique_key"));
+        assert_eq!(request.semantic_extras.get("unique_key").unwrap(), "\"id\"");
     }
 
     #[test]
@@ -873,5 +1043,131 @@ mod tests {
         );
         assert_eq!(request.semantic_extras.get("delimiter").unwrap(), "\"|\"");
         assert_eq!(request.labels.get("dbt_node_name").unwrap(), "cities");
+    }
+
+    #[test]
+    fn model_semantic_extras_include_expanded_config_keys() {
+        use dbt_common::serde_utils::Omissible;
+        use dbt_schemas::schemas::common::{ClusterConfig, ConstraintType, DbtContract};
+        use dbt_schemas::schemas::properties::ModelConstraint;
+        use dbt_schemas::schemas::serde::{GrantConfig, OmissibleGrantConfig};
+
+        let mut model = make_model(DbtMaterialization::Table);
+        model.__model_attr__.constraints = vec![ModelConstraint {
+            type_: ConstraintType::NotNull,
+            expression: Some("id".to_string()),
+            ..Default::default()
+        }];
+        model.deprecated_config.contract = Some(DbtContract {
+            enforced: true,
+            ..Default::default()
+        });
+        model.deprecated_config.event_time = Some("created_at".to_string());
+        model.deprecated_config.sql_header = Some("/* header */".to_string());
+        model.deprecated_config.lookback = Some(3);
+        model.deprecated_config.table_format = Some("iceberg".to_string());
+        model.deprecated_config.grants =
+            OmissibleGrantConfig(Omissible::Present(GrantConfig(IndexMap::from([(
+                "select".to_string(),
+                StringOrArrayOfStrings::ArrayOfStrings(vec!["public".to_string()]),
+            )]))));
+        model
+            .deprecated_config
+            .__warehouse_specific_config__
+            .cluster_by = Some(ClusterConfig::List(vec!["id".to_string()]));
+        model
+            .deprecated_config
+            .__warehouse_specific_config__
+            .auto_liquid_cluster = Some(true);
+
+        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+
+        assert_eq!(
+            request.semantic_extras.get("contract").unwrap(),
+            "{\"alias_types\":true,\"enforced\":true}"
+        );
+        let constraints = request.semantic_extras.get("constraints").unwrap();
+        assert!(constraints.contains("\"type\":\"not_null\""));
+        assert!(constraints.contains("\"expression\":\"id\""));
+        assert_eq!(
+            request.semantic_extras.get("event_time").unwrap(),
+            "\"created_at\""
+        );
+        assert_eq!(
+            request.semantic_extras.get("sql_header").unwrap(),
+            "\"/* header */\""
+        );
+        assert_eq!(request.semantic_extras.get("lookback").unwrap(), "3");
+        assert_eq!(
+            request.semantic_extras.get("table_format").unwrap(),
+            "\"iceberg\""
+        );
+        assert_eq!(
+            request.semantic_extras.get("grants").unwrap(),
+            "{\"select\":[\"public\"]}"
+        );
+        assert_eq!(
+            request.semantic_extras.get("cluster_by").unwrap(),
+            "[\"id\"]"
+        );
+        assert_eq!(
+            request.semantic_extras.get("auto_liquid_cluster").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn snapshot_semantic_extras_include_config_and_warehouse_keys() {
+        let mut snapshot = make_snapshot();
+        snapshot.deprecated_config.unique_key =
+            Some(StringOrArrayOfStrings::String("id".to_string()));
+        snapshot.deprecated_config.event_time = Some("created_at".to_string());
+        snapshot
+            .deprecated_config
+            .__warehouse_specific_config__
+            .transient = Some(true);
+
+        let request = build_snapshot_sql_request(&snapshot, sql_context(false)).unwrap();
+
+        assert_eq!(request.semantic_extras.get("unique_key").unwrap(), "\"id\"");
+        assert_eq!(
+            request.semantic_extras.get("event_time").unwrap(),
+            "\"created_at\""
+        );
+        assert_eq!(request.semantic_extras.get("transient").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_semantic_extras_include_data_test_config_keys() {
+        let test = make_test();
+
+        let request = build_test_sql_request(&test, sql_context(false)).unwrap();
+
+        assert_eq!(
+            request.semantic_extras.get("severity").unwrap(),
+            "\"ERROR\""
+        );
+        assert_eq!(request.semantic_extras.get("limit").unwrap(), "10");
+        assert_eq!(request.semantic_extras.get("where").unwrap(), "\"id > 0\"");
+        assert_eq!(
+            request.semantic_extras.get("fail_calc").unwrap(),
+            "\"count(*)\""
+        );
+        assert_eq!(request.semantic_extras.get("warn_if").unwrap(), "\">0\"");
+        assert_eq!(request.semantic_extras.get("error_if").unwrap(), "\">100\"");
+        assert_eq!(
+            request.semantic_extras.get("store_failures").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            request.semantic_extras.get("store_failures_as").unwrap(),
+            "\"table\""
+        );
+        assert_eq!(
+            request.semantic_extras.get("sql_header").unwrap(),
+            "\"/* header */\""
+        );
+        // Data tests always submit with target_table=None (see build_test_sql_request).
+        assert!(request.target_table.is_none());
     }
 }

@@ -265,6 +265,12 @@ pub struct ProjectUnitTestConfig {
     // Postgres specific fields
     #[serde(default, rename = "+indexes")]
     pub indexes: IndexesConfig,
+    #[serde(
+        default,
+        rename = "+unlogged",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub unlogged: Option<bool>,
 
     // Flattened fields
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectUnitTestConfig>>,
@@ -401,6 +407,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
 
                 table_type: config.table_type,
                 indexes: config.indexes,
+                unlogged: config.unlogged,
 
                 // unit test is unsupported for Salesforce yet
                 primary_key: PrimaryKeyConfig::default(),
@@ -511,6 +518,7 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             table_type: config.__warehouse_specific_config__.table_type,
             // Postgres Fields
             indexes: config.__warehouse_specific_config__.indexes,
+            unlogged: config.__warehouse_specific_config__.unlogged,
             __additional_properties__: BTreeMap::new(),
         }
     }

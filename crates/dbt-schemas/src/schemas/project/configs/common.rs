@@ -450,6 +450,8 @@ pub struct WarehouseSpecificNodeConfig {
     // XXX: This is an incomplete set of configs
     #[serde(default)]
     pub indexes: IndexesConfig,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub unlogged: Option<bool>,
 
     // Salesforce
     #[serde(default)]
@@ -587,6 +589,7 @@ impl ResolvableConfig<WarehouseSpecificNodeConfig> for WarehouseSpecificNodeConf
 
             // Postgres
             indexes,
+            unlogged,
 
             // Salesforce
             primary_key,
@@ -692,6 +695,7 @@ impl ResolvableConfig<WarehouseSpecificNodeConfig> for WarehouseSpecificNodeConf
                 table_type,
                 // Postgres
                 indexes,
+                unlogged,
                 // Salesforce
                 primary_key,
                 category,

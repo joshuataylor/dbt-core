@@ -29,7 +29,7 @@ use dbt_schemas::{
         profiles::{DbConfig, Execute, TargetContext},
         serde::yaml_to_fs_error,
     },
-    state::ResolverState,
+    state::{DbtProfile, ResolverState},
 };
 
 use minijinja::Value;
@@ -50,11 +50,7 @@ impl RunCacheProfileResolver {
         resolved_state: &ResolverState,
         jinja_env: &JinjaEnv,
     ) -> FsResult<Option<Nodes>> {
-        let Some(auto_defer) = run_cache_auto_defer_config(
-            arg,
-            &resolved_state.dbt_profile.target,
-            resolved_state.dbt_profile.defer_to_target.as_deref(),
-        ) else {
+        let Some(auto_defer) = run_cache_auto_defer_config(arg, &resolved_state.dbt_profile) else {
             return Ok(None);
         };
 
@@ -106,8 +102,7 @@ struct RunCacheAutoDeferConfig {
 
 fn run_cache_auto_defer_config(
     arg: &EvalArgs,
-    active_target: &str,
-    profile_defer_to_target: Option<&str>,
+    active_profile: &DbtProfile,
 ) -> Option<RunCacheAutoDeferConfig> {
     if !run_cache_auto_defer_requested(
         arg,
@@ -130,23 +125,13 @@ fn run_cache_auto_defer_config(
         }
     };
 
-    let defer_to_target = select_run_cache_defer_to_target(profile_defer_to_target, &config);
-
-    if !config.enabled || active_target == defer_to_target {
+    if !config.enabled || config.is_defer_to_target(active_profile) {
         return None;
     }
 
-    Some(RunCacheAutoDeferConfig { defer_to_target })
-}
-
-fn select_run_cache_defer_to_target(
-    profile_defer_to_target: Option<&str>,
-    config: &RunCacheServiceConfig,
-) -> String {
-    profile_defer_to_target
-        .filter(|target| !target.is_empty())
-        .unwrap_or(&config.defer_to)
-        .to_string()
+    Some(RunCacheAutoDeferConfig {
+        defer_to_target: config.defer_to_target(active_profile),
+    })
 }
 
 fn run_cache_auto_defer_requested(arg: &EvalArgs, env_requested: bool) -> bool {
@@ -488,31 +473,4 @@ fn set_run_cache_default_relation_target(
     let base = node.base_mut();
     base.database = default_database.to_string();
     base.schema = default_schema.to_string();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn profile_defer_to_target_overrides_legacy_env_config() {
-        let mut config = RunCacheServiceConfig::disabled();
-        config.defer_to = "legacy_prod".to_string();
-
-        assert_eq!(
-            select_run_cache_defer_to_target(Some("prod"), &config),
-            "prod"
-        );
-    }
-
-    #[test]
-    fn legacy_defer_to_remains_fallback() {
-        let mut config = RunCacheServiceConfig::disabled();
-        config.defer_to = "legacy_prod".to_string();
-
-        assert_eq!(
-            select_run_cache_defer_to_target(None, &config),
-            "legacy_prod"
-        );
-    }
 }

@@ -2369,6 +2369,10 @@ async fn build_sql_context(
 
     let stale_upstream_policy = stale_upstream_policy_for_node(node);
 
+    let is_targeting_prod = config.is_defer_to_target(ctx.dbt_profile());
+    let clone_chain_depth_limit =
+        clone_chain_depth_limit_for_adapter(ctx.adapter_type(), is_targeting_prod);
+
     Ok(BuiltSqlRunCacheContext {
         request: SqlRunCacheRequestContext {
             adapter_type: ctx.adapter_type(),
@@ -2389,6 +2393,7 @@ async fn build_sql_context(
             full_refresh,
             clone_time_travel_limit: config.clone_time_travel_limit_seconds,
             clone_table_properties: None,
+            clone_chain_depth_limit,
             default_schema: node.schema(),
             stale_upstream_policy,
             // Populated by the model submit paths for microbatch models; other
@@ -2552,6 +2557,29 @@ fn stale_upstream_policy_for_node(
         Some(UpdatesOn::All) => StaleUpstreamPolicy::All,
         Some(UpdatesOn::Any) | None => StaleUpstreamPolicy::Any,
     }
+}
+
+pub(crate) fn clone_chain_depth_limit_for_adapter(
+    adapter_type: AdapterType,
+    is_targeting_prod: bool,
+) -> Option<i64> {
+    // the Python implementation hardcodes the default on each adapter
+    // ref: https://github.com/fivetran/query-cache/blob/14dddc260082af4bc6a9800743ddbe5ccb03ba67/clients/dbt_state/src/dbt_state/run_cache.py#L1911
+    match adapter_type {
+        AdapterType::Databricks => Some(1), // ref: https://github.com/fivetran/query-cache/blob/14dddc260082af4bc6a9800743ddbe5ccb03ba67/clients/dbt_state/src/dbt_state/adapters/databricks.py#L37
+        AdapterType::Bigquery => Some(3), // ref: https://github.com/fivetran/query-cache/blob/14dddc260082af4bc6a9800743ddbe5ccb03ba67/clients/dbt_state/src/dbt_state/adapters/bigquery.py#L21
+        _ => None,
+    }
+    .map(|default_limit: i64| {
+        if is_targeting_prod {
+            // for prod, we send a limit of n-1 so there is always room for 1 more dev clone
+            // note: if the default limits ever get adjusted (or new ones added)
+            // make sure that this does not return a negative number
+            default_limit.saturating_sub(1_i64)
+        } else {
+            default_limit
+        }
+    })
 }
 
 fn metadata_query_options_for_warehouses(
@@ -6409,5 +6437,41 @@ mod tests {
         .unwrap();
         let clock = lock.get().expect("clock should be set");
         assert_eq!(clock.now_ms(), 42_000);
+    }
+
+    #[test]
+    fn clone_chain_depth_limit_for_adapter_returns_n_minus_1_for_prod() {
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true),
+            Some(0)
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, true),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn clone_chain_depth_limit_for_adapter_returns_default_for_non_prod() {
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, false),
+            Some(1)
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn clone_chain_depth_limit_for_adapter_none_for_adapters_with_no_limits() {
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true),
+            None
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false),
+            None
+        );
     }
 }

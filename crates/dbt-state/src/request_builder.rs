@@ -198,6 +198,7 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub stale_upstream_policy: StaleUpstreamPolicy,
+    pub clone_chain_depth_limit: Option<i64>,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -219,7 +220,7 @@ impl SubmitEnrichedSqlRequestInput {
             clone_time_travel_limit: self.clone_time_travel_limit,
             clone_table_properties: self.clone_table_properties,
             stale_upstream_policy: self.stale_upstream_policy as i32,
-            clone_chain_depth_limit: None,  //todo: implement
+            clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: None,           //todo: implement
             compare_unrendered_code: false, //todo: implement
         }
@@ -328,6 +329,7 @@ pub struct CloneRequestInput {
     pub labels: HashMap<String, String>,
     pub clone_source_table_type: Option<String>,
     pub table_properties: Option<TableProperties>,
+    pub clone_chain_depth_limit: Option<i64>,
 }
 
 impl CloneRequestInput {
@@ -342,7 +344,7 @@ impl CloneRequestInput {
             labels: self.labels,
             clone_source_table_type: self.clone_source_table_type,
             table_properties: self.table_properties,
-            clone_chain_depth_limit: None, //todo: implement
+            clone_chain_depth_limit: self.clone_chain_depth_limit,
         }
     }
 }
@@ -697,6 +699,7 @@ mod tests {
                 partition_expiration_days: None,
             }),
             stale_upstream_policy: StaleUpstreamPolicy::Any,
+            clone_chain_depth_limit: None,
         }
         .into_proto();
 
@@ -758,6 +761,7 @@ mod tests {
             clone_time_travel_limit: Some(3600),
             clone_table_properties: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
+            clone_chain_depth_limit: None,
         }
         .into_proto();
 
@@ -834,6 +838,7 @@ mod tests {
             labels: labels.clone(),
             clone_source_table_type: Some("table".to_string()),
             table_properties: Some(properties),
+            clone_chain_depth_limit: Some(3),
         }
         .into_proto();
 
@@ -844,6 +849,7 @@ mod tests {
         assert_eq!(request.labels, labels);
         assert_eq!(request.clone_source_table_type.as_deref(), Some("table"));
         assert_eq!(request.table_properties, Some(properties));
+        assert_eq!(request.clone_chain_depth_limit, Some(3));
     }
 
     #[test]

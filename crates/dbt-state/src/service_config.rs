@@ -3,6 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 use dbt_cloud_config::ResolvedCloudConfig;
+use dbt_schemas::state::DbtProfile;
 
 pub const DEFAULT_API_URL: &str = "api.state.dbt.com:443";
 pub const DEFAULT_OAUTH_TOKEN_URL: &str = "https://auth.state.dbt.com/token";
@@ -289,6 +290,21 @@ impl RunCacheServiceConfig {
         }
         self
     }
+
+    pub fn defer_to_target(&self, active_profile: &DbtProfile) -> String {
+        active_profile
+            .defer_to_target
+            .as_deref()
+            .filter(|target| !target.is_empty())
+            .unwrap_or(&self.defer_to)
+            .to_string()
+    }
+
+    pub fn is_defer_to_target(&self, active_profile: &DbtProfile) -> bool {
+        // is the current target the same as the "defer to" target
+        // this is essentially an "is prod?" check
+        self.defer_to_target(active_profile) == active_profile.target
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -449,7 +465,23 @@ fn parse_seconds(name: &'static str, value: &str) -> Result<i64, RunCacheService
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig};
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        DbtProfile {
+            profile: "default".to_string(),
+            target: target.to_string(),
+            defer_to_target: defer_to_target.map(|target| target.to_string()),
+            db_config: DbConfig::DuckDB(Box::<DuckDbConfig>::default()),
+            alt_target_db_config: None,
+            schema: "dbt_test".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        }
+    }
 
     fn config_from_pairs(
         pairs: &[(&str, &str)],
@@ -811,6 +843,77 @@ mod tests {
         assert_eq!(
             parse_seconds("API_CLIENT_TIMEOUT", "7days").unwrap(),
             604800
+        );
+    }
+
+    #[test]
+    fn defer_to_target_uses_profile_override_when_set() {
+        let config = config_from_pairs(&[]).unwrap();
+        let profile = test_profile("dev", Some("staging"));
+
+        assert_eq!(config.defer_to_target(&profile), "staging");
+        assert!(!config.is_defer_to_target(&profile));
+    }
+
+    #[test]
+    fn defer_to_target_falls_back_to_config_when_profile_unset() {
+        let config = config_from_pairs(&[("RUN_CACHE_DEFER_TO", "production")]).unwrap();
+        let profile = test_profile("dev", None);
+
+        assert_eq!(config.defer_to_target(&profile), "production");
+    }
+
+    #[test]
+    fn defer_to_target_falls_back_to_config_when_profile_override_empty() {
+        let config = config_from_pairs(&[("RUN_CACHE_DEFER_TO", "production")]).unwrap();
+        let profile = test_profile("dev", Some(""));
+
+        assert_eq!(config.defer_to_target(&profile), "production");
+    }
+
+    #[test]
+    fn is_defer_to_target_true_when_target_matches_defer_to() {
+        let config = config_from_pairs(&[]).unwrap();
+        let profile = test_profile("prod", None);
+
+        assert!(config.is_defer_to_target(&profile));
+    }
+
+    #[test]
+    fn is_defer_to_target_false_when_target_differs_from_defer_to() {
+        let config = config_from_pairs(&[]).unwrap();
+        let profile = test_profile("dev", None);
+
+        assert!(!config.is_defer_to_target(&profile));
+    }
+
+    #[test]
+    fn is_defer_to_target_respects_profile_override() {
+        let config = config_from_pairs(&[]).unwrap();
+        let profile = test_profile("staging", Some("staging"));
+
+        assert!(config.is_defer_to_target(&profile));
+    }
+
+    #[test]
+    fn profile_defer_to_target_overrides_legacy_env_config() {
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "legacy_prod".to_string();
+
+        assert_eq!(
+            config.defer_to_target(&test_profile("prod", Some("prod"))),
+            "prod"
+        );
+    }
+
+    #[test]
+    fn legacy_defer_to_remains_fallback() {
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "legacy_prod".to_string();
+
+        assert_eq!(
+            config.defer_to_target(&test_profile("prod", None)),
+            "legacy_prod"
         );
     }
 }

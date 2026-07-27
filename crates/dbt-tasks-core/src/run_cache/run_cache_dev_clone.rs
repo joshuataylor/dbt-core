@@ -19,7 +19,8 @@ use crate::run_cache::run_cache_request::{
     snapshot_clone_table_properties, snapshot_execution_type_input,
 };
 use crate::run_cache::run_cache_service::{
-    RunCacheCloneDecision, confirm_run_cache_service_execution, execute_run_cache_service_clone,
+    RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
+    confirm_run_cache_service_execution, execute_run_cache_service_clone,
     run_cache_metadata_query_options,
 };
 
@@ -68,13 +69,16 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
             return;
         }
     };
-    let Some(ready_to_clone) = ready_to_clone_from_clone_response(response) else {
-        emit_trace_log_message(|| {
-            format!(
-                "dbt State dev clone registration did not return clone SQL for node {node_id}; executing normally"
-            )
-        });
-        return;
+    let ready_to_clone = match handle_clone_response(response) {
+        Ok(r) => r,
+        Err(msg) => {
+            emit_trace_log_message(|| {
+                format!(
+                    "dbt State dev clone registration is unable to clone {node_id}: '{msg}'; executing normally"
+                )
+            });
+            return;
+        }
     };
 
     let clone = RunCacheCloneDecision::from_response(&ready_to_clone, 0);
@@ -406,6 +410,7 @@ async fn prepare_dev_clone_request(
         labels: node_identity(candidate.local()).labels(),
         clone_source_table_type: candidate.clone_source_table_type(ctx.adapter_type()),
         table_properties: candidate.table_properties(),
+        clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(ctx.adapter_type(), false),
     }
     .into_proto();
 
@@ -528,19 +533,32 @@ async fn last_modified_epoch(
 }
 
 #[allow(deprecated)] // Reads legacy oneof variants for backward-compat with older servers.
-fn ready_to_clone_from_clone_response(response: CloneResponse) -> Option<ReadyToCloneResponse> {
-    response.ready_to_clone.or_else(|| match response.response {
-        Some(clone_response::Response::ReadyToCloneV1(response)) => Some(response),
-        Some(clone_response::Response::UntrackableClone(response)) => Some(ReadyToCloneResponse {
-            clone_sqls: response.clone_sqls,
-            clone_source: response.clone_source,
-            clone_target: response.clone_target,
-            explained_decision: response.explained_decision,
-            transformed_nodes_by_query: response.transformed_nodes_by_query,
-            ..Default::default()
-        }),
-        None => None,
-    })
+fn handle_clone_response(response: CloneResponse) -> Result<ReadyToCloneResponse, String> {
+    let error = response
+        .unable_to_clone
+        .and_then(|r| {
+            r.explained_decision
+                .map(|d| d.clone_rejection_reason().as_str_name())
+        })
+        .unwrap_or("Unable to clone");
+
+    response.ready_to_clone.map_or_else(
+        || match response.response {
+            Some(clone_response::Response::ReadyToCloneV1(response)) => Ok(response),
+            Some(clone_response::Response::UntrackableClone(response)) => {
+                Ok(ReadyToCloneResponse {
+                    clone_sqls: response.clone_sqls,
+                    clone_source: response.clone_source,
+                    clone_target: response.clone_target,
+                    explained_decision: response.explained_decision,
+                    transformed_nodes_by_query: response.transformed_nodes_by_query,
+                    ..Default::default()
+                })
+            }
+            None => Err(error.to_owned()),
+        },
+        Ok,
+    )
 }
 
 #[cfg(test)]
@@ -634,9 +652,7 @@ mod tests {
         };
 
         assert_eq!(
-            ready_to_clone_from_clone_response(response)
-                .unwrap()
-                .request_id,
+            handle_clone_response(response).unwrap().request_id,
             "current"
         );
     }
@@ -656,7 +672,7 @@ mod tests {
             )),
         };
 
-        let ready = ready_to_clone_from_clone_response(response).unwrap();
+        let ready = handle_clone_response(response).unwrap();
         assert_eq!(ready.request_id, "legacy");
         assert_eq!(ready.clone_sqls, vec!["create table target clone source"]);
     }
@@ -691,6 +707,7 @@ mod tests {
             labels: node_identity(candidate.local()).labels(),
             clone_source_table_type: Some("table".to_string()),
             table_properties: candidate.table_properties(),
+            clone_chain_depth_limit: None,
         }
         .into_proto();
 
@@ -712,6 +729,7 @@ mod tests {
                 partition_expiration_days: None,
             })
         );
+        assert!(request.clone_chain_depth_limit.is_none())
     }
 
     #[test]

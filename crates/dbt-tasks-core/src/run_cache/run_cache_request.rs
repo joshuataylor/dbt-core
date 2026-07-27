@@ -60,6 +60,7 @@ pub struct SqlRunCacheRequestContext {
     pub full_refresh: bool,
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
+    pub clone_chain_depth_limit: Option<i64>,
     pub default_schema: String,
     /// How the service should aggregate per-dependency freshness checks for
     /// this request. Derived from the model's
@@ -349,6 +350,7 @@ fn build_sql_request_input(
         clone_time_travel_limit: context.clone_time_travel_limit,
         clone_table_properties: context.clone_table_properties,
         stale_upstream_policy: context.stale_upstream_policy,
+        clone_chain_depth_limit: context.clone_chain_depth_limit,
     })
 }
 
@@ -786,6 +788,7 @@ mod tests {
             full_refresh,
             clone_time_travel_limit: None,
             clone_table_properties: None,
+            clone_chain_depth_limit: None,
             default_schema: "marts".to_string(),
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             microbatch_window: None,

@@ -1566,6 +1566,25 @@ fn quoting_equal(
     resolve(left.as_ref()) == resolve(right.as_ref())
 }
 
+pub(crate) fn test_alias_config_equal(
+    left_config_alias: Option<&str>,
+    right_config_alias: Option<&str>,
+    left_resolved_alias: &str,
+    right_resolved_alias: &str,
+) -> bool {
+    if left_config_alias == right_config_alias {
+        return true;
+    }
+
+    let generated_alias_eq = match (left_config_alias, right_config_alias) {
+        (None, Some(right)) => right == right_resolved_alias,
+        (Some(left), None) => left == left_resolved_alias,
+        _ => false,
+    };
+
+    generated_alias_eq && left_resolved_alias == right_resolved_alias
+}
+
 impl InternalDbtNode for DbtSeed {
     fn resource_type(&self) -> NodeType {
         NodeType::Seed
@@ -5911,6 +5930,7 @@ mod tests {
         AbsorbedOverload, DbtAnalysis, DbtExposure, DbtFunction, DbtMacro, DbtSeed, DbtSnapshot,
         DbtSource, InternalDbtNode, InternalDbtNodeAttributes, ModelConfig, NodePathKind,
         hooks_equal, normalize_description, persist_docs_configs_equal, quoting_equal,
+        test_alias_config_equal,
     };
     use crate::schemas::common::{Hooks, PersistDocsConfig};
     use crate::schemas::manifest::{DbtMetric, DbtOperation, DbtSavedQuery};
@@ -6672,6 +6692,35 @@ mod tests {
             &some_true_quoting,
             &another_true_quoting,
             AdapterType::Snowflake
+        ));
+    }
+
+    #[test]
+    fn test_alias_config_equal_treats_generated_alias_as_unchanged() {
+        let generated =
+            Some("dbt_utils_unique_combination_o_f03ffd6673790704c4a0250ea2d96410".to_string());
+
+        assert!(test_alias_config_equal(
+            None,
+            generated.as_deref(),
+            "dbt_utils_unique_combination_o_f03ffd6673790704c4a0250ea2d96410",
+            "dbt_utils_unique_combination_o_f03ffd6673790704c4a0250ea2d96410",
+        ));
+        assert!(test_alias_config_equal(
+            generated.as_deref(),
+            None,
+            "dbt_utils_unique_combination_o_f03ffd6673790704c4a0250ea2d96410",
+            "dbt_utils_unique_combination_o_f03ffd6673790704c4a0250ea2d96410",
+        ));
+    }
+
+    #[test]
+    fn test_alias_config_equal_detects_changed_resolved_alias() {
+        assert!(!test_alias_config_equal(
+            None,
+            Some("old_alias"),
+            "new_alias",
+            "old_alias",
         ));
     }
 

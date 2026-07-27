@@ -7,6 +7,7 @@ use crate::schemas::serde::typed_struct_from_json_file;
 use crate::schemas::{
     InternalDbtNode, Nodes, nodes::DBTTEST_CONFIG_MODIFIERS, nodes::DbtModel, nodes::DbtTest,
     nodes::is_invalid_for_relation_comparison, nodes::same_persisted_description,
+    nodes::test_alias_config_equal,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_common::string_utils::test_name_from_uid;
@@ -77,6 +78,55 @@ impl fmt::Display for StateArtifacts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "StateArtifacts from {}", self.state_path.display())
     }
+}
+
+fn normalize_line_endings(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
+fn canonicalize_hook_str(s: &str) -> String {
+    normalize_line_endings(s).trim_end().to_string()
+}
+
+fn hook_entries(v: &dbt_yaml::Value) -> Option<Vec<String>> {
+    use dbt_yaml::Value as YmlValue;
+
+    fn sequence_entries(seq: &[YmlValue]) -> Option<Vec<String>> {
+        seq.iter()
+            .map(|item| match item {
+                YmlValue::String(s, _) => Some(canonicalize_hook_str(s)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    match v {
+        YmlValue::String(s, _) => {
+            let trimmed = s.trim();
+            if let Ok(YmlValue::Sequence(seq, _)) = dbt_yaml::from_str::<YmlValue>(trimmed) {
+                sequence_entries(&seq)
+            } else {
+                Some(vec![canonicalize_hook_str(s)])
+            }
+        }
+        YmlValue::Sequence(seq, _) => sequence_entries(seq),
+        _ => None,
+    }
+}
+
+/// Compare two hook `unrendered_config` values (`pre-hook`/`post-hook`).
+///
+/// A hook may be stored either as a real YAML sequence or as a single stringified list literal
+/// whose interior whitespace/indentation is not semantically meaningful. When both sides parse
+/// into hook entry lists, compare those (each entry canonicalized); otherwise fall back to the
+/// generic unrendered comparison.
+fn unrendered_hook_value_eq(a: Option<&dbt_yaml::Value>, b: Option<&dbt_yaml::Value>) -> bool {
+    if let (Some(va), Some(vb)) = (a, b) {
+        if let (Some(a_hooks), Some(b_hooks)) = (hook_entries(va), hook_entries(vb)) {
+            return a_hooks == b_hooks;
+        }
+    }
+    unrendered_value_eq(a, b)
 }
 
 impl StateArtifacts {
@@ -764,7 +814,20 @@ impl StateArtifacts {
         // Missing keys compare as `None`, which intentionally ignores target-only differences.
         let db_eq = get(current_uc, "database") == get(previous_uc, "database");
         let schema_eq = get(current_uc, "schema") == get(previous_uc, "schema");
-        let alias_eq = get(current_uc, "alias") == get(previous_uc, "alias");
+        let current_alias = get(current_uc, "alias");
+        let previous_alias = get(previous_uc, "alias");
+        let alias_eq = if current_node.resource_type() == NodeType::Test
+            && previous_node.resource_type() == NodeType::Test
+        {
+            test_alias_config_equal(
+                current_alias,
+                previous_alias,
+                &current_node.base().alias,
+                &previous_node.base().alias,
+            )
+        } else {
+            current_alias == previous_alias
+        };
         let is_same_relation = db_eq && schema_eq && alias_eq;
 
         if !is_same_relation {
@@ -777,8 +840,8 @@ impl StateArtifacts {
                 format!("{:?}", get(previous_uc, "database")),
                 format!("{:?}", get(current_uc, "schema")),
                 format!("{:?}", get(previous_uc, "schema")),
-                format!("{:?}", get(current_uc, "alias")),
-                format!("{:?}", get(previous_uc, "alias")),
+                format!("{:?}", current_alias),
+                format!("{:?}", previous_alias),
             );
         }
 
@@ -849,8 +912,9 @@ impl StateArtifacts {
 /// Do previous and current `unrendered_config`s have the same authoring intent?
 ///
 /// Roughly, the configs must have the same pre-rendering Jinja contents, but certain variations
-/// are considered insignificant: key spelling (`pre_hook`/`pre-hook`; see [`canonicalize_hook_keys`])
-/// and whitespace/emptiness (see [`unrendered_value_eq`]).
+/// are considered insignificant: key spelling (`pre_hook`/`pre-hook`; see [`canonicalize_hook_keys`]),
+/// whitespace/emptiness (see [`unrendered_value_eq`]), and — for hook values — sequence vs.
+/// stringified-list representation and interior whitespace (see [`unrendered_hook_value_eq`]).
 /// Which keys are compared at all depends on the node type's [`UnrenderedKeyRelevance`].
 fn unrendered_configs_eq(
     node_type: NodeType,
@@ -876,7 +940,14 @@ fn unrendered_configs_eq(
         }
         let a = previous.get(key);
         let b = current.get(key);
-        if !unrendered_value_eq(a, b) {
+        // Hooks may be authored as a YAML sequence or as a stringified list literal; compare them
+        // by their entries so representation/whitespace differences do not count as a modification.
+        let values_eq = if key == "pre-hook" || key == "post-hook" {
+            unrendered_hook_value_eq(a, b)
+        } else {
+            unrendered_value_eq(a, b)
+        };
+        if !values_eq {
             all_eq = false;
             log_state_mod_diff(
                 unique_id,
@@ -993,6 +1064,16 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
+    fn make_model_with_unrendered_config(
+        uid: &str,
+        unrendered_config: BTreeMap<String, dbt_yaml::Value>,
+    ) -> DbtModel {
+        let mut model = DbtModel::default();
+        model.__common_attr__.unique_id = uid.to_string();
+        model.__base_attr__.unrendered_config = unrendered_config;
+        model
+    }
+
     fn make_test(uid: &str, attached_node: &str, test_name: &str) -> DbtTest {
         let mut t = DbtTest::default();
         t.__common_attr__.unique_id = uid.to_string();
@@ -1006,6 +1087,139 @@ mod tests {
             ..DbtTestAttr::default()
         };
         t
+    }
+
+    fn yml_value(yaml: &str) -> dbt_yaml::Value {
+        dbt_yaml::from_str(yaml).expect("valid yaml value")
+    }
+
+    fn state_with_previous_test(previous_test: DbtTest) -> StateArtifacts {
+        let mut prev_nodes = Nodes::default();
+        prev_nodes.tests.insert(
+            previous_test.__common_attr__.unique_id.clone(),
+            Arc::new(previous_test),
+        );
+
+        StateArtifacts {
+            nodes: Some(prev_nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::from("/tmp/fake_state"),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: std::sync::OnceLock::new(),
+        }
+    }
+
+    #[test]
+    fn state_modified_configs_treats_stringified_hook_lists_as_unchanged() {
+        let uid = "model.pkg.orders";
+        let mut previous_config = BTreeMap::new();
+        previous_config.insert(
+            "pre-hook".to_string(),
+            yml_value(
+                r#"
+[
+  "{{ set_model_running_start(this) }}",
+  "{{ delete_data_from_target_by_period(this.schema, this.name) }}"
+]
+"#,
+            ),
+        );
+        previous_config.insert(
+            "post-hook".to_string(),
+            yml_value(
+                r#"
+[
+  "{{ delete_technical_period(this.schema, this.name) }}",
+  "{{ set_model_running_end(this) }}"
+]
+"#,
+            ),
+        );
+
+        let mut current_config = BTreeMap::new();
+        current_config.insert(
+            "pre-hook".to_string(),
+            dbt_yaml::Value::string(
+                r#"
+[
+            "{{ set_model_running_start(this) }}",
+            "{{ delete_data_from_target_by_period(this.schema, this.name) }}"
+        ]
+"#
+                .to_string(),
+            ),
+        );
+        current_config.insert(
+            "post-hook".to_string(),
+            dbt_yaml::Value::string(
+                r#"
+[
+
+            "{{ delete_technical_period(this.schema, this.name) }}",
+            "{{ set_model_running_end(this) }}"
+        ]
+"#
+                .to_string(),
+            ),
+        );
+
+        let previous_model = make_model_with_unrendered_config(uid, previous_config);
+        let current_model = make_model_with_unrendered_config(uid, current_config);
+
+        let mut prev_nodes = Nodes::default();
+        prev_nodes
+            .models
+            .insert(uid.to_string(), Arc::new(previous_model));
+
+        let state = StateArtifacts {
+            nodes: Some(prev_nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::from("/tmp/fake_state"),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: std::sync::OnceLock::new(),
+        };
+
+        assert!(!state.is_modified(
+            &current_model,
+            Some(ModificationType::Configs),
+            None,
+            AdapterType::Snowflake
+        ));
+    }
+
+    #[test]
+    fn state_modified_relation_ignores_generated_test_alias_config() {
+        let uid = "test.pkg.unique_orders_order_id.0123456789";
+        let generated_alias = "unique_orders_order_id";
+
+        let mut previous_test = make_test(uid, "model.pkg.orders", "unique");
+        previous_test.__base_attr__.database = "PROD_DB".to_string();
+        previous_test.__base_attr__.schema = "dbt_test__audit".to_string();
+        previous_test.__base_attr__.alias = generated_alias.to_string();
+        previous_test.__base_attr__.unrendered_config.insert(
+            "alias".to_string(),
+            dbt_yaml::Value::string(generated_alias.to_string()),
+        );
+
+        let mut current_test = make_test(uid, "model.pkg.orders", "unique");
+        current_test.__base_attr__.database = "CI_DB".to_string();
+        current_test.__base_attr__.schema = "dbt_cloud_pr_123_dbt_test__audit".to_string();
+        current_test.__base_attr__.alias = generated_alias.to_string();
+
+        let state = state_with_previous_test(previous_test);
+
+        assert!(!state.is_modified(
+            &current_test,
+            Some(ModificationType::Relation),
+            None,
+            AdapterType::Snowflake
+        ));
     }
 
     /// Regression test: `test_signature` must be called O(N) times, not O(N²).

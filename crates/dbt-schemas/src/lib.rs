@@ -225,7 +225,7 @@ pub mod schemas {
         pub use saved_queries_properties::SavedQueriesProperties;
         pub use seed_properties::SeedProperties;
         pub use snapshot_properties::SnapshotProperties;
-        pub use source_properties::{SourceProperties, Tables};
+        pub use source_properties::{SourceProperties, Tables, TablesConfig};
         pub use unit_test_properties::{UnitTestOverrides, UnitTestProperties};
     }
 

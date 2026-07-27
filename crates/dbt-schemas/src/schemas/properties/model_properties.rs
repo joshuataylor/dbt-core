@@ -204,6 +204,27 @@ impl PartialEq for ModelState {
 
 impl Eq for ModelState {}
 
+/// The dbt State configs supported on data tests: only `require_fresh_data_from` and
+/// `evaluate_volatile_sql` (snapshots reuse the full `ModelState`). Other keys are not fields here,
+/// so they are flagged as unknown keys at parse time.
+#[skip_serializing_none]
+#[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
+pub struct DataTestState {
+    pub require_fresh_data_from: Option<UpdatesOn>,
+    pub evaluate_volatile_sql: Option<bool>,
+}
+
+impl PartialEq for DataTestState {
+    fn eq(&self, other: &Self) -> bool {
+        updates_on_eq(
+            &self.require_fresh_data_from,
+            &other.require_fresh_data_from,
+        ) && self.evaluate_volatile_sql == other.evaluate_volatile_sql
+    }
+}
+
+impl Eq for DataTestState {}
+
 fn updates_on_eq(a: &Option<UpdatesOn>, b: &Option<UpdatesOn>) -> bool {
     match (a.as_ref(), b.as_ref()) {
         (None, None) => true,

@@ -709,6 +709,7 @@ pub async fn resolve_data_tests(
                     introspection: IntrospectionKind::None,
                     original_name: test_asset.and_then(|ta| ta.original_name.clone()),
                     group,
+                    state: test_config.state.clone(),
                 }
             },
             __adapter_attr__: AdapterAttr::from_config_and_dialect(

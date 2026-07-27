@@ -1762,6 +1762,7 @@ mod tests {
         };
         use crate::schemas::nodes::DbtSnapshot;
         use crate::schemas::project::configs::snapshot_config::SnapshotMetaColumnNames;
+        use crate::schemas::properties::ModelState;
         use crate::schemas::serde::{GrantConfig, OmissibleGrantConfig, StringOrArrayOfStrings};
         use dbt_common::io_args::StaticAnalysisKind;
         use dbt_common::serde_utils::Omissible;
@@ -1916,6 +1917,19 @@ mod tests {
                 "invalidate_hard_deletes",
                 ExcludeKind::Relevant,
                 Box::new(|n| n.deprecated_config.invalidate_hard_deletes = Some(true)),
+            ),
+            (
+                "state",
+                ExcludeKind::Relevant,
+                Box::new(|n| {
+                    n.deprecated_config.state = Some(ModelState {
+                        lag_tolerance: None,
+                        require_fresh_data_from: None,
+                        evaluate_volatile_sql: Some(true),
+                        pre_clone: None,
+                        execute_hooks_on_any_reuse: None,
+                    })
+                }),
             ),
             // --- parity-excludes: dbt-core's `CompareBehavior.Exclude` on `NodeAndTestConfig` ---
             (

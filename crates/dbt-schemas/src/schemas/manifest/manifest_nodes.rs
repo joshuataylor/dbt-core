@@ -488,6 +488,8 @@ pub struct ManifestSnapshotConfig {
     )]
     pub docs: Option<DocsConfig>,
     pub sync: Option<SyncConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ModelState>,
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
 
@@ -530,6 +532,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             invalidate_hard_deletes: config.invalidate_hard_deletes,
             docs: config.docs,
             sync: config.sync,
+            state: config.state,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -576,6 +579,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             invalidate_hard_deletes: config.invalidate_hard_deletes,
             docs: config.docs,
             sync: config.sync,
+            state: config.state,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }

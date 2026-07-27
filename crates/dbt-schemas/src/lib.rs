@@ -210,6 +210,7 @@ pub mod schemas {
             FunctionReturnType, Volatility,
         };
         pub use metrics_properties::MetricsProperties;
+        pub use model_properties::DataTestState;
         pub use model_properties::ModelConstraint;
         pub use model_properties::ModelFreshness;
         pub use model_properties::ModelProperties;

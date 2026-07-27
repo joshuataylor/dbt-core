@@ -224,7 +224,12 @@ impl DevCloneCandidate {
                 .as_ref()
                 .and_then(|state| state.pre_clone.clone())
                 .map(state_pre_clone_to_policy),
-            Self::Snapshot { .. } => None,
+            Self::Snapshot { local, .. } => local
+                .__snapshot_attr__
+                .state
+                .as_ref()
+                .and_then(|state| state.pre_clone.clone())
+                .map(state_pre_clone_to_policy),
         }
     }
 
@@ -587,6 +592,27 @@ mod tests {
         assert_eq!(
             candidate.pre_clone_policy(),
             Some(CloneIncrementalInDev::Always)
+        );
+    }
+
+    #[test]
+    fn dev_clone_candidate_uses_snapshot_state_pre_clone_policy() {
+        let mut local = make_snapshot("dev", "snapshots_dev", "orders_snapshot");
+        local.__snapshot_attr__.state = Some(dbt_schemas::schemas::properties::ModelState {
+            lag_tolerance: None,
+            require_fresh_data_from: None,
+            evaluate_volatile_sql: None,
+            pre_clone: Some(StatePreClone::IfMissing),
+            execute_hooks_on_any_reuse: None,
+        });
+        let candidate = DevCloneCandidate::Snapshot {
+            local: Arc::new(local),
+            deferred: Arc::new(make_snapshot("prod", "snapshots", "orders_snapshot")),
+        };
+
+        assert_eq!(
+            candidate.pre_clone_policy(),
+            Some(CloneIncrementalInDev::IfTableMissing)
         );
     }
 

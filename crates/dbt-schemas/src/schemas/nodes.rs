@@ -2497,6 +2497,8 @@ impl InternalDbtNode for DbtSnapshot {
             let quote_columns_eq = self_config.quote_columns == other_config.quote_columns;
             let invalidate_hard_deletes_eq =
                 self_config.invalidate_hard_deletes == other_config.invalidate_hard_deletes;
+            // dbt State configs (mirror `ModelConfig::same_config`).
+            let state_eq = self_config.state == other_config.state;
 
             // Adapter specific configs
             let warehouse_config_eq = same_warehouse_config(
@@ -2527,6 +2529,7 @@ impl InternalDbtNode for DbtSnapshot {
                 && static_analysis_eq
                 && quote_columns_eq
                 && invalidate_hard_deletes_eq
+                && state_eq
                 // Adapter specific configs
                 && warehouse_config_eq;
 
@@ -2702,6 +2705,14 @@ impl InternalDbtNode for DbtSnapshot {
                             Some((
                                 format!("{:?}", &self_config.invalidate_hard_deletes),
                                 format!("{:?}", &other_config.invalidate_hard_deletes),
+                            )),
+                        ),
+                        (
+                            "state",
+                            state_eq,
+                            Some((
+                                format!("{:?}", &self_config.state),
+                                format!("{:?}", &other_config.state),
                             )),
                         ),
                         ("warehouse_config", warehouse_config_eq, None),
@@ -4864,6 +4875,11 @@ pub(crate) const DBTTEST_CONFIG_MODIFIERS: &[&str] = &[
     "store_failures",
     "store_failures_as",
     "sql_header",
+    // The data-test `state` config is deliberately NOT a modifier: dbt-core's
+    // `TestConfig.same_contents` is a fixed allowlist that does not compare it, so treating it as a
+    // modifier would over-select against a dbt-core-produced state manifest. If dbt-core ever starts
+    // comparing it, add it here and in `DbtTest::has_same_config` together (see the ignored
+    // `data_test_state_not_promoted_to_modifier_conformance_marker`).
 ];
 
 impl DbtTest {
@@ -4883,6 +4899,8 @@ pub struct DbtTestAttr {
     pub attached_node: Option<String>,
     pub test_metadata: Option<TestMetadata>,
     pub file_key_name: Option<String>,
+    /// dbt State configs (restricted subset), read by the run-cache at run time.
+    pub state: Option<crate::schemas::properties::DataTestState>,
     #[serde(skip_serializing, default = "default_introspection")]
     pub introspection: IntrospectionKind,
     /// The original (untruncated) test name, if truncation occurred.
@@ -4932,6 +4950,8 @@ pub struct DbtSnapshotAttr {
     #[serde(skip_serializing, default = "default_introspection")]
     pub introspection: IntrospectionKind,
     pub sync: Option<SyncConfig>,
+    /// dbt State configs, read by the run-cache at run time.
+    pub state: Option<crate::schemas::properties::ModelState>,
 }
 
 #[skip_serializing_none]
@@ -7446,7 +7466,10 @@ mod seed_has_same_content_tests {
     #[allow(clippy::type_complexity)]
     fn data_test_modifier_set_agrees_across_stage1_and_stage2() {
         use super::{DBTTEST_CONFIG_MODIFIERS, DataTestConfig, DbtTest};
-        use crate::schemas::common::{DbtMaterialization, DbtQuoting, Severity, StoreFailuresAs};
+        use crate::schemas::common::{
+            DbtMaterialization, DbtQuoting, Severity, StoreFailuresAs, UpdatesOn,
+        };
+        use crate::schemas::properties::DataTestState;
         use crate::schemas::serde::StringOrArrayOfStrings;
 
         // Each case mutates exactly one config field away from its default so that Stage 2's
@@ -7515,6 +7538,17 @@ mod seed_has_same_content_tests {
                     c.meta = Some(m);
                 }),
             ),
+            // `state` is honored at run time but is deliberately not a `state:modified` modifier
+            // (see the note on `DBTTEST_CONFIG_MODIFIERS`); exercised here to pin it as a non-modifier.
+            (
+                "state",
+                Box::new(|c| {
+                    c.state = Some(DataTestState {
+                        require_fresh_data_from: Some(UpdatesOn::All),
+                        evaluate_volatile_sql: Some(true),
+                    })
+                }),
+            ),
         ];
 
         // Coverage: every Stage-1 modifier must be exercised, else a modifier could drift untested.
@@ -7546,5 +7580,19 @@ mod seed_has_same_content_tests {
                  from both (both live in nodes.rs)."
             );
         }
+    }
+
+    /// Ignored marker: data-test `state` is not a `state:modified` modifier today because dbt-core's
+    /// `TestConfig.same_contents` does not compare it. It asserts the promoted behavior (`state` in
+    /// `DBTTEST_CONFIG_MODIFIERS`), which does not hold yet. If dbt-core starts comparing these fields,
+    /// add `state` to the modifier set and `DbtTest::has_same_config`, then un-ignore this test.
+    #[test]
+    #[ignore = "conformance-gated: dbt-core TestConfig does not compare data-test state configs"]
+    fn data_test_state_not_promoted_to_modifier_conformance_marker() {
+        assert!(
+            super::DBTTEST_CONFIG_MODIFIERS.contains(&"state"),
+            "data-test `state` is not a `state:modified` modifier; see the note on \
+             DBTTEST_CONFIG_MODIFIERS for the conformance rationale."
+        );
     }
 }

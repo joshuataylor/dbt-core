@@ -2342,10 +2342,44 @@ async fn build_sql_context(
     })
 }
 
+/// The full `ModelState` (5 keys) for models and snapshots. Data tests carry the 2-key
+/// `DataTestState` instead (see the field-level accessors below), so 5-key-only configs such as
+/// `lag_tolerance`/`pre_clone`/`execute_hooks_on_any_reuse` correctly return nothing for tests.
 fn model_state_for_node(node: &dyn InternalDbtNodeAttributes) -> Option<&ModelState> {
+    let any = node.as_any();
+    if let Some(model) = any.downcast_ref::<DbtModel>() {
+        model.__model_attr__.state.as_ref()
+    } else if let Some(snapshot) = any.downcast_ref::<DbtSnapshot>() {
+        snapshot.__snapshot_attr__.state.as_ref()
+    } else {
+        None
+    }
+}
+
+/// `require_fresh_data_from`, honored by models and snapshots (via `ModelState`) and data tests (via
+/// `DataTestState`).
+fn require_fresh_data_from_for_node(
+    node: &dyn InternalDbtNodeAttributes,
+) -> Option<&dbt_schemas::schemas::common::UpdatesOn> {
+    if let Some(state) = model_state_for_node(node) {
+        return state.require_fresh_data_from.as_ref();
+    }
     node.as_any()
-        .downcast_ref::<DbtModel>()
-        .and_then(|model| model.__model_attr__.state.as_ref())
+        .downcast_ref::<DbtTest>()
+        .and_then(|test| test.__test_attr__.state.as_ref())
+        .and_then(|state| state.require_fresh_data_from.as_ref())
+}
+
+/// `evaluate_volatile_sql`, honored by models and snapshots (via `ModelState`) and data tests (via
+/// `DataTestState`).
+fn evaluate_volatile_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> Option<bool> {
+    if let Some(state) = model_state_for_node(node) {
+        return state.evaluate_volatile_sql;
+    }
+    node.as_any()
+        .downcast_ref::<DbtTest>()
+        .and_then(|test| test.__test_attr__.state.as_ref())
+        .and_then(|state| state.evaluate_volatile_sql)
 }
 
 pub fn should_execute_hooks_for_skip_reuse(
@@ -2382,6 +2416,9 @@ fn request_freshness_tolerance_seconds_for_node(
     is_view: bool,
     service_default: i64,
 ) -> i64 {
+    // Data tests never carry `lag_tolerance` (their `DataTestState` has only `require_fresh_data_from`
+    // and `evaluate_volatile_sql`), so their freshness tolerance stays 0. `require_fresh_data_from`
+    // for tests is honored separately via `stale_upstream_policy_for_node`.
     if node.resource_type() == NodeType::Test || is_view {
         0
     } else {
@@ -2403,9 +2440,7 @@ fn resolve_tolerate_nondeterminism(
     node: &dyn InternalDbtNodeAttributes,
     service_default: bool,
 ) -> bool {
-    if let Some(evaluate_volatile_sql) =
-        model_state_for_node(node).and_then(|state| state.evaluate_volatile_sql)
-    {
+    if let Some(evaluate_volatile_sql) = evaluate_volatile_sql_for_node(node) {
         return !evaluate_volatile_sql;
     }
 
@@ -2448,15 +2483,13 @@ fn stale_upstream_policy_for_node(
     use dbt_schemas::schemas::common::UpdatesOn;
     use dbt_state::proto::query_cache::StaleUpstreamPolicy;
 
-    let updates_on = model_state_for_node(node)
-        .and_then(|state| state.require_fresh_data_from.as_ref())
-        .or_else(|| {
-            node.as_any()
-                .downcast_ref::<DbtModel>()
-                .and_then(|model| model.__model_attr__.freshness.as_ref())
-                .and_then(|freshness| freshness.build_after.as_ref())
-                .and_then(|build_after| build_after.updates_on.as_ref())
-        });
+    let updates_on = require_fresh_data_from_for_node(node).or_else(|| {
+        node.as_any()
+            .downcast_ref::<DbtModel>()
+            .and_then(|model| model.__model_attr__.freshness.as_ref())
+            .and_then(|freshness| freshness.build_after.as_ref())
+            .and_then(|build_after| build_after.updates_on.as_ref())
+    });
 
     match updates_on {
         Some(UpdatesOn::All) => StaleUpstreamPolicy::All,
@@ -3597,7 +3630,7 @@ mod tests {
     use dbt_schemas::schemas::Nodes;
     use dbt_schemas::schemas::common::{FreshnessPeriod, ResolvedQuoting, UpdatesOn};
     use dbt_schemas::schemas::profiles::{Execute, SnowflakeDbConfig};
-    use dbt_schemas::schemas::properties::{ModelFreshness, ModelState};
+    use dbt_schemas::schemas::properties::{DataTestState, ModelFreshness, ModelState};
     use dbt_schemas::state::{
         DbtProfile, DbtRuntimeConfig, DummyNodeResolverTracker, Macros, Operations, RenderResults,
         ResolverState,
@@ -5108,6 +5141,63 @@ mod tests {
         );
 
         assert!(!resolve_tolerate_nondeterminism(&model, true));
+    }
+
+    fn snapshot_with_state(state: ModelState) -> DbtSnapshot {
+        let mut snapshot = DbtSnapshot::default();
+        snapshot.__common_attr__.unique_id = "snapshot.test.orders_snapshot".to_string();
+        snapshot.__snapshot_attr__.state = Some(state);
+        snapshot
+    }
+
+    #[test]
+    fn snapshot_state_config_is_honored_by_run_cache() {
+        // Snapshots carry the full `ModelState` (5 keys); every run-cache accessor must read it.
+        let snapshot = snapshot_with_state(ModelState {
+            lag_tolerance: Some(ModelFreshnessRules {
+                count: Some(2),
+                period: Some(FreshnessPeriod::hour),
+                updates_on: None,
+            }),
+            require_fresh_data_from: Some(UpdatesOn::All),
+            evaluate_volatile_sql: Some(true),
+            pre_clone: None,
+            execute_hooks_on_any_reuse: Some(true),
+        });
+
+        assert!(should_execute_hooks_for_skip_reuse(&snapshot, false));
+        assert_eq!(freshness_tolerance_seconds_for_node(&snapshot, 2700), 7200);
+        assert!(!resolve_tolerate_nondeterminism(&snapshot, true));
+        assert_eq!(
+            stale_upstream_policy_for_node(&snapshot),
+            dbt_state::proto::query_cache::StaleUpstreamPolicy::All
+        );
+    }
+
+    fn data_test_with_state(state: DataTestState) -> DbtTest {
+        let mut test = DbtTest::default();
+        test.__common_attr__.unique_id = "test.test.not_null_orders_id".to_string();
+        test.__test_attr__.state = Some(state);
+        test
+    }
+
+    #[test]
+    fn data_test_state_config_is_honored_by_run_cache() {
+        // Data tests carry the restricted `DataTestState` (2 keys). The two supported configs are
+        // honored; the 5-key-only configs (e.g. execute_hooks_on_any_reuse) are not modeled and fall
+        // back to the service default.
+        let test = data_test_with_state(DataTestState {
+            require_fresh_data_from: Some(UpdatesOn::All),
+            evaluate_volatile_sql: Some(true),
+        });
+
+        assert!(!resolve_tolerate_nondeterminism(&test, true));
+        assert_eq!(
+            stale_upstream_policy_for_node(&test),
+            dbt_state::proto::query_cache::StaleUpstreamPolicy::All
+        );
+        assert!(should_execute_hooks_for_skip_reuse(&test, true));
+        assert!(!should_execute_hooks_for_skip_reuse(&test, false));
     }
 
     #[test]

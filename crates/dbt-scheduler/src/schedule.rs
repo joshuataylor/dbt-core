@@ -1513,6 +1513,7 @@ mod tests {
                             introspection: IntrospectionKind::None,
                             original_name: None,
                             group: None,
+                            state: None,
                         },
                         __adapter_attr__: Default::default(),
                         __other__: Default::default(),

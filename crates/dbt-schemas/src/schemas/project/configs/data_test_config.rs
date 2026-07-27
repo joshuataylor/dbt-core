@@ -20,6 +20,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::{
     WarehouseSpecificNodeConfig, default_meta_and_tags, default_quoting,
 };
+use crate::schemas::properties::DataTestState;
 use dbt_proc_macros::Resolvable;
 
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
@@ -316,6 +317,10 @@ pub struct ProjectDataTestConfig {
     #[serde(rename = "+schedule")]
     pub schedule: Option<Schedule>,
 
+    // dbt State configs (restricted subset: only require_fresh_data_from + evaluate_volatile_sql)
+    #[serde(rename = "+state")]
+    pub state: Option<DataTestState>,
+
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectDataTestConfig>>,
 }
 
@@ -373,6 +378,11 @@ pub struct DataTestConfig {
     pub where_: Option<String>,
     #[resolved(promote, default = DbtMaterialization::Test)]
     pub materialized: Option<DbtMaterialization>,
+    // dbt State configs (restricted subset: only require_fresh_data_from + evaluate_volatile_sql).
+    // `skip_serializing_if` avoids emitting `state: null` into data-test manifest nodes (this config
+    // is serialized directly into the manifest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<DataTestState>,
     // Adapter specific configs
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
@@ -401,6 +411,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
             where_: config.where_,
             static_analysis: config.static_analysis,
             materialized: Some(DataTestConfig::default_materialized()), // TODO: config.materialized?
+            state: config.state,
             // Initialize adapter specific configs with values from flattened fields
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 description: None, // Not applicable for data tests
@@ -530,6 +541,7 @@ impl From<DataTestConfig> for ProjectDataTestConfig {
             quoting: config.quoting,
             where_: config.where_,
             static_analysis: config.static_analysis,
+            state: config.state,
             partition_by: config.__warehouse_specific_config__.partition_by,
             // Snowflake fields
             adapter_properties: config.__warehouse_specific_config__.adapter_properties,
@@ -703,6 +715,7 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
             where_,
             static_analysis,
             materialized,
+            state,
             // Adapter specific configs
             __warehouse_specific_config__: warehouse_specific_config,
         } = self;
@@ -746,6 +759,7 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
                 where_,
                 static_analysis,
                 materialized,
+                state,
             ]
         );
     }
@@ -754,4 +768,93 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
 impl ConfigKeys for DataTestConfig {
     // The default implementation from the trait will handle
     // extracting field names via serialization automatically
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DataTestConfig, ProjectDataTestConfig};
+    use crate::schemas::common::UpdatesOn;
+
+    #[test]
+    fn test_project_data_test_config_state_parses_with_plus_prefix() {
+        let config: ProjectDataTestConfig = dbt_yaml::from_str(
+            r#"
++state:
+  require_fresh_data_from: all
+  evaluate_volatile_sql: true
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let data_test_config: DataTestConfig = config.into();
+        let state = data_test_config
+            .state
+            .expect("+state should propagate to DataTestConfig");
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.evaluate_volatile_sql, Some(true));
+    }
+
+    #[test]
+    fn test_data_test_config_state_parses() {
+        let config: DataTestConfig = dbt_yaml::from_str(
+            r#"
+state:
+  require_fresh_data_from: any
+  evaluate_volatile_sql: false
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        let state = config.state.expect("state config should parse");
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::Any));
+        assert_eq!(state.evaluate_volatile_sql, Some(false));
+    }
+
+    #[test]
+    fn test_data_test_config_state_propagates_via_default_to() {
+        use crate::schemas::project::dbt_project::ResolvableConfig;
+        use crate::schemas::properties::DataTestState;
+
+        let parent = DataTestConfig {
+            state: Some(DataTestState {
+                require_fresh_data_from: Some(UpdatesOn::All),
+                evaluate_volatile_sql: Some(true),
+            }),
+            ..Default::default()
+        };
+        let mut child = DataTestConfig::default();
+        child.default_to(&parent);
+
+        let state = child
+            .state
+            .expect("state should propagate from parent to child via default_to");
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.evaluate_volatile_sql, Some(true));
+    }
+
+    #[test]
+    fn test_data_test_state_type_models_only_two_keys() {
+        use crate::schemas::properties::DataTestState;
+
+        // Verifies the `DataTestState` type shape: only `require_fresh_data_from` and
+        // `evaluate_volatile_sql` bind; any other key is silently ignored by serde. This does not
+        // test user-facing rejection of unsupported keys.
+        let state: DataTestState = dbt_yaml::from_str(
+            r#"
+require_fresh_data_from: all
+evaluate_volatile_sql: true
+lag_tolerance:
+  count: 1
+  period: day
+pre_clone: if_missing
+execute_hooks_on_any_reuse: true
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.evaluate_volatile_sql, Some(true));
+    }
 }

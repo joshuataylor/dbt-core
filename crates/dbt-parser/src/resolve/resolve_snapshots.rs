@@ -36,8 +36,8 @@ use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::schemas::common::{
-    DbtChecksum, DbtQuoting, NodeDependsOn, conform_normalized_snapshot_raw_code_to_mantle_format,
-    normalize_sql,
+    DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
+    conform_normalized_snapshot_raw_code_to_mantle_format, normalize_sql,
 };
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::macros::DbtMacro;
@@ -457,6 +457,17 @@ pub async fn resolve_snapshots(
             );
             validate_compute(snapshot_config.compute, error_path)?;
 
+            if let Some(state) = &snapshot_config.state {
+                ModelFreshnessRules::validate(state.lag_tolerance.as_ref()).map_err(|e| {
+                    fs_err!(
+                        code => ErrorCode::InvalidConfig,
+                        loc => dbt_asset.path.clone(),
+                        "{}",
+                        e
+                    )
+                })?;
+            }
+
             let macro_depends_on = all_depends_on
                 .get(&format!("{package_name}.{snapshot_name}"))
                 .cloned()
@@ -588,6 +599,7 @@ pub async fn resolve_snapshots(
                         IntrospectionKind::None
                     },
                     sync: snapshot_config.sync.clone(),
+                    state: snapshot_config.state.clone(),
                 },
                 __adapter_attr__: AdapterAttr::from_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,

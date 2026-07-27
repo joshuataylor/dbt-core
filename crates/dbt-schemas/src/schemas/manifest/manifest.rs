@@ -1266,6 +1266,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                             introspection: IntrospectionKind::None,
                             original_name: None,
                             group: None,
+                            state: test.config.state.clone(),
                         },
                         __adapter_attr__: AdapterAttr::from_config_and_dialect(
                             &test.config.__warehouse_specific_config__,
@@ -1362,6 +1363,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                                 .unwrap_or_default(),
                             introspection: IntrospectionKind::None,
                             sync: snapshot.config.sync.clone(),
+                            state: snapshot.config.state.clone(),
                         },
                         __adapter_attr__: AdapterAttr::from_config_and_dialect(
                             &snapshot.config.__warehouse_specific_config__,

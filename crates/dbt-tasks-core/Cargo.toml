@@ -37,6 +37,7 @@ arrow = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { workspace = true }
 datafusion-expr = { workspace = true }
+futures = { workspace = true }
 humantime = { workspace = true }
 minijinja = { workspace = true }
 parking_lot = { workspace = true }

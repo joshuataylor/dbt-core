@@ -16,9 +16,10 @@ use std::sync::Arc;
 
 use crate::context::TaskRunnerCtx;
 use crate::task::{TaskOp, TaskResult};
+use dbt_adapter::Adapter;
 use dbt_adapter::AdapterResult;
 use dbt_adapter::errors::{Cancellable, into_fs_error};
-use dbt_adapter::metadata::{FreshnessOverride, MetadataQueryOptions};
+use dbt_adapter::metadata::{FreshnessOverride, MetadataAdapter, MetadataQueryOptions};
 use dbt_adapter::record_batch::RecordBatchExt;
 use dbt_adapter::relation::{create_relation, create_relation_from_node};
 use dbt_adapter::sql_types::TypeOps;
@@ -58,6 +59,7 @@ use crate::run_cache::run_cache_request::{
     is_microbatch_model, node_identity,
 };
 use chrono::{DateTime, Utc};
+use futures::stream::{StreamExt, TryStreamExt};
 
 pub fn collect_upstream_hashes(ctx: &TaskRunnerCtx, unique_id: &str) -> HashMap<String, String> {
     ctx.inner
@@ -664,7 +666,84 @@ async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<(
     if relations.is_empty() {
         return Ok(());
     }
-    bulk_prefetch_last_modified_by_schema(ctx, &relations, &overrides).await
+    let started_at = std::time::Instant::now();
+    let result = bulk_prefetch_last_modified_by_schema(ctx, &relations, &overrides).await;
+    maybe_warn_slow_metadata_prefetch(ctx, started_at.elapsed());
+    result
+}
+
+/// Concurrency to use for the per-schema freshness fan-out when a dedicated
+/// metadata warehouse is configured but the profile does not expose a thread
+/// count (e.g. mock / sidecar engines). Keeps the fan-out bounded so a project
+/// with many schemas does not open an unbounded number of connections.
+const DEFAULT_SCHEMA_PREFETCH_FANOUT: usize = 4;
+
+/// Per-`(database, schema)` inputs for the last-modified prefetch, materialized
+/// up front so the borrowed futures can share them whether the groups run
+/// sequentially or concurrently.
+struct SchemaPrefetchGroup {
+    database: String,
+    schema: String,
+    /// Map of `semantic_fqn → rendered relation name` for this group.
+    semantic_to_name: BTreeMap<String, String>,
+    relation_values: Vec<Arc<dyn BaseRelation>>,
+}
+
+/// Fan the per-schema freshness dumps out concurrently only when a dedicated
+/// metadata warehouse is configured.
+///
+/// With a metadata warehouse the queries run on that isolated warehouse instead
+/// of competing with model execution, so issuing them in parallel is a clear
+/// win. Without one they would contend on the main warehouse, so we keep the
+/// sequential behavior to avoid congesting it with many concurrent metadata
+/// queries.
+fn should_fan_out_schema_prefetch(options: &MetadataQueryOptions) -> bool {
+    options
+        .warehouse
+        .as_deref()
+        .is_some_and(|warehouse| !warehouse.is_empty())
+}
+
+/// Total freshness-prefetch time above which we hint that a dedicated metadata
+/// warehouse would help. Mirrors the dbt-core run-cache plugin's threshold.
+const SLOW_METADATA_PREFETCH_WARN_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_secs(15);
+
+/// Whether the slow-metadata-prefetch hint should fire.
+///
+/// The `metadata_warehouse` config (and this INFORMATION_SCHEMA-based fetch) is
+/// Snowflake-specific, so the hint only applies there. It is pointless once a
+/// dedicated warehouse is already configured, since setting it is the fix.
+fn should_warn_slow_metadata_prefetch(
+    adapter_type: AdapterType,
+    options: &MetadataQueryOptions,
+    elapsed: std::time::Duration,
+) -> bool {
+    adapter_type == AdapterType::Snowflake
+        && !should_fan_out_schema_prefetch(options)
+        && elapsed >= SLOW_METADATA_PREFETCH_WARN_THRESHOLD
+}
+
+/// Hint (at most once per run) that configuring a dedicated metadata warehouse
+/// would route these introspection queries to an isolated warehouse and run
+/// them with better parallelism, when the freshness prefetch spent a long time
+/// in INFORMATION_SCHEMA without one configured.
+fn maybe_warn_slow_metadata_prefetch(ctx: &TaskRunnerCtx, elapsed: std::time::Duration) {
+    let metadata_options = run_cache_metadata_query_options(ctx);
+    if !should_warn_slow_metadata_prefetch(ctx.adapter_type(), &metadata_options, elapsed) {
+        return;
+    }
+    emit_warn_log_message(
+        ErrorCode::StateServiceWarn,
+        format!(
+            "Fetching table metadata (e.g., last modified timestamps) from INFORMATION_SCHEMA \
+             took {:.1}s. Set the `metadata_warehouse` config to route these introspection \
+             queries to a dedicated warehouse. This will lead to better parallelism and reduced \
+             contention, resulting in these queries being executed significantly faster.",
+            elapsed.as_secs_f64()
+        ),
+        None,
+    );
 }
 
 /// Prefetch last-modified epochs using per-schema dump queries rather than
@@ -676,9 +755,12 @@ async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<(
 /// (`loaded_at_query` / `loaded_at_field`) are handled separately via the
 /// existing per-table path so their custom freshness logic is preserved.
 ///
-/// An empty result from `freshness_all_in_schema` (adapter not implemented)
-/// leaves the cache empty for that group; per-node lookups handle the misses.
-/// Schema dump errors are treated as unknown freshness for that schema group.
+/// When a dedicated metadata warehouse is configured the per-schema dumps are
+/// fanned out concurrently (bounded by the profile's thread count), since they
+/// run on the isolated warehouse and each single-schema query is far more
+/// selective than one broad multi-schema scan. Without a metadata warehouse the
+/// groups run sequentially so the metadata queries don't contend with model
+/// execution on the main warehouse. See `should_fan_out_schema_prefetch`.
 async fn bulk_prefetch_last_modified_by_schema(
     ctx: &TaskRunnerCtx,
     relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
@@ -718,108 +800,166 @@ async fn bulk_prefetch_last_modified_by_schema(
         return Ok(());
     }
 
-    // For each (database, schema) group, attempt a schema dump. If the adapter
-    // returns an empty map (unsupported), fall back to per-table for that group.
-    for ((database, schema), grouped) in group_relations_by_database_and_schema(&bulk_relations) {
-        let semantic_to_name: BTreeMap<String, String> = grouped
-            .iter()
-            .map(|(name, rel)| (rel.semantic_fqn(), name.clone()))
-            .collect();
-        let relation_values: Vec<Arc<dyn BaseRelation>> = grouped.values().cloned().collect();
-
-        let db = database.as_deref().unwrap_or("");
-        let sch = schema.as_deref().unwrap_or("");
-
-        let dump = match metadata_adapter
-            .freshness_all_in_schema(
-                db,
-                sch,
-                &relation_values,
-                &metadata_options,
-                adapter.cancellation_token(),
-            )
-            .await
-        {
-            Ok(dump) => dump,
-            Err(err) => {
-                let err = into_fs_error(err);
-                // Matches the Python plugin: broad metadata prefetch failures
-                // should not disable dbt State; unknown freshness keeps
-                // downstream decisions conservative.
-                emit_warn_log_message(
-                    ErrorCode::StateServiceWarn,
-                    format!(
-                        "dbt State schema-level freshness dump failed for {db}.{sch}: {err}; \
-                         caching unknown freshness for {} relations",
-                        semantic_to_name.len()
-                    ),
-                    None,
-                );
-                for name in semantic_to_name.values() {
-                    ctx.inner
-                        .run_cache_ctx
-                        .run_cache_metadata
-                        .insert_last_modified_epoch(name, None);
-                }
-                continue;
+    let groups: Vec<SchemaPrefetchGroup> = group_relations_by_database_and_schema(&bulk_relations)
+        .into_iter()
+        .map(|((database, schema), grouped)| {
+            let semantic_to_name = grouped
+                .iter()
+                .map(|(name, rel)| (rel.semantic_fqn(), name.clone()))
+                .collect();
+            let relation_values = grouped.values().cloned().collect();
+            SchemaPrefetchGroup {
+                database: database.unwrap_or_default(),
+                schema: schema.unwrap_or_default(),
+                semantic_to_name,
+                relation_values,
             }
-        };
+        })
+        .collect();
 
-        if dump.is_empty() {
-            // Empty result from the schema dump. This is typically caused by
-            // INFORMATION_SCHEMA eventual consistency: Fusion's global prefetch
-            // fires eagerly at run start (before any node executes), whereas the
-            // dbt-core plugin prefetches lazily on the first node-start event.
-            // The extra seconds of compilation time in the plugin's path are
-            // usually enough for Snowflake's INFORMATION_SCHEMA to propagate a
-            // table created by the immediately preceding run. Fusion doesn't get
-            // that grace period, so the dump can return empty even when the table
-            // actually exists.
-            //
-            // Fall back to freshness_with_overrides_and_options for this schema
-            // group. That call is still batched — one query per database group
-            // with all tables in a single WHERE clause (the old per-table predicate
-            // form rather than the schema-only dump form) — so it does not
-            // degenerate into one query per table. The fallback only fires when
-            // the schema dump returns empty, which is unusual, so the cost of the
-            // larger WHERE clause is acceptable.
+    // Sequential when no metadata warehouse is set (fan-out width 1); otherwise
+    // keep up to `fan_out` schema dumps in flight at once so many schemas don't
+    // open an unbounded number of connections. A sliding window (rather than
+    // fixed batches) means a slow schema never leaves the other slots idle.
+    let fan_out = if should_fan_out_schema_prefetch(&metadata_options) {
+        adapter
+            .engine()
+            .threads()
+            .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT)
+            .max(1)
+    } else {
+        1
+    };
+
+    let mut group_futures = Vec::with_capacity(groups.len());
+    for group in &groups {
+        group_futures.push(prefetch_last_modified_for_schema_group(
+            ctx,
+            adapter,
+            metadata_adapter.as_ref(),
+            &metadata_options,
+            group,
+        ));
+    }
+
+    futures::stream::iter(group_futures)
+        .buffer_unordered(fan_out)
+        .try_collect::<Vec<()>>()
+        .await?;
+
+    Ok(())
+}
+
+/// Prefetch last-modified epochs for a single `(database, schema)` group and
+/// write them into `run_cache_metadata`.
+///
+/// A schema-dump failure is treated as unknown freshness for the group (cached
+/// as `None`) and does not propagate, matching the plugin: broad metadata
+/// prefetch failures should not disable dbt State. An empty dump falls back to
+/// the batched per-table path; only that fallback can propagate an error.
+async fn prefetch_last_modified_for_schema_group(
+    ctx: &TaskRunnerCtx,
+    adapter: &Adapter,
+    metadata_adapter: &dyn MetadataAdapter,
+    metadata_options: &MetadataQueryOptions,
+    group: &SchemaPrefetchGroup,
+) -> FsResult<()> {
+    let SchemaPrefetchGroup {
+        database,
+        schema,
+        semantic_to_name,
+        relation_values,
+    } = group;
+
+    let dump = match metadata_adapter
+        .freshness_all_in_schema(
+            database,
+            schema,
+            relation_values,
+            metadata_options,
+            adapter.cancellation_token(),
+        )
+        .await
+    {
+        Ok(dump) => dump,
+        Err(err) => {
+            let err = into_fs_error(err);
+            // Matches the Python plugin: broad metadata prefetch failures
+            // should not disable dbt State; unknown freshness keeps
+            // downstream decisions conservative.
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,
                 format!(
-                    "dbt State schema-level freshness dump returned empty for {db}.{sch}; \
-                     falling back to per-node warehouse queries for {} relations",
+                    "dbt State schema-level freshness dump failed for {database}.{schema}: {err}; \
+                     caching unknown freshness for {} relations",
                     semantic_to_name.len()
                 ),
                 None,
             );
-            let empty_overrides = BTreeMap::new();
-            let freshness = metadata_adapter
-                .freshness_with_overrides_and_options(
-                    &relation_values,
-                    &empty_overrides,
-                    &metadata_options,
-                    adapter.cancellation_token(),
-                )
-                .await
-                .map_err(into_fs_error)?;
-            for (sem_fqn, name) in &semantic_to_name {
-                let epoch = freshness
-                    .get(sem_fqn)
-                    .map(|m| m.last_altered.timestamp_millis());
+            for name in semantic_to_name.values() {
                 ctx.inner
                     .run_cache_ctx
                     .run_cache_metadata
-                    .insert_last_modified_epoch(name, epoch);
+                    .insert_last_modified_epoch(name, None);
             }
-        } else {
-            for (sem_fqn, name) in &semantic_to_name {
-                let epoch = dump.get(sem_fqn).map(|m| m.last_altered.timestamp_millis());
-                ctx.inner
-                    .run_cache_ctx
-                    .run_cache_metadata
-                    .insert_last_modified_epoch(name, epoch);
-            }
-        };
+            return Ok(());
+        }
+    };
+
+    if dump.is_empty() {
+        // Empty result from the schema dump. This is typically caused by
+        // INFORMATION_SCHEMA eventual consistency: Fusion's global prefetch
+        // fires eagerly at run start (before any node executes), whereas the
+        // dbt-core plugin prefetches lazily on the first node-start event.
+        // The extra seconds of compilation time in the plugin's path are
+        // usually enough for Snowflake's INFORMATION_SCHEMA to propagate a
+        // table created by the immediately preceding run. Fusion doesn't get
+        // that grace period, so the dump can return empty even when the table
+        // actually exists.
+        //
+        // Fall back to freshness_with_overrides_and_options for this schema
+        // group. That call is still batched — one query per database group
+        // with all tables in a single WHERE clause (the old per-table predicate
+        // form rather than the schema-only dump form) — so it does not
+        // degenerate into one query per table. The fallback only fires when
+        // the schema dump returns empty, which is unusual, so the cost of the
+        // larger WHERE clause is acceptable.
+        emit_warn_log_message(
+            ErrorCode::StateServiceWarn,
+            format!(
+                "dbt State schema-level freshness dump returned empty for {database}.{schema}; \
+                 falling back to per-node warehouse queries for {} relations",
+                semantic_to_name.len()
+            ),
+            None,
+        );
+        let empty_overrides = BTreeMap::new();
+        let freshness = metadata_adapter
+            .freshness_with_overrides_and_options(
+                relation_values,
+                &empty_overrides,
+                metadata_options,
+                adapter.cancellation_token(),
+            )
+            .await
+            .map_err(into_fs_error)?;
+        for (sem_fqn, name) in semantic_to_name {
+            let epoch = freshness
+                .get(sem_fqn)
+                .map(|m| m.last_altered.timestamp_millis());
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .insert_last_modified_epoch(name, epoch);
+        }
+    } else {
+        for (sem_fqn, name) in semantic_to_name {
+            let epoch = dump.get(sem_fqn).map(|m| m.last_altered.timestamp_millis());
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .insert_last_modified_epoch(name, epoch);
+        }
     }
 
     Ok(())
@@ -4777,6 +4917,60 @@ mod tests {
         let options = metadata_query_options_for_warehouses(None, Some("legacy_wh".to_string()));
 
         assert_eq!(options.warehouse.as_deref(), Some("legacy_wh"));
+    }
+
+    #[test]
+    fn fans_out_schema_prefetch_only_when_metadata_warehouse_is_set() {
+        let with_warehouse = MetadataQueryOptions {
+            warehouse: Some("META_WH".to_string()),
+        };
+        assert!(should_fan_out_schema_prefetch(&with_warehouse));
+
+        let empty_warehouse = MetadataQueryOptions {
+            warehouse: Some(String::new()),
+        };
+        assert!(!should_fan_out_schema_prefetch(&empty_warehouse));
+
+        let no_warehouse = MetadataQueryOptions { warehouse: None };
+        assert!(!should_fan_out_schema_prefetch(&no_warehouse));
+    }
+
+    #[test]
+    fn warns_on_slow_snowflake_prefetch_without_metadata_warehouse() {
+        let no_warehouse = MetadataQueryOptions { warehouse: None };
+        let with_warehouse = MetadataQueryOptions {
+            warehouse: Some("META_WH".to_string()),
+        };
+        let slow = SLOW_METADATA_PREFETCH_WARN_THRESHOLD;
+        let fast = SLOW_METADATA_PREFETCH_WARN_THRESHOLD - std::time::Duration::from_secs(1);
+
+        // Slow, Snowflake, no dedicated warehouse → hint.
+        assert!(should_warn_slow_metadata_prefetch(
+            AdapterType::Snowflake,
+            &no_warehouse,
+            slow
+        ));
+
+        // A dedicated warehouse is already the fix → stay quiet.
+        assert!(!should_warn_slow_metadata_prefetch(
+            AdapterType::Snowflake,
+            &with_warehouse,
+            slow
+        ));
+
+        // Fast prefetch → nothing to hint.
+        assert!(!should_warn_slow_metadata_prefetch(
+            AdapterType::Snowflake,
+            &no_warehouse,
+            fast
+        ));
+
+        // The `metadata_warehouse` config is Snowflake-specific.
+        assert!(!should_warn_slow_metadata_prefetch(
+            AdapterType::Bigquery,
+            &no_warehouse,
+            slow
+        ));
     }
 
     #[test]

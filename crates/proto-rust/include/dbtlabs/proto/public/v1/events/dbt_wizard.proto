@@ -5,6 +5,7 @@ option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/dbt_wizar
 
 import "dbtlabs/proto/public/v1/common/vortex_options.proto";
 import "dbtlabs/proto/public/v1/events/vortex.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
 
 // Emitted once at session start and once at session end.
 message DbtWizardSession {
@@ -48,6 +49,7 @@ message DbtWizardSession {
   // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
   // auth state, enabling a join between pre-auth and post-auth events.
   string anonymous_id = 18;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 19;
 }
 
 // Emitted once per turn completion.
@@ -82,6 +84,7 @@ message DbtWizardTurn {
   string collaboration_mode = 15;
   // Whether the WIZARD_INTERNAL env var was set for this session.
   bool is_wizard_internal = 16;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 17;
 }
 
 // Emitted once per tool invocation.
@@ -106,6 +109,7 @@ message DbtWizardToolUse {
   int64 execution_time_ms = 8;
   // Whether the WIZARD_INTERNAL env var was set for this session.
   bool is_wizard_internal = 9;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
 }
 
 // Emitted immediately at binary launch, before onboarding or thread creation.
@@ -134,6 +138,7 @@ message DbtWizardCliStarted {
   // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
   // auth state, enabling a join between pre-auth and post-auth events.
   string anonymous_id = 13;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 14;
 }
 
 // Emitted once per onboarding step transition.
@@ -174,6 +179,7 @@ message DbtWizardOnboarding {
   // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
   // auth state, enabling a join between pre-auth and post-auth events.
   string anonymous_id = 20;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 21;
 }
 
 // Emitted at subagent start and end to track full lifecycle.
@@ -208,6 +214,7 @@ message DbtWizardSubAgent {
   // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
   // auth state, enabling a join between pre-auth and post-auth events.
   string anonymous_id = 17;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 18;
 }
 
 // Emitted on structured errors (sidecar crashes, provider auth failures, panics).
@@ -244,6 +251,7 @@ message DbtWizardError {
   // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
   // auth state, enabling a join between pre-auth and post-auth events.
   string anonymous_id = 20;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 21;
 }
 
 // Emitted when a user submits feedback via /feedback.
@@ -284,4 +292,5 @@ message DbtWizardFeedback {
   // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
   // auth state, enabling a join between pre-auth and post-auth events.
   string anonymous_id = 16;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 17;
 }

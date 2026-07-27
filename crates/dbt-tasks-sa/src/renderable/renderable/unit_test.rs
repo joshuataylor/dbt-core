@@ -24,8 +24,10 @@ use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
 use dbt_common::{ErrorCode, FsResult, MacroSpansOnly, err, fs_err};
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::build_run_node_context;
+use dbt_jinja_utils::serde::single_expression_body;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
@@ -568,11 +570,40 @@ fn populate_schema_from_empty_relation(
     )
 }
 
+/// `run_started_at` is a plain datetime global, not a macro invoked with
+/// `()` (dbt-core lets it be frozen via `overrides.macros` anyway). Stubbing
+/// it out as a callable like other macro overrides breaks
+/// `.strftime()`/`.astimezone()`, so eval its value as Jinja and bind the
+/// resulting `Value` directly.
+fn bind_run_started_at_override(
+    macro_value: &YmlValue,
+    compile_context: &BTreeMap<String, Value>,
+    env: &JinjaEnv,
+) -> Value {
+    macro_value
+        .as_str()
+        .and_then(single_expression_body)
+        .and_then(|expr| {
+            env.compile_expression(expr)
+                .ok()?
+                .eval(compile_context.clone(), &[])
+                .ok()
+        })
+        .unwrap_or_else(|| MinijinjaValue::from_serialize(macro_value.clone()))
+}
+
 fn bind_override_macros(
     macros: &BTreeMap<String, YmlValue>,
     compile_context: &mut BTreeMap<String, Value>,
+    env: &JinjaEnv,
 ) {
     for (macro_name, macro_value) in macros.iter() {
+        if macro_name == "run_started_at" {
+            let value = bind_run_started_at_override(macro_value, compile_context, env);
+            compile_context.insert(macro_name.clone(), value);
+            continue;
+        }
+
         let return_value = MinijinjaValue::from_serialize(macro_value.clone());
         let fn_stub =
             MinijinjaValue::from_function(move |_args: &[MinijinjaValue]| Ok(return_value.clone()));
@@ -601,8 +632,8 @@ pub fn apply_unit_test_overrides(
     ctx: &TaskRunnerCtx,
 ) {
     // Override for Macros
-    if let Some(macros) = &overrides.macros {
-        bind_override_macros(macros, compile_context);
+    if let Some(macros) = overrides.macros.as_ref() {
+        bind_override_macros(macros, compile_context, &ctx.env);
     }
 
     // Override for Environment Variables
@@ -2164,6 +2195,67 @@ mod tests {
     use dbt_test_primitives::assert_contains;
 
     type YmlValue = dbt_yaml::Value;
+
+    /// Binds `value` as the `run_started_at` override and renders `template`,
+    /// exercising the same path unit tests use.
+    fn render_run_started_at_override(value: YmlValue, template: &str) -> String {
+        let mut raw_env = minijinja::Environment::new();
+        minijinja_contrib::add_to_environment(&mut raw_env);
+        let env = JinjaEnv::new(raw_env);
+
+        let mut macros = BTreeMap::new();
+        macros.insert("run_started_at".to_string(), value);
+
+        let mut compile_context: BTreeMap<String, Value> = BTreeMap::new();
+        bind_override_macros(&macros, &mut compile_context, &env);
+
+        env.render_str(template, &compile_context, &[])
+            .expect("bound run_started_at override should render")
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt-fusion/issues/12271:
+    /// dbt-core lets `overrides.macros` freeze `run_started_at`, but unlike a
+    /// real macro override it's accessed without `()`, so wrapping it as a
+    /// callable stub broke `.strftime()`/`.astimezone()`.
+    #[test]
+    fn test_run_started_at_override_binds_a_real_value_not_a_callable_stub() {
+        let rendered = render_run_started_at_override(
+            YmlValue::string(
+                "{{ modules.datetime.datetime.strptime('2025-09-04 20:00:00', '%Y-%m-%d %H:%M:%S') }}"
+                    .to_string(),
+            ),
+            "{{ run_started_at.strftime('%Y-%m-%d') }}",
+        );
+        assert_eq!(rendered, "2025-09-04");
+    }
+
+    // Unhappy paths: a non-datetime override must still bind as a plain value,
+    // never a callable stub, so bare interpolation renders it. `.strftime()` on
+    // these would error the same as it does in dbt-core.
+    #[test]
+    fn test_run_started_at_override_plain_string_binds_as_value() {
+        let rendered = render_run_started_at_override(
+            YmlValue::string("2025-09-04 20:00:00".to_string()),
+            "{{ run_started_at }}",
+        );
+        assert_eq!(rendered, "2025-09-04 20:00:00");
+    }
+
+    #[test]
+    fn test_run_started_at_override_non_datetime_expression_evaluates() {
+        let rendered = render_run_started_at_override(
+            YmlValue::string("{{ 'hello' }}".to_string()),
+            "{{ run_started_at }}",
+        );
+        assert_eq!(rendered, "hello");
+    }
+
+    #[test]
+    fn test_run_started_at_override_non_string_binds_as_value() {
+        let rendered =
+            render_run_started_at_override(YmlValue::number(12345.into()), "{{ run_started_at }}");
+        assert_eq!(rendered, "12345");
+    }
 
     #[test]
     fn test_create_cte_name_from_fqn_with_bigquery_backticks() {

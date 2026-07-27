@@ -635,6 +635,12 @@ pub fn check_single_expression_without_whitepsace_control(input: &str) -> bool {
     true
 }
 
+/// The inner expression of a single `{{ expr }}` string accepted by
+/// `check_single_expression_without_whitepsace_control`, or `None`.
+pub fn single_expression_body(input: &str) -> Option<&str> {
+    check_single_expression_without_whitepsace_control(input).then(|| &input[2..input.len() - 2])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

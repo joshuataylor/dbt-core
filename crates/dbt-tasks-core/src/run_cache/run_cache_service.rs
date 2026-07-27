@@ -21,7 +21,7 @@ use dbt_adapter::AdapterResult;
 use dbt_adapter::errors::{Cancellable, into_fs_error};
 use dbt_adapter::metadata::{FreshnessOverride, MetadataAdapter, MetadataQueryOptions};
 use dbt_adapter::record_batch::RecordBatchExt;
-use dbt_adapter::relation::{create_relation, create_relation_from_node};
+use dbt_adapter::relation::{RelationObject, create_relation, create_relation_from_node};
 use dbt_adapter::sql_types::TypeOps;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::QueryCtx;
@@ -33,6 +33,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_frontend_common::ident::FullyQualifiedName;
 use dbt_frontend_common::named_reference::NamedReference;
 use dbt_frontend_common::sources_extractor::SourcesExtractor;
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::schemas::common::{DbtMaterialization, ModelFreshnessRules, ResolvedQuoting};
 use dbt_schemas::schemas::profiles::DbConfig;
 use dbt_schemas::schemas::properties::ModelState;
@@ -645,6 +646,52 @@ fn collect_global_prefetch_relations(
     (relations, overrides)
 }
 
+/// Render a `Query` override's `loaded_at_query` Jinja so macros / `{{ this }}`
+/// expand before the SQL is sent; `Field` overrides pass through unchanged.
+fn render_freshness_override(
+    ovr: FreshnessOverride,
+    relation: &Arc<dyn BaseRelation>,
+    jinja_env: &JinjaEnv,
+    base_context: &BTreeMap<String, minijinja::Value>,
+) -> FsResult<FreshnessOverride> {
+    let FreshnessOverride::Query(query) = ovr else {
+        return Ok(ovr);
+    };
+
+    let mut render_context = base_context.clone();
+    render_context.insert(
+        "this".to_owned(),
+        RelationObject::new(relation.clone()).into_value(),
+    );
+    let require = |part: Option<&str>, name: &str| -> FsResult<String> {
+        part.map(str::to_owned).ok_or_else(|| {
+            fs_err!(
+                ErrorCode::Unexpected,
+                "Cannot render loaded_at_query for source '{}': missing {name}",
+                relation.semantic_fqn(),
+            )
+        })
+    };
+    // Database is optional because some adapters (e.g. BigQuery) render relations without one
+    render_context.insert(
+        "database".to_owned(),
+        minijinja::Value::from(relation.database()),
+    );
+    render_context.insert(
+        "schema".to_owned(),
+        minijinja::Value::from(require(relation.schema(), "schema")?),
+    );
+    render_context.insert(
+        "identifier".to_owned(),
+        minijinja::Value::from(require(relation.identifier(), "identifier")?),
+    );
+
+    let rendered = jinja_env
+        .render_named_str(&relation.semantic_fqn(), &query, &render_context, &[])
+        .map_err(|e| FsError::from_jinja_err(e, "Failed to render source loaded_at_query"))?;
+    Ok(FreshnessOverride::Query(rendered))
+}
+
 /// Batch-prefetch `last_modified_epoch` for all selected nodes and their
 /// runtime dependencies, warming `run_cache_metadata` before any per-node
 /// submit fires.
@@ -666,8 +713,18 @@ async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<(
     if relations.is_empty() {
         return Ok(());
     }
+    let mut rendered_overrides = BTreeMap::new();
+    for (fqn, ovr) in overrides {
+        let ovr = match relations.get(&fqn) {
+            Some(relation) => {
+                render_freshness_override(ovr, relation, ctx.env.as_ref(), &ctx.inner.base_context)?
+            }
+            None => ovr,
+        };
+        rendered_overrides.insert(fqn, ovr);
+    }
     let started_at = std::time::Instant::now();
-    let result = bulk_prefetch_last_modified_by_schema(ctx, &relations, &overrides).await;
+    let result = bulk_prefetch_last_modified_by_schema(ctx, &relations, &rendered_overrides).await;
     maybe_warn_slow_metadata_prefetch(ctx, started_at.elapsed());
     result
 }
@@ -2657,6 +2714,12 @@ async fn collect_table_modified_infos(
                     if let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>()
                         && let Some(kind) = source_freshness_override(source)
                     {
+                        let kind = render_freshness_override(
+                            kind,
+                            &relation,
+                            ctx.env.as_ref(),
+                            &ctx.inner.base_context,
+                        )?;
                         freshness_overrides.insert(relation.semantic_fqn(), kind);
                     }
                     relations.insert(name, relation);
@@ -6145,6 +6208,90 @@ mod tests {
         assert!(
             matches!(overrides[&source_fqn], FreshnessOverride::Field(_)),
             "override kind should be Field"
+        );
+    }
+
+    // Regression #15499: a `loaded_at_query` Jinja macro / `{{ this }}` must be
+    // rendered before it reaches the warehouse, else the raw `{{ ... }}` errors.
+    #[test]
+    fn render_freshness_override_renders_loaded_at_query_macro() {
+        let relation: Arc<dyn BaseRelation> = create_relation(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "raw".to_string(),
+            Some("customers".to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into();
+
+        let mut mj = minijinja::Environment::new();
+        mj.add_function(
+            "get_from_watermark_table",
+            || "select max(updated_at) from db.dbt_jyeo.watermark",
+        );
+        let jinja_env = JinjaEnv::new(mj);
+        let base_context = BTreeMap::new();
+
+        // Macro call is expanded, not sent raw.
+        let rendered = render_freshness_override(
+            FreshnessOverride::Query("{{ get_from_watermark_table() }}".to_string()),
+            &relation,
+            &jinja_env,
+            &base_context,
+        )
+        .unwrap();
+        assert!(
+            matches!(rendered, FreshnessOverride::Query(q) if q == "select max(updated_at) from db.dbt_jyeo.watermark"),
+            "loaded_at_query macro should be rendered"
+        );
+
+        // `{{ this }}` resolves to the source relation.
+        let rendered = render_freshness_override(
+            FreshnessOverride::Query("select max(ts) from {{ this }}".to_string()),
+            &relation,
+            &jinja_env,
+            &base_context,
+        )
+        .unwrap();
+        let expected = format!("select max(ts) from {}", relation.render_self_as_str());
+        assert!(
+            matches!(rendered, FreshnessOverride::Query(q) if q == expected),
+            "{{{{ this }}}} should resolve to the relation"
+        );
+
+        // Field overrides are passed through untouched.
+        let rendered = render_freshness_override(
+            FreshnessOverride::Field("updated_at".to_string()),
+            &relation,
+            &jinja_env,
+            &base_context,
+        )
+        .unwrap();
+        assert!(matches!(rendered, FreshnessOverride::Field(f) if f == "updated_at"));
+
+        // A relation missing a required component (here, identifier) errors
+        // rather than rendering an unqualified name into the warehouse SQL.
+        let no_identifier: Arc<dyn BaseRelation> = create_relation(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "raw".to_string(),
+            None,
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into();
+        assert!(
+            render_freshness_override(
+                FreshnessOverride::Query("select 1".to_string()),
+                &no_identifier,
+                &jinja_env,
+                &base_context,
+            )
+            .is_err(),
+            "missing identifier should error, not render an unqualified name"
         );
     }
 

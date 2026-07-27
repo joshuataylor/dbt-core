@@ -53,7 +53,6 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::Object;
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
-use tracing::warn;
 
 use super::common::handle_render_result;
 
@@ -1894,8 +1893,16 @@ fn create_values(
                 .iter()
                 .map(|f| f.name().as_str())
                 .collect();
-            warn!(
-                "Invalid column name(s): {} in row {} of unit test fixture for '{relation_name}'. Accepted columns are: {:?}",
+            // `expect` fixtures never allow pseudocolumns; use that to match dbt
+            // Core's wording ("expected output" vs the quoted input relation name).
+            let fixture_desc = if allow_pseudocolumns {
+                format!("'{relation_name}'")
+            } else {
+                "expected output".to_string()
+            };
+            return err!(
+                ErrorCode::InvalidConfig,
+                "Invalid column name(s): {} in row {} of unit test fixture for {fixture_desc}. Accepted columns for {fixture_desc} are: {:?}",
                 invalid_columns.iter().map(|c| format!("'{c}'")).join(", "),
                 i + 1,
                 accepted_columns

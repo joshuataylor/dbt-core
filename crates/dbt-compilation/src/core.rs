@@ -111,8 +111,7 @@ async fn resolve_phase(
     resolver_hooks: Arc<dyn ResolverHooks>,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     use dbt_parser::resolver::resolve;
-    use dbt_schemas::schemas::Nodes;
-    use dbt_schemas::state::Macros;
+    use dbt_schemas::state::ResolvedNodes;
 
     let io = &resolve_args.io;
     let dbt_state = loaded_project.dbt_state.clone();
@@ -127,18 +126,16 @@ async fn resolve_phase(
         dbt_state
     };
 
-    // Get cached macros and nodes if available
-    let macros = if let Some(cache) = cache_state {
-        cache.unimpacted_resolved_nodes.macros.clone()
-    } else {
-        Macros::default()
-    };
-
-    let nodes = if let Some(cache) = cache_state {
-        cache.unimpacted_resolved_nodes.nodes.clone()
-    } else {
-        Nodes::default()
-    };
+    // Get cached macros and nodes if available. `operations` is intentionally not seeded
+    // here; `add_all_unchanged_nodes` below owns restoring it after resolution.
+    let ResolvedNodes {
+        nodes,
+        disabled_nodes,
+        macros,
+        operations: _,
+    } = cache_state
+        .map(|c| c.unimpacted_resolved_nodes.clone())
+        .unwrap_or_default();
 
     let get_relation_calls = if let Some(cache) = cache_state {
         cache.unimpacted_get_relation_calls.clone()
@@ -165,6 +162,7 @@ async fn resolve_phase(
         dbt_state.clone(),
         macros,
         nodes,
+        disabled_nodes,
         get_relation_calls,
         get_columns_in_relation_calls,
         patterned_dangling_sources,

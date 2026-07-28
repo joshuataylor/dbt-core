@@ -97,6 +97,7 @@ pub async fn resolve(
     dbt_state: Arc<DbtState>,
     macros: Macros,
     nodes: Nodes,
+    disabled_nodes: Nodes,
     get_relation_calls: GetRelationCalls,
     get_columns_in_relation_calls: GetColumnsInRelationCalls,
     patterned_dangling_sources: PatternedDanglingSources,
@@ -192,7 +193,7 @@ pub async fn resolve(
     let mut all_runtime_configs: BTreeMap<String, Arc<DbtRuntimeConfig>> = BTreeMap::new();
 
     // let mut nodes = Nodes::default();
-    let mut disabled_nodes = Nodes::default();
+    let mut disabled_nodes = disabled_nodes;
     resolver_hooks.pre_resolve(&arg.io, adapter_type, &mut nodes, root_project_quoting)?;
     let root_project_configs =
         build_root_project_configs(arg, dbt_state.root_project(), root_project_quoting)?;

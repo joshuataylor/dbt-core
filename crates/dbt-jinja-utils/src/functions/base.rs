@@ -337,22 +337,9 @@ pub fn fromjson(_state: &State, args: &[Value]) -> Result<Value, Error> {
     let default = iter.next_kwarg::<Option<Value>>("default")?;
     iter.finish()?;
 
-    // Try strict JSON first
     match serde_json::from_str::<serde_json::Value>(string) {
         Ok(value) => Ok(Value::from_serialize(value)),
-        Err(json_err) => {
-            // Fall back to YAML to support unquoted scalars or simple mappings
-            match dbt_yaml::from_str::<dbt_yaml::Value>(string) {
-                Ok(yaml_value) => Ok(Value::from_serialize(yaml_value)),
-                Err(_) => match default {
-                    Some(default_value) => Ok(default_value),
-                    None => Err(Error::new(
-                        ErrorKind::InvalidOperation,
-                        format!("Failed to parse JSON: {json_err}"),
-                    )),
-                },
-            }
-        }
+        Err(_) => Ok(default.unwrap_or_else(|| Value::from(()))),
     }
 }
 
@@ -1707,16 +1694,27 @@ mod tests {
     }
 
     #[test]
-    fn test_fromjson_parses_plain_string_via_yaml_fallback() {
+    fn test_fromjson_returns_none_for_invalid_json() {
         let mut env = Environment::new();
         env.add_func_func("fromjson", fromjson);
 
-        // Should parse as a string via YAML fallback when JSON parsing fails
         let tmpl = env
-            .template_from_str("{{ fromjson('i_am_string') }}")
+            .template_from_str("{{ fromjson('plain: [tag') is none }}")
             .unwrap();
         let output = tmpl.render(Value::UNDEFINED, &[]).unwrap();
-        assert_eq!(output.trim(), "i_am_string");
+        assert_eq!(output.trim(), "True");
+    }
+
+    #[test]
+    fn test_fromjson_returns_default_for_invalid_json() {
+        let mut env = Environment::new();
+        env.add_func_func("fromjson", fromjson);
+
+        let tmpl = env
+            .template_from_str("{{ fromjson('plain: [tag', default={'fallback': 1}) }}")
+            .unwrap();
+        let output = tmpl.render(Value::UNDEFINED, &[]).unwrap();
+        assert_eq!(output.trim(), "{'fallback': 1}");
     }
 
     fn make_env_with_var() -> minijinja::Environment<'static> {

@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use dbt_jinja_ctx::{
     JinjaObject, LazyModelWrapper, MacroLookupContext, RunNodeCtx, to_jinja_btreemap,
+    to_model_context_map,
 };
 use indexmap::IndexMap;
 use minijinja::Value as MinijinjaValue;
@@ -31,6 +32,8 @@ fn fixture_run_node_ctx(
         MinijinjaValue::from("dbt_columns".to_string()),
     );
 
+    let shared_model_map = to_model_context_map(model_inner);
+
     let mut builtins_inner: BTreeMap<String, MinijinjaValue> = BTreeMap::new();
     builtins_inner.insert("ref".to_string(), MinijinjaValue::from("ref-fn-stub"));
     builtins_inner.insert("config".to_string(), MinijinjaValue::from("config-stub"));
@@ -45,11 +48,11 @@ fn fixture_run_node_ctx(
         post_hooks,
         config: MinijinjaValue::from("run-config-stub"),
         model: JinjaObject::new(LazyModelWrapper::new(
-            model_inner.clone(),
+            shared_model_map.clone(),
             PathBuf::from("/tmp/nonexistent.sql"),
         )),
         node: JinjaObject::new(LazyModelWrapper::new(
-            model_inner,
+            shared_model_map,
             PathBuf::from("/tmp/nonexistent.sql"),
         )),
         connection_name: String::new(),

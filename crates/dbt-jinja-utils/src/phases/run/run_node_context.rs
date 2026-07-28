@@ -29,6 +29,7 @@ use serde::Serialize;
 
 use dbt_jinja_ctx::{
     HookConfig, JinjaObject, LazyModelWrapper, MacroLookupContext, RunNodeCtx, to_jinja_btreemap,
+    to_model_context_map,
 };
 
 use super::run_config::RunConfig;
@@ -219,11 +220,14 @@ fn build_model_context_fields<S: Serialize>(
         valid_keys,
     };
 
-    // Create the lazy wrapper for the model with the compiled path
+    // Create the lazy wrappers for the model with the compiled path. Both
+    // share one mutable map so `{% do model.update(...) %}` in a
+    // materialization is observable through `model` and `node` alike.
     let compiled_path =
         node.get_node_path_abs(NodePathKind::Compiled, &io_args.in_dir, &io_args.out_dir);
-    let lazy_model = LazyModelWrapper::new(model_map.clone(), compiled_path.clone());
-    let lazy_node = LazyModelWrapper::new(model_map, compiled_path);
+    let shared_model_map = to_model_context_map(model_map);
+    let lazy_model = LazyModelWrapper::new(shared_model_map.clone(), compiled_path.clone());
+    let lazy_node = LazyModelWrapper::new(shared_model_map, compiled_path);
 
     ModelContextFields {
         this: this_relation,

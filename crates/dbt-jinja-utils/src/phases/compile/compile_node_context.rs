@@ -19,7 +19,9 @@ use std::{
     sync::Arc,
 };
 
-use dbt_jinja_ctx::{CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap};
+use dbt_jinja_ctx::{
+    CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap, to_model_context_map,
+};
 
 use crate::phases::compile_and_run_context::{FunctionFunction, SourceFunction};
 use dbt_schemas::schemas::project::ConfigKeys;
@@ -356,11 +358,10 @@ where
 
     // Build the typed per-node overlay. Object-typed slots are wrapped via
     // `MinijinjaValue::from_object(...)` HERE rather than typed as concrete
-    // types in `CompileNodeCtx`, because going through serde would change
-    // `model` and `builtins` from `BTreeMap<String, MinijinjaValue>` Objects
-    // (which downstream code downcasts back to that exact concrete type)
-    // into a `MutableMap<Value, Value>` and silently break the downcast —
-    // same shape trap PR 3 hit with `MACRO_DISPATCH_ORDER`'s `Vec<String>`.
+    // types in `CompileNodeCtx`, because going through serde can change the
+    // underlying Object's concrete type. `builtins` must keep its BTreeMap
+    // shape for downstream downcasts, while `model` is intentionally mutable
+    // to match dbt Core's dict behavior.
     let overlay = CompileNodeCtx {
         base: None,
         this: this_relation,
@@ -372,7 +373,7 @@ where
         source: source_value,
         function: function_value,
         builtins: MinijinjaValue::from_object(base_builtins),
-        model: MinijinjaValue::from_serialize(MinijinjaValue::from_object(model_map)),
+        model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
         store_result: MinijinjaValue::from_function(result_store.store_result()),
         load_result: MinijinjaValue::from_function(result_store.load_result()),
         store_raw_result: MinijinjaValue::from_function(result_store.store_raw_result()),

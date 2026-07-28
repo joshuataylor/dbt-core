@@ -48,7 +48,9 @@ use minijinja::{
 use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 use serde::Serialize;
 
-use dbt_jinja_ctx::{JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap};
+use dbt_jinja_ctx::{
+    JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap, to_model_context_map,
+};
 
 use crate::{phases::MacroLookupContext, serde::into_typed_with_error};
 
@@ -286,12 +288,9 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // Object-typed slots are wrapped via `MinijinjaValue::from_object(...)` /
     // `MinijinjaValue::from_function(closure)` HERE rather than in the typed
     // ctx struct, because going through serde's `serialize_map` /
-    // `serialize_seq` paths would change the underlying Object's concrete
-    // type. `model` and `builtins` in particular get downcast to
-    // `BTreeMap<String, MinijinjaValue>` by compile/run-node-context code;
-    // the original `Vec<String>` regression in `MACRO_DISPATCH_ORDER`
-    // (dbt-fusion#…) showed why this matters. See `ResolveModelCtx`'s
-    // doc comment.
+    // `serialize_seq` paths can change the underlying Object's concrete type.
+    // `builtins` must keep its BTreeMap shape for downstream downcasts, while
+    // `model` is intentionally mutable to match dbt Core's dict behavior.
     let ctx = ResolveModelCtx {
         this: this_value,
         ref_fn: ref_value,
@@ -299,7 +298,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         function: function_value,
         metric: metric_value,
         config: config_value,
-        model: MinijinjaValue::from_object(model_map),
+        model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
         builtins: MinijinjaValue::from_object(builtins),
         graph: MinijinjaValue::UNDEFINED,
         store_result: MinijinjaValue::from_function(result_store.store_result()),

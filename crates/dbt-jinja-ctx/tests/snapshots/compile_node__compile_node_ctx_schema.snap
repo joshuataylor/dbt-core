@@ -101,7 +101,7 @@ expression: schema
       "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure."
     },
     "model": {
-      "description": "`{{ model.* }}` — model dict serialized via `convert_yml_to_value_map(model.serialize())` plus a `batch` entry (today's parse-time stub uses London-1970 datetimes; replaced by the real microbatch context at run time)."
+      "description": "`{{ model.* }}` — mutable dict-compatible model object built from `convert_yml_to_value_map(model.serialize())` plus a `batch` entry. The run-time context replaces `batch` with the real microbatch context."
     },
     "node": {
       "description": "`{{ node }}` — `Value::NONE` at base scope; populated per-node."

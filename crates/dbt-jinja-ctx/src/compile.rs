@@ -213,10 +213,9 @@ pub struct CompileNodeCtx {
     #[schemars(with = "serde_json::Value")]
     pub builtins: MinijinjaValue,
 
-    /// `{{ model.* }}` — model dict serialized via
-    /// `convert_yml_to_value_map(model.serialize())` plus a `batch` entry
-    /// (today's parse-time stub uses London-1970 datetimes; replaced by the
-    /// real microbatch context at run time).
+    /// `{{ model.* }}` — mutable dict-compatible model object built from
+    /// `convert_yml_to_value_map(model.serialize())` plus a `batch` entry.
+    /// The run-time context replaces `batch` with the real microbatch context.
     #[schemars(with = "serde_json::Value")]
     pub model: MinijinjaValue,
 

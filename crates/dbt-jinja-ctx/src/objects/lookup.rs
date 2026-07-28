@@ -47,7 +47,7 @@ impl Object for DbtNamespace {
         self: &Arc<Self>,
         state: &State<'_, '_>,
         name: &str,
-        _listeners: &[Rc<dyn RenderingEventListener>],
+        listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, MinijinjaError> {
         let ns_name = Value::from(self.name.clone());
         let namespace_registry = state
@@ -69,6 +69,10 @@ impl Object for DbtNamespace {
                 .and_then(|entry| entry.get_attr("span").ok())
                 .unwrap_or_else(|| Value::from_serialize(minijinja::machinery::Span::default()));
 
+            let template_name = format!("{}.{}", self.name, name);
+            listeners
+                .iter()
+                .for_each(|l| l.on_macro_dependency(&template_name));
             let context = state.get_base_context_with_path_and_span(&path, &span);
             Ok(Value::from_object(DispatchObject {
                 macro_name: (*name).to_string(),
@@ -91,6 +95,10 @@ impl Object for DbtNamespace {
                         || Value::from_serialize(minijinja::machinery::Span::default()),
                     );
 
+                let template_name = format!("{}.{name}", package_name.as_deref().unwrap_or("dbt"));
+                listeners
+                    .iter()
+                    .for_each(|l| l.on_macro_dependency(&template_name));
                 let context = state.get_base_context_with_path_and_span(&path, &span);
                 Ok(Value::from_object(DispatchObject {
                     macro_name: (*name).to_string(),
@@ -349,7 +357,13 @@ impl Object for MacroLookupContext {
             }
             "update" => self.update_local_values(args),
             _ => {
-                if let Some(value) = self.get_value(&Value::from(method)) {
+                let key = Value::from(method);
+                if let Some(value) = self
+                    .get_context_value(&key)
+                    .or_else(|| self.get_package_context(&key))
+                    .or_else(|| self.get_macro_from_current_project(state, &key, listeners))
+                    .or_else(|| self.get_macro_from_state(state, &key, listeners))
+                {
                     return value.call(state, args, listeners);
                 }
                 Err(MinijinjaError::new(

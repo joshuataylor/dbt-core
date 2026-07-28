@@ -51,7 +51,7 @@ use crate::runnable::unit_test::execute_unit_test_remote;
 use dbt_tasks_core::run_cache::run_cache_service::{
     CachedTestExecutionResult, RunCacheAfterSuccess, RunCacheCloneDecision, RunCacheCloneError,
     RunCacheReuseHookExecutor, RunCacheReuseHookPhase, RunCacheServiceDecision,
-    clear_final_last_modified_epoch_for_node, confirm_run_cache_service_execution,
+    clear_stale_missing_last_modified_epoch_for_node, confirm_run_cache_service_execution,
     execute_run_cache_service_clone, insert_compiled_view_definition,
     record_run_cache_service_execution, run_cache_service_before_execution,
     should_execute_hooks_for_skip_reuse,
@@ -836,7 +836,7 @@ async fn run_cache_after_success_action(
             // the next downstream submit sees a real miss and uses the normal
             // planned prefetch path.
             if ctx.inner.run_cache_ctx.run_cache_service_requested {
-                clear_final_last_modified_epoch_for_node(ctx, node);
+                clear_stale_missing_last_modified_epoch_for_node(ctx, node);
             }
         }
         RunCacheAfterSuccess::Confirm(mut confirmation) => {

@@ -2832,15 +2832,19 @@ pub async fn refresh_final_last_modified_epoch_for_node(
     refresh_last_modified_epoch_for_relation(ctx, &name, relation).await
 }
 
-pub fn clear_final_last_modified_epoch_for_node(
+pub fn clear_stale_missing_last_modified_epoch_for_node(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
 ) {
     if let Ok((name, _)) = relation_for_node(ctx, node) {
-        ctx.inner
-            .run_cache_ctx
-            .run_cache_metadata
-            .remove_last_modified_epoch(&name);
+        // Only clear a known-stale placeholder (`Some(None)`), cached when the
+        // submit-time probe found no target table yet. A real cached epoch
+        // (`Some(Some(_))`) is still valid and may be relied on by sibling nodes
+        // later in this same run.
+        let run_cache_metadata = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        if matches!(run_cache_metadata.last_modified_epoch(&name), Some(None)) {
+            run_cache_metadata.remove_last_modified_epoch(&name);
+        }
     }
 }
 
@@ -4448,7 +4452,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_final_metadata_removes_stale_missing_value() {
+    fn clear_stale_missing_epoch_removes_stale_missing_value() {
         let ctx = test_task_runner_ctx(None);
         let model = make_model(
             "model.test.user_name_model",
@@ -4463,7 +4467,7 @@ mod tests {
             .run_cache_metadata
             .insert_last_modified_epoch(&target_fqn, None);
 
-        clear_final_last_modified_epoch_for_node(&ctx, model.as_ref());
+        clear_stale_missing_last_modified_epoch_for_node(&ctx, model.as_ref());
 
         assert_eq!(
             ctx.inner
@@ -4471,6 +4475,33 @@ mod tests {
                 .run_cache_metadata
                 .last_modified_epoch(&target_fqn),
             None
+        );
+    }
+
+    #[test]
+    fn clear_stale_missing_epoch_preserves_valid_cached_epoch() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&target_fqn, Some(1_700_000_000_000));
+
+        clear_stale_missing_last_modified_epoch_for_node(&ctx, model.as_ref());
+
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            Some(Some(1_700_000_000_000))
         );
     }
 

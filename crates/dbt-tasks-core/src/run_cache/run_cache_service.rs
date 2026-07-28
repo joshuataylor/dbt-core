@@ -52,6 +52,7 @@ use dbt_state::request_builder::{
     ExecutionOutcomeInput, sql_execution_record_from_submit_request,
     values_execution_record_from_submit_request,
 };
+use dbt_state::service_client::RunCacheServiceError;
 use dbt_telemetry::NodeType;
 
 use crate::run_cache::run_cache_request::{
@@ -1142,6 +1143,9 @@ pub async fn run_cache_service_before_execution(
         );
         return RunCacheServiceDecision::execute_without_confirmation();
     };
+    if client.is_disabled() {
+        return RunCacheServiceDecision::execute_without_confirmation();
+    }
 
     if !should_honor_service_skip(ctx) {
         let result =
@@ -1229,6 +1233,7 @@ pub async fn run_cache_service_before_execution(
             });
             RunCacheServiceDecision::execute_without_confirmation()
         }
+        Err(_) if client.is_disabled() => RunCacheServiceDecision::execute_without_confirmation(),
         Err(err) => {
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,
@@ -1301,7 +1306,6 @@ pub async fn confirm_run_cache_service_execution(
         );
         return;
     };
-
     let request = match confirmation
         .into_confirm_execution_request(ctx, node, final_last_modified_epoch, execution_runtime_ms)
         .await
@@ -1324,20 +1328,24 @@ pub async fn confirm_run_cache_service_execution(
     let request_id = request.request_id.clone();
     if let Err(err) = client.confirm_execution(request).await {
         let unique_id = node.unique_id();
-        if err.is_transient_transport_rpc() {
-            emit_trace_log_message(|| {
-                format!(
-                    "dbt State service confirmation transport failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
-                )
-            });
-        } else {
-            emit_warn_log_message(
-                ErrorCode::StateServiceWarn,
-                format!(
-                    "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
-                ),
-                None,
-            );
+        match err {
+            RunCacheServiceError::Disabled => {}
+            err if err.is_transient_transport_rpc() => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State service confirmation transport failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                    )
+                });
+            }
+            err => {
+                emit_warn_log_message(
+                    ErrorCode::StateServiceWarn,
+                    format!(
+                        "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                    ),
+                    None,
+                );
+            }
         }
     } else {
         let unique_id = node.unique_id();
@@ -1375,7 +1383,6 @@ pub async fn record_run_cache_service_execution(
         );
         return;
     };
-
     let request = match record
         .into_record_executions_request(ctx, node, execution_runtime_ms)
         .await
@@ -1397,20 +1404,24 @@ pub async fn record_run_cache_service_execution(
 
     if let Err(err) = client.record_executions(request).await {
         let unique_id = node.unique_id();
-        if err.is_transient_transport_rpc() {
-            emit_trace_log_message(|| {
-                format!(
-                    "dbt State service record transport failed for node {unique_id}: {err}; command remains successful"
-                )
-            });
-        } else {
-            emit_warn_log_message(
-                ErrorCode::StateServiceWarn,
-                format!(
-                    "dbt State service record failed for node {unique_id}: {err}; command remains successful"
-                ),
-                None,
-            );
+        match err {
+            RunCacheServiceError::Disabled => {}
+            err if err.is_transient_transport_rpc() => {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State service record transport failed for node {unique_id}: {err}; command remains successful"
+                    )
+                });
+            }
+            err => {
+                emit_warn_log_message(
+                    ErrorCode::StateServiceWarn,
+                    format!(
+                        "dbt State service record failed for node {unique_id}: {err}; command remains successful"
+                    ),
+                    None,
+                );
+            }
         }
     } else {
         let unique_id = node.unique_id();

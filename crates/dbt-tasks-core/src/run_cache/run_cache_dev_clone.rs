@@ -40,7 +40,6 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     else {
         return;
     };
-
     let prepared = match prepare_dev_clone_request(ctx, &candidate, policy).await {
         Ok(Some(prepared)) => prepared,
         Ok(None) => return,
@@ -58,6 +57,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
 
     let response = match client.register_clone(prepared.request).await {
         Ok(response) => response,
+        Err(dbt_state::service_client::RunCacheServiceError::Disabled) => return,
         Err(err) => {
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,

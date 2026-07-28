@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -6,12 +7,13 @@ use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use thiserror::Error;
 use tonic::{
-    Request,
+    Request, Response,
     metadata::MetadataValue,
     transport::{Channel, ClientTlsConfig, Endpoint},
 };
 
 use crate::auth::OAuthTokenSource;
+use crate::auth::browser_flow::is_retryable_token_error;
 use crate::proto::query_cache::{
     CloneRequest, CloneResponse, ConfirmExecutionRequest, ConfirmExecutionResponse,
     GetExplainMessagesRequest, GetExplainMessagesResponse, RecordExecutionsRequest,
@@ -81,6 +83,31 @@ impl RunCacheServiceError {
             }
             _ => false,
         }
+    }
+
+    /// Returns `true` when this error should permanently disable the client
+    /// for the rest of the process.
+    pub fn disables_service(&self) -> bool {
+        match self {
+            Self::OrgDisabled { .. } | Self::Transport(_) => true,
+            Self::Rpc(status) => {
+                matches!(
+                    status.code(),
+                    tonic::Code::PermissionDenied
+                        | tonic::Code::Unauthenticated
+                        | tonic::Code::Unavailable
+                ) || self.is_transient_transport_rpc()
+            }
+            Self::AuthRequest(_) => is_retryable_token_error(self),
+            _ => false,
+        }
+    }
+
+    pub fn is_user_actionable_auth(&self) -> bool {
+        matches!(
+            self,
+            Self::Auth(_) | Self::AuthRequest(_) | Self::Aborted | Self::Timeout(_)
+        ) && !self.disables_service()
     }
 }
 
@@ -208,6 +235,10 @@ where
 
 #[async_trait]
 pub trait RunCacheServiceClient: Send + Sync {
+    fn is_disabled(&self) -> bool {
+        false
+    }
+
     async fn validate_client_version(&self) -> Result<ClientVersionStatus, RunCacheServiceError>;
 
     async fn submit_enriched_sql(
@@ -273,6 +304,7 @@ pub struct GrpcRunCacheServiceClient {
     explain: ExplainClient<Channel>,
     auth: RunCacheAuth,
     metadata: RunCacheClientMetadata,
+    disabled: Arc<AtomicBool>,
 }
 
 impl GrpcRunCacheServiceClient {
@@ -309,29 +341,79 @@ impl GrpcRunCacheServiceClient {
             explain: ExplainClient::new(channel),
             auth,
             metadata,
+            disabled: Arc::new(AtomicBool::new(false)),
         })
     }
 
+    fn before_request(&self) -> Result<(), RunCacheServiceError> {
+        if self.disabled.load(Ordering::Acquire) {
+            Err(RunCacheServiceError::Disabled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn after_request<T>(
+        &self,
+        result: Result<T, RunCacheServiceError>,
+    ) -> Result<T, RunCacheServiceError> {
+        match result {
+            Err(err) if err.disables_service() => {
+                if !self.disabled.swap(true, Ordering::AcqRel) {
+                    emit_warn_log_message(
+                        ErrorCode::StateServiceWarn,
+                        format!(
+                            "dbt State service disabled: {}; executing normally",
+                            format_error_chain(&err)
+                        ),
+                        None,
+                    );
+                }
+                Err(RunCacheServiceError::Disabled)
+            }
+            other => other,
+        }
+    }
+
     async fn attach<T>(&self, request: Request<T>) -> Result<Request<T>, RunCacheServiceError> {
-        let request = self.auth.attach(request).await?;
-        self.metadata.attach(request)
+        self.before_request()?;
+        let result = match self.auth.attach(request).await {
+            Ok(request) => self.metadata.attach(request),
+            Err(err) => Err(err),
+        };
+        self.after_request(result)
+    }
+
+    fn response<T>(
+        &self,
+        result: Result<Response<T>, tonic::Status>,
+    ) -> Result<T, RunCacheServiceError> {
+        self.after_request(
+            result
+                .map(|response| response.into_inner())
+                .map_err(Into::into),
+        )
     }
 }
 
 #[async_trait]
 impl RunCacheServiceClient for GrpcRunCacheServiceClient {
+    fn is_disabled(&self) -> bool {
+        self.disabled.load(Ordering::Acquire)
+    }
+
     async fn validate_client_version(&self) -> Result<ClientVersionStatus, RunCacheServiceError> {
         let request = self
             .attach(Request::new(ValidateClientVersionRequest {
                 dbt_run_cache_version: env!("CARGO_PKG_VERSION").to_string(),
             }))
             .await?;
-        let response = self
-            .client_validation
-            .clone()
-            .validate_client_version(request)
-            .await?
-            .into_inner();
+        let response = self.response(
+            self.client_validation
+                .clone()
+                .validate_client_version(request)
+                .await,
+        )?;
 
         if response.is_supported {
             Ok(ClientVersionStatus::Supported)
@@ -345,12 +427,7 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: SubmitEnrichedSqlRequest,
     ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self
-            .sql
-            .clone()
-            .submit_enriched_sql(request)
-            .await?
-            .into_inner())
+        self.response(self.sql.clone().submit_enriched_sql(request).await)
     }
 
     async fn submit_enriched_sql_speculative(
@@ -371,7 +448,7 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: SubmitValuesRequest,
     ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self.sql.clone().submit_values(request).await?.into_inner())
+        self.response(self.sql.clone().submit_values(request).await)
     }
 
     async fn confirm_execution(
@@ -379,12 +456,7 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: ConfirmExecutionRequest,
     ) -> Result<ConfirmExecutionResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self
-            .execution
-            .clone()
-            .confirm_execution(request)
-            .await?
-            .into_inner())
+        self.response(self.execution.clone().confirm_execution(request).await)
     }
 
     async fn record_executions(
@@ -392,12 +464,7 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: RecordExecutionsRequest,
     ) -> Result<RecordExecutionsResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self
-            .execution
-            .clone()
-            .record_executions(request)
-            .await?
-            .into_inner())
+        self.response(self.execution.clone().record_executions(request).await)
     }
 
     async fn register_clone(
@@ -405,12 +472,7 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: CloneRequest,
     ) -> Result<CloneResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self
-            .clone
-            .clone()
-            .register_clone(request)
-            .await?
-            .into_inner())
+        self.response(self.clone.clone().register_clone(request).await)
     }
 
     async fn submit_telemetry_batch(
@@ -418,12 +480,12 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: SubmitTelemetryBatchRequest,
     ) -> Result<SubmitTelemetryBatchResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self
-            .client_telemetry
-            .clone()
-            .submit_telemetry_batch(request)
-            .await?
-            .into_inner())
+        self.response(
+            self.client_telemetry
+                .clone()
+                .submit_telemetry_batch(request)
+                .await,
+        )
     }
 
     async fn get_explain_messages(
@@ -431,12 +493,7 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         request: GetExplainMessagesRequest,
     ) -> Result<GetExplainMessagesResponse, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        Ok(self
-            .explain
-            .clone()
-            .get_explain_messages(request)
-            .await?
-            .into_inner())
+        self.response(self.explain.clone().get_explain_messages(request).await)
     }
 }
 
@@ -462,13 +519,16 @@ fn insert_metadata(
     Ok(())
 }
 
-pub async fn validate_client_version_fail_open<C>(client: &C) -> ClientVersionStatus
+pub async fn validate_client_version_fail_open<C>(
+    client: &C,
+) -> Result<ClientVersionStatus, RunCacheServiceError>
 where
     C: RunCacheServiceClient + ?Sized,
 {
     match client.validate_client_version().await {
-        Ok(status) => status,
-        Err(err) => {
+        Ok(status) => Ok(status),
+        Err(RunCacheServiceError::Disabled) => Ok(ClientVersionStatus::Skipped),
+        Err(err) if !err.is_user_actionable_auth() => {
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,
                 format!(
@@ -477,8 +537,9 @@ where
                 ),
                 None,
             );
-            ClientVersionStatus::Skipped
+            Ok(ClientVersionStatus::Skipped)
         }
+        Err(err) => Err(err),
     }
 }
 
@@ -511,16 +572,23 @@ mod tests {
         assert!(!ClientVersionStatus::Unsupported.allows_service_use());
     }
 
-    struct FailingValidationClient;
+    struct ValidationClient(RunCacheServiceError);
 
     #[async_trait]
-    impl RunCacheServiceClient for FailingValidationClient {
+    impl RunCacheServiceClient for ValidationClient {
         async fn validate_client_version(
             &self,
         ) -> Result<ClientVersionStatus, RunCacheServiceError> {
-            Err(RunCacheServiceError::Rpc(tonic::Status::unavailable(
-                "service unavailable",
-            )))
+            Err(match &self.0 {
+                RunCacheServiceError::Auth(message) => {
+                    RunCacheServiceError::Auth(message.to_string())
+                }
+                RunCacheServiceError::Rpc(status) => {
+                    RunCacheServiceError::Rpc(tonic::Status::new(status.code(), status.message()))
+                }
+                RunCacheServiceError::Disabled => RunCacheServiceError::Disabled,
+                _ => unreachable!("validation tests only use Auth, Rpc, and Disabled"),
+            })
         }
 
         async fn submit_enriched_sql(
@@ -547,17 +615,51 @@ mod tests {
 
     #[tokio::test]
     async fn validation_rpc_error_fails_open_to_skipped() {
-        let client = FailingValidationClient;
+        let client = ValidationClient(RunCacheServiceError::Rpc(tonic::Status::unavailable(
+            "service unavailable",
+        )));
 
         assert_eq!(
+            validate_client_version_fail_open(&client).await.unwrap(),
+            ClientVersionStatus::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_auth_error_fails_closed() {
+        let client = ValidationClient(RunCacheServiceError::Auth("bad credentials".to_string()));
+
+        assert!(matches!(
             validate_client_version_fail_open(&client).await,
+            Err(RunCacheServiceError::Auth(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn validation_unexpected_rpc_error_fails_open_to_skipped() {
+        let client = ValidationClient(RunCacheServiceError::Rpc(tonic::Status::internal(
+            "service error",
+        )));
+
+        assert_eq!(
+            validate_client_version_fail_open(&client).await.unwrap(),
+            ClientVersionStatus::Skipped
+        );
+    }
+
+    #[tokio::test]
+    async fn validation_disabled_error_fails_open_to_skipped() {
+        let client = ValidationClient(RunCacheServiceError::Disabled);
+
+        assert_eq!(
+            validate_client_version_fail_open(&client).await.unwrap(),
             ClientVersionStatus::Skipped
         );
     }
 
     #[tokio::test]
     async fn speculative_submit_defaults_to_disabled() {
-        let client = FailingValidationClient;
+        let client = ValidationClient(RunCacheServiceError::Disabled);
 
         assert!(matches!(
             client
@@ -631,6 +733,25 @@ mod tests {
     }
 
     #[test]
+    fn disabled_locked_and_unavailable_errors_disable_service() {
+        assert!(
+            RunCacheServiceError::OrgDisabled {
+                org_id: "test-org".to_string()
+            }
+            .disables_service()
+        );
+        assert!(
+            RunCacheServiceError::Rpc(tonic::Status::permission_denied("locked"))
+                .disables_service()
+        );
+        assert!(
+            RunCacheServiceError::Rpc(tonic::Status::unauthenticated("locked")).disables_service()
+        );
+        assert!(RunCacheServiceError::Rpc(tonic::Status::unavailable("down")).disables_service());
+        assert!(!RunCacheServiceError::Auth("bad credentials".to_string()).disables_service());
+    }
+
+    #[test]
     fn transient_transport_rpc_is_identified() {
         let err = RunCacheServiceError::Rpc(tonic::Status::unknown("transport error"));
         assert!(err.is_transient_transport_rpc());
@@ -641,6 +762,35 @@ mod tests {
         let application_unknown =
             RunCacheServiceError::Rpc(tonic::Status::unknown("application error"));
         assert!(!application_unknown.is_transient_transport_rpc());
+    }
+
+    #[tokio::test]
+    async fn grpc_client_disables_after_first_service_disabling_error() {
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let client = GrpcRunCacheServiceClient {
+            sql: SqlClient::new(channel.clone()),
+            clone: clone_client::CloneClient::new(channel.clone()),
+            execution: ExecutionClient::new(channel.clone()),
+            client_telemetry: ClientTelemetryClient::new(channel.clone()),
+            client_validation: ClientValidationClient::new(channel.clone()),
+            explain: ExplainClient::new(channel),
+            auth: RunCacheAuth::None,
+            metadata: RunCacheClientMetadata::default(),
+            disabled: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(client.before_request().is_ok());
+        assert!(matches!(
+            client.after_request::<()>(Err(RunCacheServiceError::OrgDisabled {
+                org_id: "test-org".to_string(),
+            })),
+            Err(RunCacheServiceError::Disabled)
+        ));
+        assert!(client.is_disabled());
+        assert!(matches!(
+            client.before_request(),
+            Err(RunCacheServiceError::Disabled)
+        ));
     }
 
     #[test]

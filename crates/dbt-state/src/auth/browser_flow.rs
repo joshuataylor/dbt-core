@@ -319,7 +319,7 @@ async fn send_token_form_once(
         .map_err(|err| RunCacheServiceError::Auth(format!("invalid OAuth token response: {err}")))
 }
 
-fn is_retryable_token_error(err: &RunCacheServiceError) -> bool {
+pub(crate) fn is_retryable_token_error(err: &RunCacheServiceError) -> bool {
     let RunCacheServiceError::AuthRequest(err) = err else {
         return false;
     };

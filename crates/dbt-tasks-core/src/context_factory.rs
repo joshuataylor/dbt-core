@@ -78,7 +78,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 resolver_state.adapter_type,
                 resolver_state.cloud_config.as_ref(),
             )
-            .await;
+            .await?;
 
             let extended_ctx = extended_ctx_factory
                 .build(run_cache_lifecycle.is_requested())

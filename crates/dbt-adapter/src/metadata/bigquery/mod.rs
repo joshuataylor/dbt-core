@@ -1261,11 +1261,11 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         &'a self,
         relations: &'a [Arc<dyn BaseRelation>],
         token: CancellationToken,
-    ) -> AsyncAdapterResult<'a, Vec<ViewDefinition>> {
-        type Acc = Vec<ViewDefinition>;
+    ) -> AsyncAdapterResult<'a, ViewDefinitionFetchResult> {
+        type Acc = ViewDefinitionFetchResult;
 
         if relations.is_empty() {
-            return Box::pin(async { Ok(vec![]) });
+            return Box::pin(async { Ok(ViewDefinitionFetchResult::default()) });
         }
 
         let mut by_triple: HashMap<(String, String, String), Arc<dyn BaseRelation>> =
@@ -1355,7 +1355,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     continue;
                 };
 
-                acc.push(ViewDefinition {
+                acc.definitions.push(ViewDefinition {
                     fqn: input_rel.semantic_fqn(),
                     definition: definition.to_string(),
                     dialect: AdapterType::Bigquery,

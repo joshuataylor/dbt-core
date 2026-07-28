@@ -1425,9 +1425,9 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         &'a self,
         relations: &'a [Arc<dyn BaseRelation>],
         token: CancellationToken,
-    ) -> AsyncAdapterResult<'a, Vec<ViewDefinition>> {
+    ) -> AsyncAdapterResult<'a, ViewDefinitionFetchResult> {
         if relations.is_empty() {
-            return Box::pin(async { Ok(vec![]) });
+            return Box::pin(async { Ok(ViewDefinitionFetchResult::default()) });
         }
 
         // Build a single WHERE clause covering all requested relations.
@@ -1464,7 +1464,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                 Ok(table.original_record_batch())
             };
 
-        let reduce_f = move |acc: &mut Vec<ViewDefinition>,
+        let reduce_f = move |acc: &mut ViewDefinitionFetchResult,
                              _key: (),
                              batch_res: AdapterResult<Arc<RecordBatch>>|
               -> Result<(), Cancellable<AdapterError>> {
@@ -1496,7 +1496,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                     continue;
                 };
 
-                acc.push(ViewDefinition {
+                acc.definitions.push(ViewDefinition {
                     fqn: rel.semantic_fqn(),
                     definition,
                     dialect: AdapterType::Redshift,

@@ -448,8 +448,10 @@ pub trait MetadataAdapter: Send + Sync {
     /// Implementations are responsible for:
     /// - Issuing a single (or minimal-count) database query for the entire batch.
     /// - Returning a `ViewDefinition` for each input that *is* a view.
-    /// - Omitting tables, missing objects, and permission failures from the
-    ///   result. The orchestrator caches those omissions so they are not re-fetched.
+    /// - Reporting unresolvable views separately from ordinary tables, so
+    ///   callers can treat their freshness metadata conservatively.
+    /// - Omitting ordinary tables from the result. The orchestrator caches
+    ///   those omissions so they are not re-fetched.
     ///
     /// This method must be safe to call concurrently from multiple async tasks;
     /// each call acquires its own connection via the engine's connection factory.
@@ -460,7 +462,7 @@ pub trait MetadataAdapter: Send + Sync {
         &'a self,
         _relations: &'a [Arc<dyn BaseRelation>],
         _token: CancellationToken,
-    ) -> AsyncAdapterResult<'a, Vec<ViewDefinition>> {
+    ) -> AsyncAdapterResult<'a, ViewDefinitionFetchResult> {
         Box::pin(async {
             Err(Cancellable::Error(AdapterError::new(
                 AdapterErrorKind::NotSupported,
@@ -477,7 +479,7 @@ pub trait MetadataAdapter: Send + Sync {
         &'a self,
         relations: &'a [Arc<dyn BaseRelation>],
         token: CancellationToken,
-    ) -> AsyncAdapterResult<'a, Vec<ViewDefinition>> {
+    ) -> AsyncAdapterResult<'a, ViewDefinitionFetchResult> {
         with_time_machine_metadata_wrapper(
             "global",
             "fetch_view_definitions",

@@ -41,6 +41,7 @@ use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
 };
+use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::node_session::ExecutionGuard;
 use dbt_state::proto::query_cache::{
     ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping, QueryDependency,
@@ -2367,6 +2368,7 @@ async fn build_sql_context(
         is_view,
         &query_dependencies.seen_tables,
         &query_dependencies.parser_seen_relations,
+        &query_dependencies.unresolvable_tables,
         speculative,
     )
     .await?;
@@ -2678,6 +2680,8 @@ struct CollectedViewQueryDependencies {
     ///      and the service's freshness check defaults to "fresh" on the
     ///      NULL/NULL match path (see `test_transitive_dependencies_tracked`).
     parser_seen_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
+    /// A subset of `seen_tables` whose view definition could not be fetched.
+    unresolvable_tables: BTreeSet<String>,
     metadata_complete: bool,
 }
 
@@ -2686,11 +2690,13 @@ impl CollectedViewQueryDependencies {
         dependencies: Vec<QueryDependency>,
         seen_tables: BTreeSet<String>,
         parser_seen_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
+        unresolvable_tables: BTreeSet<String>,
     ) -> Self {
         Self {
             dependencies,
             seen_tables,
             parser_seen_relations,
+            unresolvable_tables,
             metadata_complete: true,
         }
     }
@@ -2700,6 +2706,7 @@ impl CollectedViewQueryDependencies {
             dependencies: Vec::new(),
             seen_tables: BTreeSet::new(),
             parser_seen_relations: BTreeMap::new(),
+            unresolvable_tables: BTreeSet::new(),
             metadata_complete: false,
         }
     }
@@ -2714,7 +2721,12 @@ impl CollectedViewQueryDependencies {
     /// `query_dependencies=[]`. `metadata_complete` must stay `true` so the
     /// submit isn't silently skipped.
     fn for_view() -> Self {
-        Self::complete(Vec::new(), BTreeSet::new(), BTreeMap::new())
+        Self::complete(
+            Vec::new(),
+            BTreeSet::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+        )
     }
 }
 
@@ -2724,6 +2736,7 @@ async fn collect_table_modified_infos(
     target_only: bool,
     leaf_tables: &BTreeSet<String>,
     parser_seen_relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
+    unresolvable_tables: &BTreeSet<String>,
     speculative: bool,
 ) -> FsResult<CollectedTableModifiedInfos> {
     let mut relations = BTreeMap::new();
@@ -2795,6 +2808,14 @@ async fn collect_table_modified_infos(
         })
         .map(|(fqn, rel)| (fqn.clone(), Arc::clone(rel)))
         .collect();
+
+    apply_unresolvable_last_modified_overrides(
+        &ctx.inner.run_cache_ctx.run_cache_metadata,
+        ctx.inner.run_cache_ctx.heuristic_clock.get(),
+        unresolvable_tables,
+        &freshness_overrides,
+    );
+
     // Speculative builds run while the global prefetch is still in flight, so
     // they must not issue their own blocking per-node warehouse queries. They
     // read whatever the prefetch has already resolved and leave cache misses
@@ -2821,6 +2842,46 @@ async fn collect_table_modified_infos(
         tables: table_infos,
         metadata_complete,
     })
+}
+
+fn apply_unresolvable_last_modified_overrides(
+    cache: &RunCacheMetadataCache,
+    clock: Option<&HeuristicClock>,
+    unresolvable_tables: &BTreeSet<String>,
+    freshness_overrides: &BTreeMap<String, FreshnessOverride>,
+) {
+    let Some(clock) = clock else {
+        for name in unresolvable_tables {
+            cache.remove_last_modified_epoch(name);
+        }
+        return;
+    };
+
+    let mut unresolvable_without_override = Vec::new();
+    for name in unresolvable_tables {
+        cache.remove_last_modified_epoch(name);
+        if !freshness_overrides.contains_key(name) {
+            unresolvable_without_override.push(name.clone());
+        }
+    }
+
+    if unresolvable_without_override.is_empty() {
+        return;
+    }
+
+    emit_warn_log_message(
+        ErrorCode::StateServiceWarn,
+        format!(
+            "Could not determine freshness for {}; treating as modified. Configure loaded_at_field or loaded_at_query to set freshness timestamp.",
+            unresolvable_without_override.join(", ")
+        ),
+        None,
+    );
+
+    let now_ms = clock.now_ms();
+    for name in unresolvable_without_override {
+        cache.insert_last_modified_epoch(name, Some(now_ms));
+    }
 }
 
 async fn last_modified_epoch_for_node(
@@ -3235,6 +3296,7 @@ async fn collect_query_dependencies(
             Vec::new(),
             BTreeSet::new(),
             BTreeMap::new(),
+            BTreeSet::new(),
         ));
     }
 
@@ -3271,6 +3333,7 @@ async fn collect_query_dependencies_from_relations(
     };
 
     let seen_tables = traversal.seen_tables;
+    let unresolvable_tables = traversal.unresolvable_tables;
     let dependencies = traversal
         .view_definitions
         .into_values()
@@ -3289,6 +3352,7 @@ async fn collect_query_dependencies_from_relations(
         dependencies,
         seen_tables,
         parser_seen_relations,
+        unresolvable_tables,
     ))
 }
 
@@ -3344,6 +3408,7 @@ async fn query_dependencies_for_parse_error(
             Vec::new(),
             BTreeSet::new(),
             BTreeMap::new(),
+            BTreeSet::new(),
         ));
     }
     collect_query_dependencies_from_relations(ctx, node, relations).await
@@ -4589,6 +4654,7 @@ mod tests {
             false,
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
+            &BTreeSet::new(),
             false,
         )
         .await
@@ -4651,6 +4717,7 @@ mod tests {
             false,
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
+            &BTreeSet::new(),
             true,
         )
         .await
@@ -4682,6 +4749,7 @@ mod tests {
             false,
             &BTreeSet::from([upstream_fqn.clone()]),
             &BTreeMap::new(),
+            &BTreeSet::new(),
             false,
         )
         .await
@@ -6479,6 +6547,69 @@ mod tests {
         .unwrap();
         let clock = lock.get().expect("clock should be set");
         assert_eq!(clock.now_ms(), 42_000);
+    }
+
+    #[test]
+    fn unresolvable_last_modified_uses_heuristic_clock() {
+        let cache = RunCacheMetadataCache::new();
+        let fqn = r#""DB"."S"."SECURE_VIEW""#.to_string();
+        cache.insert_last_modified_epoch(&fqn, Some(123));
+        let clock = HeuristicClock {
+            start_ts_ms: 1_700_000_000_000,
+            start_instant: std::time::Instant::now(),
+        };
+
+        apply_unresolvable_last_modified_overrides(
+            &cache,
+            Some(&clock),
+            &BTreeSet::from([fqn.clone()]),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(
+            cache.last_modified_epoch(&fqn).flatten(),
+            Some(1_700_000_000_000)
+        );
+    }
+
+    #[test]
+    fn unresolvable_last_modified_does_not_replace_source_freshness_override() {
+        let cache = RunCacheMetadataCache::new();
+        let fqn = r#""DB"."S"."SECURE_VIEW""#.to_string();
+        cache.insert_last_modified_epoch(&fqn, Some(123));
+        let clock = HeuristicClock {
+            start_ts_ms: 1_700_000_000_000,
+            start_instant: std::time::Instant::now(),
+        };
+        let overrides = BTreeMap::from([(
+            fqn.clone(),
+            FreshnessOverride::Field("loaded_at".to_string()),
+        )]);
+
+        apply_unresolvable_last_modified_overrides(
+            &cache,
+            Some(&clock),
+            &BTreeSet::from([fqn.clone()]),
+            &overrides,
+        );
+
+        assert_eq!(cache.last_modified_epoch(&fqn), None);
+    }
+
+    #[test]
+    fn unresolvable_last_modified_leaves_cache_empty_when_clock_missing() {
+        let cache = RunCacheMetadataCache::new();
+        let fqn = r#""DB"."S"."SECURE_VIEW""#.to_string();
+        cache.insert_last_modified_epoch(&fqn, Some(123));
+
+        apply_unresolvable_last_modified_overrides(
+            &cache,
+            None,
+            &BTreeSet::from([fqn.clone()]),
+            &BTreeMap::new(),
+        );
+
+        assert_eq!(cache.last_modified_epoch(&fqn), None);
     }
 
     #[test]

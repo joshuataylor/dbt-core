@@ -258,6 +258,48 @@ fn lowercase_column_names(batch: &RecordBatch) -> RecordBatch {
         .expect("column name normalization preserves schema compatibility")
 }
 
+fn accumulate_view_definition_fetch_result(
+    acc: &mut ViewDefinitionFetchResult,
+    batch: &RecordBatch,
+) -> AdapterResult<()> {
+    let batch = lowercase_column_names(batch);
+    // Result schema: (fqn STRING, view_definition STRING, error STRING)
+    let fqns_arr = batch.column_values::<StringArray>("fqn")?;
+    let defs_arr = batch.column_values::<StringArray>("view_definition")?;
+
+    for i in 0..batch.num_rows() {
+        let fqn = fqns_arr.value(i).to_string();
+        if defs_arr.is_null(i) {
+            // A NULL definition means Snowflake could not return DDL for
+            // this relation. Treat it as unresolvable regardless of the
+            // exact GET_DDL error text so the query cache can fall back
+            // to freshness metadata for secure/data-share views.
+            acc.unresolvable.insert(fqn);
+            continue;
+        }
+        let definition = defs_arr.value(i);
+
+        if is_table_ddl(definition) {
+            continue;
+        }
+
+        let parsed = match Dialect::Snowflake.parse_fqn(&fqn) {
+            Ok(p) => p,
+            Err(_) => continue, // unparseable — skip
+        };
+
+        acc.definitions.push(ViewDefinition {
+            fqn,
+            definition: definition.to_string(),
+            dialect: AdapterType::Snowflake,
+            default_catalog: parsed.catalog().name().to_string(),
+            default_schema: parsed.schema().name().to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 /// Helper to differentiate between tables and dynamic tables using the is_dynamic flag.
 /// TODO: When we implement iceberg tables, we might want to pass in the is_iceberg flag here.
 pub fn relation_type_from_table_flags(is_dynamic: &str) -> Result<RelationType, AdapterError> {
@@ -1340,11 +1382,11 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         &'a self,
         relations: &'a [Arc<dyn BaseRelation>],
         token: CancellationToken,
-    ) -> AsyncAdapterResult<'a, Vec<ViewDefinition>> {
-        type Acc = Vec<ViewDefinition>;
+    ) -> AsyncAdapterResult<'a, ViewDefinitionFetchResult> {
+        type Acc = ViewDefinitionFetchResult;
 
         if relations.is_empty() {
-            return Box::pin(async { Ok(vec![]) });
+            return Box::pin(async { Ok(ViewDefinitionFetchResult::default()) });
         }
 
         // Dedupe FQNs while preserving an order; Snowflake fans them out itself.
@@ -1383,39 +1425,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                         batch_res: AdapterResult<Arc<RecordBatch>>|
          -> Result<(), Cancellable<AdapterError>> {
             let batch = batch_res?;
-            // Snowflake may uppercase result-set column names depending on
-            // account settings, even though the EXECUTE IMMEDIATE block aliases
-            // them lowercase. Normalize the schema before name-based lookups.
-            let batch = lowercase_column_names(&batch);
-            // Result schema: (fqn STRING, view_definition STRING, error STRING)
-            let fqns_arr = batch.column_values::<StringArray>("fqn")?;
-            let defs_arr = batch.column_values::<StringArray>("view_definition")?;
-
-            for i in 0..batch.num_rows() {
-                let fqn = fqns_arr.value(i).to_string();
-                if defs_arr.is_null(i) {
-                    continue;
-                }
-                let definition = defs_arr.value(i);
-
-                if is_table_ddl(definition) {
-                    continue;
-                }
-
-                let parsed = match Dialect::Snowflake.parse_fqn(&fqn) {
-                    Ok(p) => p,
-                    Err(_) => continue, // unparseable — skip
-                };
-
-                acc.push(ViewDefinition {
-                    fqn,
-                    definition: definition.to_string(),
-                    dialect: AdapterType::Snowflake,
-                    default_catalog: parsed.catalog().name().to_string(),
-                    default_schema: parsed.schema().name().to_string(),
-                });
-            }
-            Ok(())
+            accumulate_view_definition_fetch_result(acc, &batch).map_err(Cancellable::Error)
         };
 
         let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
@@ -1573,6 +1583,32 @@ fn build_schemas_from_information_schema(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_schema::{DataType, Field};
+
+    fn view_definition_batch(rows: Vec<(&str, Option<&str>, Option<&str>)>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("FQN", DataType::Utf8, false),
+            Field::new("VIEW_DEFINITION", DataType::Utf8, true),
+            Field::new("ERROR", DataType::Utf8, true),
+        ]));
+        let mut fqns = Vec::with_capacity(rows.len());
+        let mut definitions = Vec::with_capacity(rows.len());
+        let mut errors = Vec::with_capacity(rows.len());
+        for (fqn, definition, error) in rows {
+            fqns.push(fqn);
+            definitions.push(definition);
+            errors.push(error);
+        }
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(fqns)),
+                Arc::new(StringArray::from(definitions)),
+                Arc::new(StringArray::from(errors)),
+            ],
+        )
+        .expect("valid view-definition batch")
+    }
 
     fn test_adapter_error(message: &str) -> AdapterError {
         AdapterError::new(AdapterErrorKind::UnexpectedResult, message)
@@ -1675,6 +1711,66 @@ mod tests {
         assert!(!is_table_ddl(
             "CREATE MATERIALIZED VIEW foo AS SELECT * FROM bar"
         ));
+    }
+
+    #[test]
+    fn view_definition_fetch_result_marks_null_definition_unresolvable() {
+        let batch = view_definition_batch(vec![
+            (
+                r#""DB1"."SCHEMA1"."SECURE_VIEW""#,
+                None,
+                Some("Object does not exist or not authorized."),
+            ),
+            (
+                r#""DB1"."SCHEMA1"."TABLE1""#,
+                Some("CREATE TABLE table1 (id INT)"),
+                None,
+            ),
+        ]);
+        let mut result = ViewDefinitionFetchResult::default();
+
+        accumulate_view_definition_fetch_result(&mut result, &batch).expect("parse batch");
+
+        assert!(result.definitions.is_empty());
+        assert_eq!(
+            result.unresolvable,
+            BTreeSet::from([r#""DB1"."SCHEMA1"."SECURE_VIEW""#.to_string()])
+        );
+    }
+
+    #[test]
+    fn view_definition_fetch_result_accumulates_unresolvable_across_batches() {
+        let batch1 = view_definition_batch(vec![
+            (
+                r#""DB1"."SCHEMA1"."SECURE_VIEW""#,
+                None,
+                Some("not authorized"),
+            ),
+            (
+                r#""DB1"."SCHEMA1"."READABLE_VIEW""#,
+                Some(r#"CREATE VIEW readable_view AS SELECT * FROM "DB1"."SCHEMA1"."BASE_T""#),
+                None,
+            ),
+        ]);
+        let batch2 = view_definition_batch(vec![(
+            r#""DB1"."SCHEMA1"."BASE_T""#,
+            Some("CREATE TABLE base_t (id INT)"),
+            None,
+        )]);
+        let mut result = ViewDefinitionFetchResult::default();
+
+        accumulate_view_definition_fetch_result(&mut result, &batch1).expect("parse first batch");
+        accumulate_view_definition_fetch_result(&mut result, &batch2).expect("parse second batch");
+
+        assert_eq!(
+            result.unresolvable,
+            BTreeSet::from([r#""DB1"."SCHEMA1"."SECURE_VIEW""#.to_string()])
+        );
+        assert_eq!(result.definitions.len(), 1);
+        assert_eq!(
+            result.definitions[0].fqn,
+            r#""DB1"."SCHEMA1"."READABLE_VIEW""#
+        );
     }
 
     #[test]

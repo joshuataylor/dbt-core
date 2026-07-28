@@ -285,6 +285,23 @@ pub trait CliExtensionHooks: Send + Sync {
         token: &CancellationToken,
     ) -> FsResult<()>;
 
+    /// Called after the schedule has been built, before task-scheduling
+    /// checkpoints. Gives an implementation access to the resolved selection
+    /// (`schedule.selected_nodes`) before any tasks run. An implementation may
+    /// fully handle the command here and terminate execution by returning
+    /// `Err(FsError::exit_with_status(n))`.
+    fn did_build_schedule(
+        &self,
+        _cli: &Cli,
+        _arg: &EvalArgs,
+        _resolved_state: &ResolverState,
+        _schedule: &Schedule<String>,
+        _jinja_env: &JinjaEnv,
+        _token: &CancellationToken,
+    ) -> FsResult<()> {
+        Ok(())
+    }
+
     /// Called after tasks have been scheduled and run, but before manifest
     /// update and further phases.
     ///

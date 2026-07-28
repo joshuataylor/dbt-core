@@ -1586,6 +1586,17 @@ impl DbtProjectCompilation {
             .hooks
             .will_run_tasks(cli, arg, &self.resolved_state, token)?;
 
+        // Give extensions access to the built schedule (and its resolved
+        // selection) before any tasks run. May terminate execution.
+        feature_stack.cli.hooks.did_build_schedule(
+            cli,
+            arg,
+            &self.resolved_state,
+            &schedule,
+            &jinja_env,
+            token,
+        )?;
+
         // FEATURES: schedule
         if arg.io.should_show(ShowOptions::Schedule) {
             emit_info_event(

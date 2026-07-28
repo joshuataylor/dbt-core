@@ -10,6 +10,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt;
+use std::io::Write;
 use std::sync::LazyLock;
 use std::{
     collections::BTreeMap,
@@ -172,35 +173,99 @@ impl CliParser {
             .help_template(CLI_HELP_TEMPLATE)
     }
 
+    /// Key used for the machine-readable `--format json --version` output, e.g.
+    /// `"dbt-fusion"` -> `"fusion"`, `"dbt-core"` -> `"core"`.
+    fn version_json_key(&self) -> &str {
+        self.command_name
+            .strip_prefix("dbt-")
+            .unwrap_or(self.command_name)
+    }
+
+    pub fn version_json(&self) -> String {
+        serde_json::json!({ self.version_json_key(): self.version }).to_string()
+    }
+
+    fn version_json_error(&self) -> clap::Error {
+        clap::Error::raw(clap::error::ErrorKind::DisplayVersion, self.version_json())
+    }
+
+    fn args_request_json_version<I, T>(itr: I) -> bool
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<OsStr>,
+    {
+        let mut version = false;
+        let mut json_format = false;
+        let mut expect_format_value = false;
+
+        for arg in itr.into_iter().skip(1) {
+            let arg = arg.as_ref();
+
+            if expect_format_value {
+                if arg != OsStr::new("json") {
+                    return false;
+                }
+                json_format = true;
+                expect_format_value = false;
+            } else if arg == OsStr::new("--version") {
+                version = true;
+            } else if arg == OsStr::new("--format") || arg == OsStr::new("--output") {
+                expect_format_value = true;
+            } else if arg == OsStr::new("--format=json") || arg == OsStr::new("--output=json") {
+                json_format = true;
+            } else {
+                return false;
+            }
+        }
+
+        version && json_format && !expect_format_value
+    }
+
+    pub fn json_version_for_args<I, T>(&self, itr: I) -> Option<String>
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<OsStr>,
+    {
+        Self::args_request_json_version(itr).then(|| self.version_json())
+    }
+
+    pub fn print_json_version_and_exit_for_args<I, T>(&self, itr: I)
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<OsStr>,
+    {
+        if let Some(version) = self.json_version_for_args(itr) {
+            let mut stdout = std::io::stdout().lock();
+            let _ = writeln!(stdout, "{version}");
+            let _ = stdout.flush();
+            std::process::exit(0);
+        }
+    }
+
     fn format_error(&self, err: clap::Error) -> clap::Error {
         let mut cmd = self.app();
         err.format(&mut cmd)
     }
 
     /// Write shell completion scripts for the given shell to `writer`.
-    pub fn write_completions<W: std::io::Write>(&self, shell: Shell, writer: &mut W) {
+    pub fn write_completions<W: Write>(&self, shell: Shell, writer: &mut W) {
         clap_complete::generate(shell, &mut self.app(), "dbt", writer);
     }
 
     /// Parse from `std::env::args_os()`, [exit][Error::exit] on error.
     pub fn parse(&self) -> Box<Cli> {
-        let mut matches = self.app().get_matches();
-        let res = self
-            .try_parse_from_arg_matches_mut(&mut matches)
-            .map_err(|err| self.format_error(err));
-        match res {
-            Ok(s) => Box::new(s),
+        let args = env::args_os().collect::<Vec<_>>();
+        self.print_json_version_and_exit_for_args(&args);
+
+        match self.try_parse_from(args) {
+            Ok(s) => s,
             Err(e) => e.exit(),
         }
     }
 
     /// Parse from `std::env::args_os()`, return Err on error.
     pub fn try_parse(&self) -> Result<Box<Cli>, clap::Error> {
-        let mut matches = self.app().try_get_matches()?;
-        let cli = self
-            .try_parse_from_arg_matches_mut(&mut matches)
-            .map_err(|err| self.format_error(err))?;
-        Ok(Box::new(cli))
+        self.try_parse_from(env::args_os())
     }
 
     /// Parse from iterator, [exit][clap::Error::exit] on error.
@@ -209,12 +274,11 @@ impl CliParser {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        let mut matches = self.app().get_matches_from(itr);
-        let res = self
-            .try_parse_from_arg_matches_mut(&mut matches)
-            .map_err(|err| self.format_error(err));
-        match res {
-            Ok(s) => Box::new(s),
+        let args = itr.into_iter().collect::<Vec<_>>();
+        self.print_json_version_and_exit_for_args(args.iter().cloned().map(Into::into));
+
+        match self.try_parse_from(args) {
+            Ok(s) => s,
             Err(e) => e.exit(),
         }
     }
@@ -225,7 +289,12 @@ impl CliParser {
         I: IntoIterator<Item = T>,
         T: Into<OsString> + Clone,
     {
-        let mut matches = self.app().try_get_matches_from(itr)?;
+        let args = itr.into_iter().collect::<Vec<_>>();
+        if Self::args_request_json_version(args.iter().cloned().map(Into::into)) {
+            return Err(self.version_json_error());
+        }
+
+        let mut matches = self.app().try_get_matches_from(args)?;
         let cli = self
             .try_parse_from_arg_matches_mut(&mut matches)
             .map_err(|err| self.format_error(err))?;
@@ -2740,6 +2809,14 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
 mod tests {
     use super::*;
 
+    struct NoopParser;
+
+    impl ExtensionCommandParser for NoopParser {
+        fn has_subcommand(&self, _name: &str) -> bool {
+            false
+        }
+    }
+
     fn get_manage_state_with_env(
         common_args: &CommonArgs,
         project_dir: &Path,
@@ -2861,6 +2938,68 @@ mod tests {
             command: Command::Core(command),
             common_args: CommonArgs::default(),
         }
+    }
+
+    #[test]
+    fn detects_top_level_json_version() {
+        assert!(CliParser::args_request_json_version([
+            "dbt",
+            "--format",
+            "json",
+            "--version"
+        ]));
+        assert!(CliParser::args_request_json_version([
+            "dbt",
+            "--version",
+            "--format=json",
+        ]));
+        assert!(CliParser::args_request_json_version([
+            "dbt",
+            "--output=json",
+            "--version",
+        ]));
+        assert!(!CliParser::args_request_json_version([
+            "dbt",
+            "list",
+            "--format",
+            "json",
+            "--version"
+        ]));
+        assert!(!CliParser::args_request_json_version([
+            "dbt",
+            "--format",
+            "text",
+            "--version"
+        ]));
+    }
+
+    #[test]
+    fn version_json_uses_fusion_key() {
+        let parser = CliParser::new("dbt-fusion", "2.0.0-preview.92", Box::new(NoopParser));
+
+        assert_eq!(parser.version_json(), r#"{"fusion":"2.0.0-preview.92"}"#);
+        assert_eq!(
+            parser.json_version_for_args(["dbt", "--format", "json", "--version"]),
+            Some(r#"{"fusion":"2.0.0-preview.92"}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn version_json_key_derives_from_command_name() {
+        let parser = CliParser::new("dbt-core", "1.9.0", Box::new(NoopParser));
+
+        assert_eq!(parser.version_json(), r#"{"core":"1.9.0"}"#);
+    }
+
+    #[test]
+    fn json_version_returns_display_version_error() {
+        let err = CliParser::new("dbt-fusion", "2.0.0-preview.92", Box::new(NoopParser))
+            .try_parse_from(["dbt", "--format", "json", "--version"])
+            .expect_err("json version should short-circuit parsing");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(!err.use_stderr());
+        assert_eq!(err.exit_code(), 0);
     }
 
     #[test]

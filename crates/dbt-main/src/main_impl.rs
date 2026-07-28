@@ -56,7 +56,10 @@ fn init_env_before_parse() {
 }
 
 fn parse_cli_or_exit(cli_parser: &CliParser) -> Box<Cli> {
-    match cli_parser.try_parse() {
+    let args = std::env::args_os().collect::<Vec<_>>();
+    cli_parser.print_json_version_and_exit_for_args(&args);
+
+    match cli_parser.try_parse_from(args) {
         Ok(cli) => {
             // Continue as normal
             cli

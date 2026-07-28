@@ -1,3 +1,4 @@
+use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
 use dbt_common::io_args::IoArgs;
@@ -6,6 +7,7 @@ use dbt_common::stdfs::diff_paths;
 use dbt_common::tracing::dbt_emit::{emit_warn_log_from_fs_error, emit_warn_log_message};
 use dbt_common::{err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
@@ -22,6 +24,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 
@@ -534,6 +537,55 @@ pub fn apply_macro_patches(
                 ),
                 io.status_reporter.as_ref(),
             );
+        }
+    }
+
+    Ok(())
+}
+
+/// Typecheck each macro body to discover macro→macro call edges and backfill
+/// `depends_on.macros` on every macro node.
+///
+/// Must be called after the Jinja env is fully built (so all macros are
+/// registered) and after `apply_macro_patches`. Snapshot stubs
+/// (unique_id starts with `"snapshot."`) are skipped — they have their own
+/// processing path and no meaningful Jinja body to analyse.
+pub fn typecheck_macros(
+    io: &IoArgs,
+    macros: &mut BTreeMap<String, DbtMacro>,
+    jinja_env: Arc<JinjaEnv>,
+    adapter_type: AdapterType,
+    root_package_name: &str,
+    dbt_and_adapters_namespace: MinijinjaValue,
+) -> FsResult<()> {
+    let factory = Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
+    let noqa = HashMap::new();
+    for (unique_id, dbt_macro) in macros.iter() {
+        if unique_id.starts_with("snapshot.") {
+            continue;
+        }
+        let file_path = dbt_macro.original_file_path.as_path().to_path_buf();
+        let _ = dbt_jinja_utils::typecheck::typecheck(
+            io,
+            jinja_env.clone(),
+            &noqa,
+            factory.clone(),
+            None,
+            root_package_name,
+            dbt_and_adapters_namespace.clone(),
+            &file_path,
+            &dbt_macro.macro_sql,
+            &dbt_common::CodeLocationWithFile::new(1, 1, 0, file_path.clone()),
+            unique_id,
+            adapter_type,
+            true,
+        );
+    }
+
+    let all_depends_on = factory.depends_on();
+    for (unique_id, dbt_macro) in macros.iter_mut() {
+        if let Some(deps) = all_depends_on.get(unique_id) {
+            dbt_macro.depends_on.macros = deps.iter().cloned().collect();
         }
     }
 

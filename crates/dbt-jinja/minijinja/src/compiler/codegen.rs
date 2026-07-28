@@ -724,12 +724,19 @@ impl<'source> CodeGenerator<'source> {
                                 if let Some(udf) =
                                     signature.downcast_ref::<UserDefinedFunctionType>()
                                 {
-                                    let type_ = &udf.args[i].type_;
-                                    // the parameter has default value, so we need to exclude the none from arg type and check with the default
-                                    let type_ = type_.get_non_optional_type();
-                                    self.add(Instruction::LoadType(Value::from_object(type_)));
-                                    self.compile_expr(default)?;
-                                    self.add(Instruction::UnionType);
+                                    if let Some(arg) = udf.args.get(i) {
+                                        let type_ = arg.type_.get_non_optional_type();
+                                        // the parameter has default value, so we need to exclude the none from arg type and check with the default
+                                        self.add(Instruction::LoadType(Value::from_object(type_)));
+                                        self.compile_expr(default)?;
+                                        self.add(Instruction::UnionType);
+                                    } else {
+                                        self.add(Instruction::LoadType(Value::from_object(
+                                            Type::Any { hard: false },
+                                        )));
+                                        self.compile_expr(default)?;
+                                        self.add(Instruction::UnionType);
+                                    }
                                 } else {
                                     self.add(Instruction::LoadType(Value::from_object(
                                         Type::Any { hard: false },
@@ -758,8 +765,12 @@ impl<'source> CodeGenerator<'source> {
                 ) {
                     if let Some(signature) = function_registry.get(&macro_qualified_name) {
                         if let Some(udf) = signature.downcast_ref::<UserDefinedFunctionType>() {
-                            let type_ = &udf.args[i].type_;
-                            self.add(Instruction::LoadType(Value::from_object(type_.clone())));
+                            let type_ = udf
+                                .args
+                                .get(i)
+                                .map(|a| a.type_.clone())
+                                .unwrap_or(Type::Any { hard: false });
+                            self.add(Instruction::LoadType(Value::from_object(type_)));
                         } else {
                             self.add(Instruction::LoadType(Value::from_object(Type::Any {
                                 hard: false,

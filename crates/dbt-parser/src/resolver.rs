@@ -56,6 +56,7 @@ use crate::resolve::resolve_functions::resolve_functions;
 use crate::resolve::resolve_macros::apply_macro_patches;
 use crate::resolve::resolve_macros::resolve_docs_macros;
 use crate::resolve::resolve_macros::resolve_macros;
+use crate::resolve::resolve_macros::typecheck_macros;
 use crate::resolve::resolve_metrics::resolve_metrics;
 use crate::resolve::resolve_models::resolve_models;
 use crate::resolve::resolve_properties;
@@ -291,6 +292,15 @@ pub async fn resolve(
             )?;
         }
     }
+
+    typecheck_macros(
+        &arg.io,
+        &mut macros.macros,
+        jinja_env.clone(),
+        adapter_type,
+        root_project_name,
+        minijinja::Value::from_dyn_object(jinja_env.env.get_dbt_and_adapters_namespace()),
+    )?;
 
     // Ensure that there are no duplicate relations
     check_relation_uniqueness(&nodes)?;

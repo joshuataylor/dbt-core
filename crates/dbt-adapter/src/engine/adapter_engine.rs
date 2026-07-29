@@ -18,6 +18,7 @@ use dbt_common::tracing::span_info::{
 };
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult, Cancellable, create_debug_span};
 use dbt_schemas::schemas::common::ResolvedQuoting;
+use dbt_sql_utils::snowflake_terminal_flow_statement;
 use dbt_telemetry::{QueryExecuted, QueryOutcome};
 use indexmap::IndexMap;
 use minijinja::State;
@@ -29,11 +30,41 @@ use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::sidecar_client::SidecarClient;
 use crate::errors::{adbc_error_to_adapter_error, arrow_error_to_adapter_error};
 use crate::record_batch::{RecordBatchExt, SchemaExt};
+use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
 use crate::stmt_splitter::StmtSplitter;
 
 pub type Options = Vec<(String, OptionValue)>;
+
+/// Normalize result column names for Snowflake commands whose output schema is
+/// defined as lowercase.
+///
+/// Snowflake `SHOW` and `DESCRIBE` output columns are lowercase, but the ADBC
+/// driver can report them in uppercase. Ordinary query results retain the
+/// driver-reported casing.
+fn normalize_result_column_names(
+    adapter_type: AdapterType,
+    sql: &str,
+    batch: RecordBatch,
+) -> RecordBatch {
+    if adapter_type != AdapterType::Snowflake {
+        return batch;
+    }
+
+    let result_statement = snowflake_terminal_flow_statement(sql);
+    let normalized_sql = strip_sql_comments(result_statement);
+    let first_keyword = normalized_sql.split_whitespace().next();
+    if first_keyword.is_some_and(|keyword| {
+        keyword.eq_ignore_ascii_case("show")
+            || keyword.eq_ignore_ascii_case("describe")
+            || keyword.eq_ignore_ascii_case("desc")
+    }) {
+        batch.lowercase_column_names()
+    } else {
+        batch
+    }
+}
 
 /// A trait abstracting the layer between the adapter layer and database drivers.
 ///
@@ -394,6 +425,7 @@ pub(crate) fn adbc_execute_with_options(
         }
     };
     let total_batch = concat_batches(&schema, &batches).map_err(arrow_error_to_adapter_error)?;
+    let total_batch = normalize_result_column_names(adapter_type, sql.as_ref(), total_batch);
 
     record_current_span_status_from_attrs(|attrs| {
         if let Some(attrs) = attrs.downcast_mut::<QueryExecuted>() {
@@ -404,4 +436,169 @@ pub(crate) fn adbc_execute_with_options(
     });
 
     Ok(total_batch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::{ArrayRef, StringArray};
+    use arrow_schema::{DataType, Field};
+    use minijinja::{Environment, Value};
+
+    fn uppercase_constraint_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("COLUMN_NAME", DataType::Utf8, false),
+                Field::new("CONSTRAINT_NAME", DataType::Utf8, false),
+                Field::new("RELY", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["id", "account_id"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["pk_orders", "pk_orders"])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["Y", "Y"])) as ArrayRef,
+            ],
+        )
+        .unwrap()
+    }
+
+    fn single_column_batch(column_name: &str) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                column_name,
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["value"])) as ArrayRef],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn normalize_result_column_names_supports_dbt_constraints_access_pattern() {
+        let batch = normalize_result_column_names(
+            AdapterType::Snowflake,
+            "/* dbt query comment */ SHOW UNIQUE KEYS IN TABLE orders",
+            uppercase_constraint_batch(),
+        );
+        assert_eq!(
+            batch
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            vec!["column_name", "constraint_name", "rely"]
+        );
+
+        let table = dbt_agate::AgateTable::from_record_batch(Arc::new(batch)).into_value();
+        let columns = table.get_attr("columns").unwrap();
+        let column = columns.get_item(&Value::from("column_name")).unwrap();
+        let env = Environment::new();
+        let state = env.empty_state();
+        let values = column.call_method(&state, "values", &[], &[]).unwrap();
+        assert_eq!(values.len(), Some(2));
+        assert_eq!(values.get_item_by_index(0).unwrap(), Value::from("id"));
+        assert_eq!(
+            values.get_item_by_index(1).unwrap(),
+            Value::from("account_id")
+        );
+
+        let row = table
+            .get_attr("rows")
+            .unwrap()
+            .get_item_by_index(0)
+            .unwrap();
+        assert_eq!(
+            row.get_item(&Value::from("constraint_name")).unwrap(),
+            Value::from("pk_orders")
+        );
+        assert_eq!(
+            row.get_item(&Value::from("column_name")).unwrap(),
+            Value::from("id")
+        );
+        assert_eq!(
+            row.get_item(&Value::from("rely")).unwrap(),
+            Value::from("Y")
+        );
+    }
+
+    #[test]
+    fn normalize_result_column_names_handles_snowflake_describe() {
+        for sql in [
+            "DESCRIBE TABLE orders",
+            "desc table orders",
+            "-- comment\nDESC TABLE orders",
+        ] {
+            let batch = normalize_result_column_names(
+                AdapterType::Snowflake,
+                sql,
+                uppercase_constraint_batch(),
+            );
+            assert_eq!(batch.schema().field(0).name(), "column_name");
+        }
+    }
+
+    #[test]
+    fn normalize_result_column_names_preserves_snowflake_select() {
+        let batch = normalize_result_column_names(
+            AdapterType::Snowflake,
+            "SELECT 1 AS a",
+            uppercase_constraint_batch(),
+        );
+        assert_eq!(batch.schema().field(0).name(), "COLUMN_NAME");
+    }
+
+    #[test]
+    fn normalize_result_column_names_uses_terminal_snowflake_flow_statement() {
+        for (sql, column_name) in [
+            (
+                r#"SHOW TABLES ->> SELECT "name" AS TABLE_NAME FROM $1"#,
+                "TABLE_NAME",
+            ),
+            (
+                r#"SHOW TABLES ->> /* result query */ SELECT "name" AS "MixedCase" FROM $1"#,
+                "MixedCase",
+            ),
+        ] {
+            let batch = normalize_result_column_names(
+                AdapterType::Snowflake,
+                sql,
+                single_column_batch(column_name),
+            );
+            assert_eq!(batch.schema().field(0).name(), column_name);
+        }
+
+        let batch = normalize_result_column_names(
+            AdapterType::Snowflake,
+            "SELECT 1 ->> SHOW TABLES",
+            single_column_batch("NAME"),
+        );
+        assert_eq!(batch.schema().field(0).name(), "name");
+    }
+
+    #[test]
+    fn normalize_result_column_names_ignores_flow_operators_in_snowflake_literals() {
+        for sql in [
+            "SHOW TABLES LIKE '->>'",
+            "SHOW TABLES LIKE $$->>$$",
+            "SHOW /* ->> SELECT 1 */ TABLES",
+        ] {
+            let batch = normalize_result_column_names(
+                AdapterType::Snowflake,
+                sql,
+                single_column_batch("NAME"),
+            );
+            assert_eq!(batch.schema().field(0).name(), "name");
+        }
+    }
+
+    #[test]
+    fn normalize_result_column_names_preserves_other_adapters() {
+        let batch = normalize_result_column_names(
+            AdapterType::Bigquery,
+            "SHOW PRIMARY KEYS IN TABLE orders",
+            uppercase_constraint_batch(),
+        );
+        assert_eq!(batch.schema().field(0).name(), "COLUMN_NAME");
+    }
 }

@@ -42,6 +42,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
+use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::CommonAttributes;
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::DbtModelAttr;
@@ -61,6 +62,7 @@ use dbt_schemas::schemas::dbt_column::ColumnInheritanceRules;
 use dbt_schemas::schemas::dbt_column::ColumnProperties;
 use dbt_schemas::schemas::dbt_column::DbtColumnRef;
 use dbt_schemas::schemas::dbt_column::process_columns;
+use dbt_schemas::schemas::macros::DbtMacro;
 use dbt_schemas::schemas::manifest::semantic_model::NodeRelation;
 use dbt_schemas::schemas::nodes::AdapterAttr;
 use dbt_schemas::schemas::project::DbtProject;
@@ -160,6 +162,7 @@ pub async fn resolve_models(
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
     models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
+    macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
     adapter_type: AdapterType,
@@ -183,6 +186,12 @@ pub async fn resolve_models(
     let mut node_names = HashSet::new();
     let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
+
+    // Used to detect custom materializations — including ones that shadow a
+    // built-in name (e.g. `table`, `incremental`) — so static analysis can be
+    // skipped for the models that use them (see the per-model use below).
+    let materialization_resolver =
+        MaterializationResolver::new(macros, adapter_type, root_package.dbt_project.name.as_str());
 
     let is_dependency = dependency_package_name.is_some();
     // Best-effort raw parse of the root project's `models:` subtree, used only to hydrate
@@ -557,7 +566,16 @@ pub async fn resolve_models(
             ModelFreshnessRules::validate(freshness.build_after.as_ref())?;
         }
 
-        let is_custom_materialization = matches!(materialized, DbtMaterialization::Unknown(_));
+        // A model uses a custom materialization when the macro dbt would
+        // dispatch for its materialization is user-defined — either a novel
+        // name (e.g. `my_incremental`) or a user macro that *shadows* a
+        // built-in name (e.g. `table`/`incremental`). dbt runs the user's
+        // macro in both cases, so Fusion cannot statically analyze the model;
+        // skipping static analysis avoids emitting malformed SQL when the
+        // materialization guards `graph.nodes` introspection behind
+        // `{% if execute %}` (dbt-core#14486).
+        let is_custom_materialization =
+            materialization_resolver.is_custom_materialization(&materialized.to_string());
         let static_analysis = if is_custom_materialization {
             Spanned::new(StaticAnalysisKind::Off)
         } else {

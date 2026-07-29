@@ -1538,6 +1538,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
         || match adapter_type {
             AdapterType::Snowflake => {
                 SnowflakeTyping::is_any_timestamp(ref_type).is_yes()
+                    || SnowflakeTyping::is_time(ref_type).is_yes()
                     || SnowflakeTyping::is_semi_structured_array(ref_type)
                     || SnowflakeTyping::is_variant(ref_type)
                     || SnowflakeTyping::is_object(ref_type)
@@ -2292,6 +2293,20 @@ mod tests {
         let result =
             create_cte_name_from_fqn(adapter_type, &DefaultTypeOps::new(adapter_type), fqn);
         assert_eq!(result, "\"database_schema_table\"");
+    }
+
+    #[test]
+    fn test_snowflake_time_is_supported_type() {
+        let time_type = DataType::FixedSizeList(
+            Arc::new(Field::new(
+                "time:9",
+                DataType::Time64(TimeUnit::Microsecond),
+                true,
+            )),
+            1,
+        );
+
+        assert!(is_supported_type(AdapterType::Snowflake, &time_type));
     }
 
     #[test]

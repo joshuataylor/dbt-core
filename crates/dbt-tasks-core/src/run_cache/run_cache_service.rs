@@ -34,6 +34,7 @@ use dbt_frontend_common::ident::FullyQualifiedName;
 use dbt_frontend_common::named_reference::NamedReference;
 use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::{DbtMaterialization, ModelFreshnessRules, ResolvedQuoting};
 use dbt_schemas::schemas::profiles::DbConfig;
 use dbt_schemas::schemas::properties::ModelState;
@@ -1929,7 +1930,7 @@ async fn submit_model(
         full_refresh,
         microbatch_window,
         client,
-        |context| build_model_sql_request(model, context),
+        |context| build_model_sql_request(model, context, &ctx.inner.materialization_resolver),
     )
     .await
 }
@@ -2199,7 +2200,7 @@ async fn prepare_write_only_execution_record(
         context.request.microbatch_window = microbatch_window;
         remove_cache_decision_fields(&mut context.request);
         Ok(Some(RunCachePendingExecutionRecord::sql(
-            build_model_sql_request(model, context.request)?,
+            build_model_sql_request(model, context.request, &ctx.inner.materialization_resolver)?,
         )))
     } else if let Some(snapshot) = node.as_any().downcast_ref::<DbtSnapshot>() {
         let mut context = build_sql_context(
@@ -3362,7 +3363,7 @@ async fn query_dependencies_for_parse_error(
     sql: &str,
     err: Box<FsError>,
 ) -> FsResult<CollectedViewQueryDependencies> {
-    if !node_uses_custom_materialization(node) {
+    if !node_uses_custom_materialization(node, &ctx.inner.materialization_resolver) {
         return Err(err);
     }
 
@@ -3414,10 +3415,15 @@ async fn query_dependencies_for_parse_error(
     collect_query_dependencies_from_relations(ctx, node, relations).await
 }
 
-fn node_uses_custom_materialization(node: &dyn InternalDbtNodeAttributes) -> bool {
+fn node_uses_custom_materialization(
+    node: &dyn InternalDbtNodeAttributes,
+    materialization_resolver: &MaterializationResolver,
+) -> bool {
     node.as_any()
         .downcast_ref::<DbtModel>()
-        .is_some_and(|model| matches!(model.materialized(), DbtMaterialization::Unknown(_)))
+        .is_some_and(|model| {
+            materialization_resolver.is_custom_materialization(&model.materialized().to_string())
+        })
 }
 
 fn parse_sql_relations_for_run_cache(
@@ -3800,6 +3806,7 @@ mod tests {
     use dbt_schema_store::mock_store::{MockDataStore, MockSchemaStore};
     use dbt_schemas::schemas::Nodes;
     use dbt_schemas::schemas::common::{FreshnessPeriod, ResolvedQuoting, UpdatesOn};
+    use dbt_schemas::schemas::macros::DbtMacro;
     use dbt_schemas::schemas::profiles::{Execute, SnowflakeDbConfig};
     use dbt_schemas::schemas::properties::{DataTestState, ModelFreshness, ModelState};
     use dbt_schemas::state::{
@@ -6065,12 +6072,27 @@ mod tests {
     }
 
     fn test_resolver_state_with_nodes(nodes: Nodes) -> ResolverState {
+        // Register a root-project `custom_table` materialization so the
+        // materialization resolver classifies models materialized as
+        // `custom_table` as custom (root/imported macro shadowing), matching
+        // what the custom-materialization tests below exercise.
+        let mut macros = Macros::default();
+        let custom_table_mat = DbtMacro {
+            name: "materialization_custom_table_default".to_string(),
+            package_name: "test".to_string(),
+            unique_id: "macro.test.materialization_custom_table_default".to_string(),
+            ..Default::default()
+        };
+        macros
+            .macros
+            .insert(custom_table_mat.unique_id.clone(), custom_table_mat);
+
         ResolverState {
             root_project_name: "test".to_string(),
             adapter_type: AdapterType::Snowflake,
             nodes,
             disabled_nodes: Nodes::default(),
-            macros: Macros::default(),
+            macros,
             operations: Operations::default(),
             dbt_profile: DbtProfile {
                 profile: "default".to_string(),

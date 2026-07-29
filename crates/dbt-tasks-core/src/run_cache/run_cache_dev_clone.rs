@@ -4,6 +4,7 @@ use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter_core::AdapterType;
 use dbt_common::tracing::dbt_emit::{emit_trace_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::properties::StatePreClone;
@@ -251,22 +252,26 @@ impl DevCloneCandidate {
         }
     }
 
-    fn execution_type(&self) -> FsResult<dbt_state::proto::query_cache::ModelExecutionType> {
-        let execution_type = match self {
-            Self::Model { local, .. } => {
-                execution_type_from_input(&model_execution_type_input(local, false))
+    fn execution_type(
+        &self,
+        materialization_resolver: &MaterializationResolver,
+    ) -> FsResult<dbt_state::proto::query_cache::ModelExecutionType> {
+        let execution_type =
+            match self {
+                Self::Model { local, .. } => execution_type_from_input(
+                    &model_execution_type_input(local, false, materialization_resolver),
+                ),
+                Self::Snapshot { local, .. } => {
+                    execution_type_from_input(&snapshot_execution_type_input(local, false))
+                }
             }
-            Self::Snapshot { local, .. } => {
-                execution_type_from_input(&snapshot_execution_type_input(local, false))
-            }
-        }
-        .map_err(|err| {
-            fs_err!(
-                ErrorCode::Generic,
-                "Failed to build dbt State dev clone execution type: {}",
-                err
-            )
-        })?;
+            .map_err(|err| {
+                fs_err!(
+                    ErrorCode::Generic,
+                    "Failed to build dbt State dev clone execution type: {}",
+                    err
+                )
+            })?;
         Ok(execution_type)
     }
 
@@ -404,7 +409,7 @@ async fn prepare_dev_clone_request(
         target_table: target_table.clone(),
         dialect: ctx.adapter_type().to_string(),
         default_catalog: candidate.local().database(),
-        execution_type: candidate.execution_type()?,
+        execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
         clone_source_last_modified_epoch: source_last_modified_epoch,
         labels: node_identity(candidate.local()).labels(),
@@ -576,6 +581,14 @@ mod tests {
     use dbt_state::proto::query_cache::{ModelExecutionType, TableProperties};
     use dbt_yaml::Spanned;
     use indexmap::IndexMap;
+    use std::collections::BTreeMap;
+
+    /// A resolver with no macros: built-in materialization names resolve to no
+    /// user-defined macro, so `is_custom_materialization` is false — matching
+    /// the built-in materializations these tests use.
+    fn test_resolver() -> MaterializationResolver {
+        MaterializationResolver::new(&BTreeMap::new(), AdapterType::Snowflake, "jaffle_shop")
+    }
 
     #[test]
     fn dev_clone_metadata_probes_use_options_aware_adapter_methods() {
@@ -701,7 +714,7 @@ mod tests {
             target_table: target_relation.semantic_fqn(),
             dialect: "snowflake".to_string(),
             default_catalog: candidate.local().database(),
-            execution_type: candidate.execution_type().unwrap(),
+            execution_type: candidate.execution_type(&test_resolver()).unwrap(),
             clone_source_table: source_relation.semantic_fqn(),
             clone_source_last_modified_epoch: Some(123),
             labels: node_identity(candidate.local()).labels(),
@@ -740,7 +753,7 @@ mod tests {
         };
 
         assert_eq!(
-            candidate.execution_type().unwrap(),
+            candidate.execution_type(&test_resolver()).unwrap(),
             ModelExecutionType::Snapshot
         );
         assert_eq!(

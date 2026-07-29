@@ -14,6 +14,7 @@ use chrono::{DateTime, Utc};
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::{DbtIncrementalStrategy, DbtMaterialization, OnSchemaChange};
 use dbt_schemas::schemas::project::{
     DataTestConfig, ModelConfig, SeedConfig, SnapshotConfig, WarehouseSpecificNodeConfig,
@@ -89,10 +90,14 @@ pub struct SeedRunCacheRequestContext<'a> {
 pub fn build_model_sql_request(
     model: &DbtModel,
     context: SqlRunCacheRequestContext,
+    materialization_resolver: &MaterializationResolver,
 ) -> FsResult<SubmitEnrichedSqlRequest> {
-    let execution_type =
-        execution_type_from_input(&model_execution_type_input(model, context.full_refresh))
-            .map_err(request_build_error)?;
+    let execution_type = execution_type_from_input(&model_execution_type_input(
+        model,
+        context.full_refresh,
+        materialization_resolver,
+    ))
+    .map_err(request_build_error)?;
     let mut semantic_extras =
         sql_semantic_extras(&model_sql_semantic_extra_config(model).map_err(request_build_error)?)
             .map_err(request_build_error)?;
@@ -228,12 +233,22 @@ pub fn target_table_for_node(
     Ok(create_relation_from_node(adapter_type, node, None)?.semantic_fqn())
 }
 
-pub fn model_execution_type_input(model: &DbtModel, full_refresh: bool) -> ExecutionTypeInput {
+pub fn model_execution_type_input(
+    model: &DbtModel,
+    full_refresh: bool,
+    materialization_resolver: &MaterializationResolver,
+) -> ExecutionTypeInput {
     let materialized = &model.base().materialized;
     ExecutionTypeInput {
         resource_type: NodeType::Model,
         is_view: materialized == &DbtMaterialization::View,
-        is_custom_materialization: matches!(materialized, DbtMaterialization::Unknown(_)),
+        // A model uses a custom materialization when the macro dbt would
+        // dispatch for its materialization is user-defined — a novel name or a
+        // user macro that shadows a built-in name (e.g. `table`/`incremental`).
+        // Matches the parse-time classification in `resolve_models` so the run
+        // cache treats such models as `DBT_CUSTOM` (dbt-core#14486).
+        is_custom_materialization: materialization_resolver
+            .is_custom_materialization(&materialized.to_string()),
         is_incremental: materialized == &DbtMaterialization::Incremental,
         full_refresh,
         incremental_strategy: model_incremental_strategy(model),
@@ -648,6 +663,7 @@ mod tests {
         Access, DbtIncrementalStrategy, DbtMaterialization, DbtUniqueKey, OnSchemaChange,
         ResolvedQuoting, Severity, StoreFailuresAs,
     };
+    use dbt_schemas::schemas::macros::DbtMacro;
     use dbt_schemas::schemas::nodes::AdapterAttr;
     use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
     use dbt_schemas::schemas::{
@@ -659,6 +675,28 @@ mod tests {
     use dbt_yaml::Spanned;
     use indexmap::IndexMap;
     use std::collections::BTreeMap;
+
+    /// A resolver with no macros: built-in materialization names resolve to no
+    /// user-defined macro, so `is_custom_materialization` is false — matching
+    /// the built-in materializations these tests use.
+    fn test_resolver() -> MaterializationResolver {
+        MaterializationResolver::new(&BTreeMap::new(), AdapterType::Snowflake, "jaffle_shop")
+    }
+
+    /// A resolver where `name` is a user-defined (root-project) materialization,
+    /// so `is_custom_materialization(name)` returns true.
+    fn custom_materialization_resolver(name: &str) -> MaterializationResolver {
+        let macro_name = format!("materialization_{name}_default");
+        let macro_def = DbtMacro {
+            name: macro_name.clone(),
+            package_name: "jaffle_shop".to_string(),
+            unique_id: format!("macro.jaffle_shop.{macro_name}"),
+            ..Default::default()
+        };
+        let mut macros = BTreeMap::new();
+        macros.insert(macro_def.unique_id.clone(), macro_def);
+        MaterializationResolver::new(&macros, AdapterType::Snowflake, "jaffle_shop")
+    }
 
     fn make_common(unique_id: &str, name: &str) -> CommonAttributes {
         CommonAttributes {
@@ -798,7 +836,8 @@ mod tests {
     #[test]
     fn model_request_uses_fusion_node_identity_target_and_semantic_extras() {
         let model = make_model(DbtMaterialization::Incremental);
-        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
 
         assert_eq!(
             request.target_table.as_deref(),
@@ -847,7 +886,7 @@ mod tests {
         let mut context = sql_context(false);
         context.microbatch_window = Some((start, end));
 
-        let request = build_model_sql_request(&model, context).unwrap();
+        let request = build_model_sql_request(&model, context, &test_resolver()).unwrap();
 
         // Raw ISO-8601 strings (not JSON-encoded, so no surrounding quotes),
         // matching the dbt-core plugin so both engines hash the window the same.
@@ -870,7 +909,8 @@ mod tests {
     #[test]
     fn non_microbatch_request_omits_microbatch_window_extras() {
         let model = make_model(DbtMaterialization::Incremental);
-        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
 
         assert!(
             !request
@@ -892,7 +932,8 @@ mod tests {
             model.deprecated_config.incremental_predicates = None;
             model.deprecated_config.merge_update_columns = None;
 
-            let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+            let request =
+                build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
 
             assert_eq!(
                 request.semantic_extras.get("on_schema_change").unwrap(),
@@ -917,7 +958,8 @@ mod tests {
         let mut model = make_model(DbtMaterialization::View);
         model.deprecated_config.on_schema_change = Some(OnSchemaChange::SyncAllColumns);
 
-        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
 
         assert!(!request.semantic_extras.contains_key("on_schema_change"));
     }
@@ -928,7 +970,8 @@ mod tests {
         model.deprecated_config.unique_key = None;
 
         let execution_type =
-            execution_type_from_input(&model_execution_type_input(&model, false)).unwrap();
+            execution_type_from_input(&model_execution_type_input(&model, false, &test_resolver()))
+                .unwrap();
 
         assert_eq!(execution_type, ModelExecutionType::Append);
     }
@@ -936,7 +979,7 @@ mod tests {
     #[test]
     fn model_full_refresh_suppresses_incremental_skip_type() {
         let model = make_model(DbtMaterialization::Incremental);
-        let request = build_model_sql_request(&model, sql_context(true)).unwrap();
+        let request = build_model_sql_request(&model, sql_context(true), &test_resolver()).unwrap();
 
         assert_eq!(request.execution_type, ModelExecutionType::Full as i32);
     }
@@ -944,7 +987,7 @@ mod tests {
     #[test]
     fn model_full_refresh_keeps_view_execution_type() {
         let model = make_model(DbtMaterialization::View);
-        let request = build_model_sql_request(&model, sql_context(true)).unwrap();
+        let request = build_model_sql_request(&model, sql_context(true), &test_resolver()).unwrap();
 
         assert_eq!(request.execution_type, ModelExecutionType::View as i32);
     }
@@ -955,8 +998,12 @@ mod tests {
             "my_materialization".to_string(),
         ));
 
-        let execution_type =
-            execution_type_from_input(&model_execution_type_input(&model, false)).unwrap();
+        let execution_type = execution_type_from_input(&model_execution_type_input(
+            &model,
+            false,
+            &custom_materialization_resolver("my_materialization"),
+        ))
+        .unwrap();
 
         assert_eq!(execution_type, ModelExecutionType::DbtCustom);
     }
@@ -971,7 +1018,8 @@ mod tests {
         model.__model_attr__.incremental_strategy = Some(strategy.clone());
         model.deprecated_config.incremental_strategy = Some(strategy);
 
-        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
 
         assert_eq!(request.execution_type, ModelExecutionType::DbtCustom as i32);
     }
@@ -1083,7 +1131,8 @@ mod tests {
             .__warehouse_specific_config__
             .auto_liquid_cluster = Some(true);
 
-        let request = build_model_sql_request(&model, sql_context(false)).unwrap();
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
 
         assert_eq!(
             request.semantic_extras.get("contract").unwrap(),

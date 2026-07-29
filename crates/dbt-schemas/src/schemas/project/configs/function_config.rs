@@ -383,7 +383,10 @@ impl FunctionConfig {
         let quoting_eq = self.quoting == other.quoting;
         let on_configuration_change_eq =
             self.on_configuration_change == other.on_configuration_change;
-        let static_analysis_eq = self.static_analysis == other.static_analysis;
+        // `static_analysis` is a Fusion-only, invocation-driven value (e.g. set by
+        // `--static-analysis`) with no dbt-core equivalent, so it can never be a
+        // legitimate dbt-core `state:modified` trigger and is deliberately excluded
+        // from this comparison (see `base_config_excluded_keys`, parity-exclude).
         let function_kind_eq = self.function_kind == other.function_kind;
         let volatility_eq = self.volatility == other.volatility;
         let access_eq_result = access_eq(&self.access, &other.access); // Custom comparison for access
@@ -405,7 +408,6 @@ impl FunctionConfig {
             && grants_eq
             && quoting_eq
             && on_configuration_change_eq
-            && static_analysis_eq
             && function_kind_eq
             && volatility_eq
             && access_eq_result
@@ -467,14 +469,6 @@ impl FunctionConfig {
                         Some((
                             format!("{:?}", &self.on_configuration_change),
                             format!("{:?}", &other.on_configuration_change),
-                        )),
-                    ),
-                    (
-                        "static_analysis",
-                        static_analysis_eq,
-                        Some((
-                            format!("{:?}", &self.static_analysis),
-                            format!("{:?}", &other.static_analysis),
                         )),
                     ),
                     (

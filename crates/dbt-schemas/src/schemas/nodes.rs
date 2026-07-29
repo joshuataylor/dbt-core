@@ -1972,41 +1972,25 @@ impl InternalDbtNode for DbtUnitTest {
             let other_config = &other.deprecated_config;
 
             let enabled_eq = self_config.enabled == other_config.enabled;
-            // Treat None as equivalent to Some(default) so that old manifests
-            // that serialized null (before apply_resolve_defaults ran for unit tests)
-            // do not produce false-positive state:modified detections.
-            let default_sa = StaticAnalysisKind::default();
-            let static_analysis_eq =
-                match (&self_config.static_analysis, &other_config.static_analysis) {
-                    (None, None) => true,
-                    (None, Some(v)) | (Some(v), None) => **v == default_sa,
-                    (Some(a), Some(b)) => a == b,
-                };
+            // `static_analysis` is a Fusion-only, invocation-driven value (e.g. set by
+            // `--static-analysis`) with no dbt-core equivalent, so it can never be a
+            // legitimate dbt-core `state:modified` trigger and is deliberately excluded
+            // from this comparison (see `base_config_excluded_keys`, parity-exclude).
 
-            let result = enabled_eq && static_analysis_eq;
+            let result = enabled_eq;
 
             if !result {
                 log_state_mod_diff(
                     &self.__common_attr__.unique_id,
                     "unit_test_config",
-                    [
-                        (
-                            "enabled",
-                            enabled_eq,
-                            Some((
-                                format!("{:?}", &self_config.enabled),
-                                format!("{:?}", &other_config.enabled),
-                            )),
-                        ),
-                        (
-                            "static_analysis",
-                            static_analysis_eq,
-                            Some((
-                                format!("{:?}", &self_config.static_analysis),
-                                format!("{:?}", &other_config.static_analysis),
-                            )),
-                        ),
-                    ],
+                    [(
+                        "enabled",
+                        enabled_eq,
+                        Some((
+                            format!("{:?}", &self_config.enabled),
+                            format!("{:?}", &other_config.enabled),
+                        )),
+                    )],
                 );
             }
 
@@ -2165,17 +2149,10 @@ impl InternalDbtNode for DbtSource {
                 &other_source.__source_attr__.loaded_at_query,
             );
 
-            // Treat None as equivalent to Some(default) so that old manifests
-            // that serialized null (before apply_resolve_defaults ran for sources)
-            // do not produce false-positive state:modified detections.
-            let default_sa = StaticAnalysisKind::default();
-            let static_analysis_eq =
-                match (&self_config.static_analysis, &other_config.static_analysis) {
-                    (None, None) => true,
-                    (None, Some(v)) | (Some(v), None) => **v == default_sa,
-                    (Some(a), Some(b)) => a == b,
-                };
-
+            // `static_analysis` is a Fusion-only, invocation-driven value (e.g. set by
+            // `--static-analysis`) with no dbt-core equivalent, so it can never be a
+            // legitimate dbt-core `state:modified` trigger and is deliberately excluded
+            // from this comparison (see `base_config_excluded_keys`, parity-exclude).
             let warehouse_config_eq = same_warehouse_config(
                 &self_config.__warehouse_specific_config__,
                 &other_config.__warehouse_specific_config__,
@@ -2187,7 +2164,6 @@ impl InternalDbtNode for DbtSource {
                 && quoting_eq
                 && loaded_at_field_eq
                 && loaded_at_query_result
-                && static_analysis_eq
                 && warehouse_config_eq;
 
             if !result {
@@ -2241,14 +2217,6 @@ impl InternalDbtNode for DbtSource {
                             Some((
                                 format!("{:?}", &self.__source_attr__.loaded_at_query),
                                 format!("{:?}", &other_source.__source_attr__.loaded_at_query),
-                            )),
-                        ),
-                        (
-                            "static_analysis",
-                            static_analysis_eq,
-                            Some((
-                                format!("{:?}", &self_config.static_analysis),
-                                format!("{:?}", &other_config.static_analysis),
                             )),
                         ),
                         ("warehouse_config", warehouse_config_eq, None),
@@ -2484,16 +2452,10 @@ impl InternalDbtNode for DbtSnapshot {
             let event_time_eq = self_config.event_time == other_config.event_time;
             let quoting_eq =
                 quoting_equal(&self_config.quoting, &other_config.quoting, adapter_type);
-            // Treat None as equivalent to Some(default) so that old manifests
-            // that serialized null (before apply_resolve_defaults ran for snapshots)
-            // do not produce false-positive state:modified detections.
-            let default_sa = StaticAnalysisKind::default();
-            let static_analysis_eq =
-                match (&self_config.static_analysis, &other_config.static_analysis) {
-                    (None, None) => true,
-                    (None, Some(v)) | (Some(v), None) => **v == default_sa,
-                    (Some(a), Some(b)) => a == b,
-                };
+            // `static_analysis` is a Fusion-only, invocation-driven value (e.g. set by
+            // `--static-analysis`) with no dbt-core equivalent, so it can never be a
+            // legitimate dbt-core `state:modified` trigger and is deliberately excluded
+            // from this comparison (see `base_config_excluded_keys`, parity-exclude).
             let quote_columns_eq = self_config.quote_columns == other_config.quote_columns;
             let invalidate_hard_deletes_eq =
                 self_config.invalidate_hard_deletes == other_config.invalidate_hard_deletes;
@@ -2526,7 +2488,6 @@ impl InternalDbtNode for DbtSnapshot {
                 && grants_eq
                 && event_time_eq
                 && quoting_eq
-                && static_analysis_eq
                 && quote_columns_eq
                 && invalidate_hard_deletes_eq
                 && state_eq
@@ -2681,14 +2642,6 @@ impl InternalDbtNode for DbtSnapshot {
                             Some((
                                 format!("{:?}", &self_config.quoting),
                                 format!("{:?}", &other_config.quoting),
-                            )),
-                        ),
-                        (
-                            "static_analysis",
-                            static_analysis_eq,
-                            Some((
-                                format!("{:?}", &self_config.static_analysis),
-                                format!("{:?}", &other_config.static_analysis),
                             )),
                         ),
                         (
@@ -7162,41 +7115,25 @@ impl InternalDbtNode for DbtAnalysis {
             let other_config = &other_analysis.deprecated_config;
 
             let enabled_eq = self_config.enabled == other_config.enabled;
-            // Treat None as equivalent to Some(default) so that old manifests
-            // that serialized null (before apply_resolve_defaults ran for analyses)
-            // do not produce false-positive state:modified detections.
-            let default_sa = StaticAnalysisKind::default();
-            let static_analysis_eq =
-                match (&self_config.static_analysis, &other_config.static_analysis) {
-                    (None, None) => true,
-                    (None, Some(v)) | (Some(v), None) => **v == default_sa,
-                    (Some(a), Some(b)) => a == b,
-                };
+            // `static_analysis` is a Fusion-only, invocation-driven value (e.g. set by
+            // `--static-analysis`) with no dbt-core equivalent, so it can never be a
+            // legitimate dbt-core `state:modified` trigger and is deliberately excluded
+            // from this comparison (see `base_config_excluded_keys`, parity-exclude).
 
-            let result = enabled_eq && static_analysis_eq;
+            let result = enabled_eq;
 
             if !result {
                 log_state_mod_diff(
                     &self.__common_attr__.unique_id,
                     "analysis_config",
-                    [
-                        (
-                            "enabled",
-                            enabled_eq,
-                            Some((
-                                format!("{:?}", &self_config.enabled),
-                                format!("{:?}", &other_config.enabled),
-                            )),
-                        ),
-                        (
-                            "static_analysis",
-                            static_analysis_eq,
-                            Some((
-                                format!("{:?}", &self_config.static_analysis),
-                                format!("{:?}", &other_config.static_analysis),
-                            )),
-                        ),
-                    ],
+                    [(
+                        "enabled",
+                        enabled_eq,
+                        Some((
+                            format!("{:?}", &self_config.enabled),
+                            format!("{:?}", &other_config.enabled),
+                        )),
+                    )],
                 );
             }
 

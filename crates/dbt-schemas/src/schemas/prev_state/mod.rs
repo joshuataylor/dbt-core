@@ -1015,8 +1015,11 @@ impl UnrenderedKeyRelevance {
             // v1.10.0).
             NodeType::Model | NodeType::Seed | NodeType::Snapshot | NodeType::Function => {
                 &[
-                    "tags", "group", // parity-excludes
-                    "schema", "database",
+                    "tags",
+                    "group",           // parity-excludes
+                    "static_analysis", // parity-exclude: Fusion-only, invocation-driven, no dbt-core equivalent
+                    "schema",
+                    "database",
                     "alias", // ownership-excludes, counted in `check_relation_modified`
                 ]
             }
@@ -1027,8 +1030,10 @@ impl UnrenderedKeyRelevance {
             // via `same_database_representation`.
             NodeType::Source => {
                 &[
-                    "tags", // parity-exclude
-                    "schema", "database",
+                    "tags",            // parity-exclude
+                    "static_analysis", // parity-exclude: Fusion-only, invocation-driven, no dbt-core equivalent
+                    "schema",
+                    "database",
                     "alias", // ownership-excludes, counted in `check_relation_modified`
                 ]
             }
@@ -1414,21 +1419,21 @@ mod tests {
                 ExcludeKind::Relevant,
                 Box::new(|n| n.__source_attr__.loaded_at_query = Some("select 1".to_string())),
             ),
-            (
-                "static_analysis",
-                ExcludeKind::Relevant,
-                Box::new(|n| {
-                    n.deprecated_config.static_analysis =
-                        Some(Spanned::new(StaticAnalysisKind::Off))
-                }),
-            ),
-            // --- parity-exclude: dbt-core's `SourceDefinition.same_contents` ignores tags ---
+            // --- parity-excludes: dbt-core has no equivalent, checks these nowhere ---
             (
                 "tags",
                 ExcludeKind::Parity,
                 Box::new(|n| {
                     n.deprecated_config.tags =
                         Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                }),
+            ),
+            (
+                "static_analysis",
+                ExcludeKind::Parity,
+                Box::new(|n| {
+                    n.deprecated_config.static_analysis =
+                        Some(Spanned::new(StaticAnalysisKind::Off))
                 }),
             ),
             // --- ownership-excludes: owned by `check_relation_modified`, not this comparator ---
@@ -1466,6 +1471,7 @@ mod tests {
         use crate::schemas::common::{DbtMaterialization, DocsConfig, Hooks};
         use crate::schemas::nodes::DbtSeed;
         use crate::schemas::serde::{GrantConfig, OmissibleGrantConfig, StringOrArrayOfStrings};
+        use dbt_common::io_args::StaticAnalysisKind;
         use dbt_common::serde_utils::Omissible;
         use dbt_yaml::{Spanned, Verbatim};
 
@@ -1578,6 +1584,14 @@ mod tests {
                 ExcludeKind::Parity,
                 Box::new(|n| n.deprecated_config.group = Some("a_group".to_string())),
             ),
+            (
+                "static_analysis",
+                ExcludeKind::Parity,
+                Box::new(|n| {
+                    n.deprecated_config.static_analysis =
+                        Some(Spanned::new(StaticAnalysisKind::Off))
+                }),
+            ),
             // --- ownership-excludes: owned by `check_relation_modified`, not this comparator ---
             (
                 "schema",
@@ -1673,14 +1687,6 @@ mod tests {
                 }),
             ),
             (
-                "static_analysis",
-                ExcludeKind::Relevant,
-                Box::new(|n| {
-                    n.deprecated_config.static_analysis =
-                        Some(Spanned::new(StaticAnalysisKind::Off))
-                }),
-            ),
-            (
                 "function_kind",
                 ExcludeKind::Relevant,
                 Box::new(|n| n.deprecated_config.function_kind = Some(FunctionKind::Aggregate)),
@@ -1720,6 +1726,14 @@ mod tests {
                 "group",
                 ExcludeKind::Parity,
                 Box::new(|n| n.deprecated_config.group = Some("a_group".to_string())),
+            ),
+            (
+                "static_analysis",
+                ExcludeKind::Parity,
+                Box::new(|n| {
+                    n.deprecated_config.static_analysis =
+                        Some(Spanned::new(StaticAnalysisKind::Off))
+                }),
             ),
             // --- ownership-excludes: owned by `check_relation_modified`, not this comparator ---
             (
@@ -1901,14 +1915,6 @@ mod tests {
                 }),
             ),
             (
-                "static_analysis",
-                ExcludeKind::Relevant,
-                Box::new(|n| {
-                    n.deprecated_config.static_analysis =
-                        Some(Spanned::new(StaticAnalysisKind::Off))
-                }),
-            ),
-            (
                 "quote_columns",
                 ExcludeKind::Relevant,
                 Box::new(|n| n.deprecated_config.quote_columns = Some(true)),
@@ -1938,6 +1944,14 @@ mod tests {
                 Box::new(|n| {
                     n.deprecated_config.tags =
                         Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                }),
+            ),
+            (
+                "static_analysis",
+                ExcludeKind::Parity,
+                Box::new(|n| {
+                    n.deprecated_config.static_analysis =
+                        Some(Spanned::new(StaticAnalysisKind::Off))
                 }),
             ),
             (
@@ -2234,6 +2248,14 @@ mod tests {
                 "group",
                 ExcludeKind::Parity,
                 Box::new(|n| n.deprecated_config.group = Some("a_group".to_string())),
+            ),
+            (
+                "static_analysis",
+                ExcludeKind::Parity,
+                Box::new(|n| {
+                    n.deprecated_config.static_analysis =
+                        Some(Spanned::new(dbt_common::io_args::StaticAnalysisKind::Off))
+                }),
             ),
             // --- ownership-excludes: owned by `check_relation_modified`, not this comparator ---
             (

@@ -178,6 +178,8 @@ pub fn run_cli(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>)
     // Remove the panic hook
     let _ = std::panic::take_hook();
 
+    dbt_common::source_lineage::print_report();
+
     // Handle regular execution
     match result {
         Ok(cancellation_report) => {

@@ -655,6 +655,18 @@ pub struct CompileArgs {
     #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), short = 'f', env = "DBT_FULL_REFRESH")]
     pub full_refresh: bool,
 
+    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_INFER_SCHEMAS", help = "Bind without a catalog; assume referenced tables/columns exist and infer schemas from usage")]
+    pub infer_schemas: bool,
+
+    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_SKIP_TYPE_CHECKING", help = "Bind against the catalog but skip type checking/inference")]
+    pub skip_type_checking: bool,
+
+    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_SHOW_SOURCES", help = "With --infer-schemas, print inferred column-to-source lineage at the end of the run")]
+    pub show_sources: bool,
+
+    #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_RESOLVE_AMBIGUOUS_COLS", help = "With --infer-schemas, interactively resolve ambiguous column-to-table attributions at the end of the run")]
+    pub resolve_ambiguous_cols: bool,
+
     /// Use the samples as given in this YAML/JSON file.
     #[arg(
         long,
@@ -681,6 +693,10 @@ impl CompileArgs {
             Some(StaticAnalysisKind::Off)
         };
         eval_args.full_refresh = self.full_refresh;
+        eval_args.infer_schemas = self.infer_schemas;
+        eval_args.skip_type_checking = self.skip_type_checking;
+        eval_args.show_sources = self.show_sources;
+        eval_args.resolve_ambiguous_cols = self.resolve_ambiguous_cols;
         eval_args.format = self.output.unwrap_or(DEFAULT_FORMAT);
         if let Some(resource_type) = &self.resource_type {
             eval_args.resource_types = resource_type.clone();
@@ -2541,6 +2557,10 @@ impl CommonArgs {
             task_cache_url: self.task_cache_url.clone(),
             static_analysis: None,
             full_refresh: false,
+            infer_schemas: false,
+            skip_type_checking: false,
+            show_sources: false,
+            resolve_ambiguous_cols: false,
             store_failures: self.store_failures,
             check_all: false,
             sample_renaming: BTreeMap::new(),

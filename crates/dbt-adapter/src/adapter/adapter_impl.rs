@@ -45,7 +45,7 @@ use crate::{AdapterResult, load_catalogs, python};
 
 use adbc_core::options::OptionValue;
 use arrow::array::{BooleanArray, RecordBatch, StringArray};
-use arrow_array::{Array as _, ArrayRef, Decimal128Array};
+use arrow_array::{Array as _, ArrayRef, Decimal128Array, Int64Array};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use dashmap::DashMap;
@@ -264,6 +264,403 @@ pub enum InnerAdapter<'a> {
     Impl(AdapterType, &'a Arc<dyn AdapterEngine>),
     /// Delegates to a replay adapter for recorded trace playback.
     Replay(AdapterType, &'a dyn Replayer),
+}
+
+#[derive(Default)]
+struct QuoteScanner {
+    in_single: bool,
+    in_double: bool,
+}
+
+impl QuoteScanner {
+    fn in_quotes(&self) -> bool {
+        self.in_single || self.in_double
+    }
+
+    fn advance(&mut self, c: char) {
+        if self.in_single {
+            if c == '\'' {
+                self.in_single = false;
+            }
+        } else if self.in_double {
+            if c == '"' {
+                self.in_double = false;
+            }
+        } else if c == '\'' {
+            self.in_single = true;
+        } else if c == '"' {
+            self.in_double = true;
+        }
+    }
+}
+
+fn strip_sql_comments(sql: &str) -> String {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    let mut quotes = QuoteScanner::default();
+    while let Some(c) = chars.next() {
+        if quotes.in_quotes() {
+            out.push(c);
+            quotes.advance(c);
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quotes.advance(c);
+                out.push(c);
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                chars.next();
+                for c2 in chars.by_ref() {
+                    if c2 == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = ' ';
+                for c2 in chars.by_ref() {
+                    if prev == '*' && c2 == '/' {
+                        break;
+                    }
+                    prev = c2;
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn find_top_level_select(sql: &str) -> Option<usize> {
+    find_top_level_keyword_after(sql, 0, "select")
+}
+
+fn find_top_level_keyword_after(sql: &str, start: usize, keyword: &str) -> Option<usize> {
+    let bytes = sql.as_bytes();
+    let mut depth: i32 = 0;
+    let mut quotes = QuoteScanner::default();
+    let n = bytes.len();
+    let mut i = start;
+    let klen = keyword.len();
+    while i < n {
+        let c = bytes[i] as char;
+        if quotes.in_quotes() {
+            quotes.advance(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' => quotes.advance(c),
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {
+                if depth == 0
+                    && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+                {
+                    let rest = &sql[i..];
+                    if rest.len() >= klen {
+                        let word = &rest[..klen];
+                        if word.eq_ignore_ascii_case(keyword) {
+                            let after = rest.as_bytes().get(klen).copied().unwrap_or(b' ');
+                            if !(after.is_ascii_alphanumeric() || after == b'_') {
+                                return Some(i);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn top_level_split_commas(s: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut depth = 0i32;
+    let mut quotes = QuoteScanner::default();
+    let mut current = String::new();
+    for c in s.chars() {
+        if quotes.in_quotes() {
+            current.push(c);
+            quotes.advance(c);
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quotes.advance(c);
+                current.push(c);
+            }
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                items.push(current.trim().to_string());
+                current = String::new();
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        items.push(current.trim().to_string());
+    }
+    items
+}
+
+fn last_identifier(item: &str) -> Option<String> {
+    let trimmed = item.trim();
+    if trimmed.ends_with(')') || trimmed.ends_with('*') {
+        return None;
+    }
+    if let Some(pos) = find_top_level_keyword_after(trimmed, 0, "as") {
+        let after = trimmed[pos + 2..].trim();
+        if !after.is_empty() {
+            return Some(strip_ident_quotes(after));
+        }
+    }
+    let bytes = trimmed.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && (bytes[end - 1] as char).is_whitespace() {
+        end = end.saturating_sub(1);
+    }
+    let mut start = end;
+    if start > 0 && bytes[start - 1] == b'"' {
+        start -= 1;
+        while start > 0 && bytes[start - 1] != b'"' {
+            start -= 1;
+        }
+        start = start.saturating_sub(1);
+        return Some(strip_ident_quotes(&trimmed[start..end]));
+    }
+    while start > 0 {
+        let c = bytes[start - 1] as char;
+        if c.is_ascii_alphanumeric() || c == '_' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    if start == end {
+        return None;
+    }
+    Some(trimmed[start..end].to_string())
+}
+
+fn strip_ident_quotes(s: &str) -> String {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.trim_end_matches(',').to_string()
+    }
+}
+
+fn mock_select_column_names(sql: &str) -> Vec<String> {
+    let cleaned = strip_sql_comments(sql);
+    let Some(select_pos) = find_top_level_select(&cleaned) else {
+        return Vec::new();
+    };
+    let after_select = select_pos + "select".len();
+    let from_pos = find_top_level_keyword_after(&cleaned, after_select, "from");
+    let col_list_end = from_pos.unwrap_or(cleaned.len());
+    let col_list = &cleaned[after_select..col_list_end];
+    let items = top_level_split_commas(col_list);
+    if items.is_empty() {
+        return Vec::new();
+    }
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let trimmed = item.trim();
+            let trimmed = trimmed
+                .strip_prefix("DISTINCT")
+                .or_else(|| trimmed.strip_prefix("distinct"))
+                .unwrap_or(trimmed)
+                .trim();
+            if trimmed == "*" || trimmed.ends_with(".*") {
+                format!("col_{i}")
+            } else {
+                last_identifier(trimmed).unwrap_or_else(|| format!("col_{i}"))
+            }
+        })
+        .collect()
+}
+
+fn is_metadata_only_query(sql: &str) -> bool {
+    const METADATA_NAMESPACES: &[&str] = &["information_schema", "svv_", "pg_catalog"];
+    let stripped = strip_sql_comments(sql);
+    let lower = stripped.to_ascii_lowercase();
+    METADATA_NAMESPACES
+        .iter()
+        .any(|namespace| contains_as_identifier_prefix(&lower, namespace))
+}
+
+/// Like `str::contains`, but rejects a match whose preceding character is
+/// itself an identifier character — so `svv_` matches `select * from
+/// svv_tables` but not a user identifier like `my_svv_data`.
+fn contains_as_identifier_prefix(haystack: &str, needle: &str) -> bool {
+    let mut start = 0;
+    while let Some(pos) = haystack[start..].find(needle) {
+        let match_start = start + pos;
+        let preceded_by_ident_char = haystack[..match_start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !preceded_by_ident_char {
+            return true;
+        }
+        start = match_start + needle.len();
+    }
+    false
+}
+
+fn select_source_column(item: &str) -> Option<String> {
+    let trimmed = item.trim();
+    let before_as = match find_top_level_keyword_after(trimmed, 0, "as") {
+        Some(pos) => trimmed[..pos].trim(),
+        None => trimmed,
+    };
+    if before_as.is_empty()
+        || !before_as
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        return None;
+    }
+    let source = before_as.rsplit('.').next().unwrap_or(before_as);
+    if source.is_empty() {
+        return None;
+    }
+    Some(source.to_string())
+}
+
+fn parse_from_relation(sql_after_from: &str) -> Option<String> {
+    let bytes = sql_after_from.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] as char).is_whitespace() {
+        i += 1;
+    }
+    let mut parts = Vec::new();
+    loop {
+        if i >= bytes.len() {
+            break;
+        }
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end] != b'"' {
+                end += 1;
+            }
+            if end >= bytes.len() {
+                return None;
+            }
+            parts.push(sql_after_from[start..end].to_string());
+            i = end + 1;
+        } else {
+            let start = i;
+            let mut end = i;
+            while end < bytes.len()
+                && ((bytes[end] as char).is_ascii_alphanumeric() || bytes[end] == b'_')
+            {
+                end += 1;
+            }
+            if end == start {
+                break;
+            }
+            parts.push(sql_after_from[start..end].to_string());
+            i = end;
+        }
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
+    }
+}
+
+fn seed_column_values(sql: &str) -> Option<Vec<(String, Vec<String>)>> {
+    let cleaned = strip_sql_comments(sql);
+    let select_pos = find_top_level_select(&cleaned)?;
+    let after_select = select_pos + "select".len();
+    let from_pos = find_top_level_keyword_after(&cleaned, after_select, "from")?;
+    let col_list = &cleaned[after_select..from_pos];
+    let items = top_level_split_commas(col_list);
+    if items.is_empty() {
+        return None;
+    }
+
+    let after_from = from_pos + "from".len();
+    let relation_name = parse_from_relation(&cleaned[after_from..])?;
+    let seed_path = dbt_common::seed_path_registry::lookup(&relation_name)?;
+    let result =
+        dbt_csv::read_to_arrow_records(&seed_path, &dbt_csv::CustomCsvOptions::default()).ok()?;
+
+    let mut out = Vec::new();
+    for item in &items {
+        let source = select_source_column(item)?;
+        let alias = last_identifier(item).unwrap_or_else(|| source.clone());
+        let col_idx = result
+            .schema
+            .fields()
+            .iter()
+            .position(|f| f.name().eq_ignore_ascii_case(&source))?;
+
+        let mut seen = std::collections::HashSet::new();
+        let mut values = Vec::new();
+        for batch in &result.batches {
+            let array = batch
+                .column(col_idx)
+                .as_any()
+                .downcast_ref::<StringArray>()?;
+            for i in 0..array.len() {
+                if array.is_valid(i) {
+                    let v = array.value(i).to_string();
+                    if seen.insert(v.clone()) {
+                        values.push(v);
+                    }
+                }
+            }
+        }
+        out.push((alias, values));
+    }
+
+    let row_count = out.first().map(|(_, v)| v.len())?;
+    if out.iter().any(|(_, v)| v.len() != row_count) {
+        return None;
+    }
+    Some(out)
+}
+
+fn build_mock_agate_table(cols: Vec<(String, ArrayRef)>) -> Option<AgateTable> {
+    let fields: Vec<Field> = cols
+        .iter()
+        .map(|(name, array)| Field::new(name, array.data_type().clone(), true))
+        .collect();
+    let arrays: Vec<ArrayRef> = cols.into_iter().map(|(_, array)| array).collect();
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema, arrays).ok()?;
+    Some(AgateTable::from_record_batch(Arc::new(batch)))
+}
+
+fn trivial_mock_agate_table() -> AgateTable {
+    let array: ArrayRef = Arc::new(StringArray::from(vec!["placeholder"]));
+    build_mock_agate_table(vec![("names".to_string(), array)])
+        .expect("single string column, single row is always a valid record batch")
 }
 
 impl AdapterImpl {
@@ -719,33 +1116,7 @@ impl AdapterImpl {
         options: Option<ExecuteOptions>,
         token: CancellationToken,
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
-        if self.mock_state().is_some() {
-            if !self.introspect_enabled() {
-                return Err(AdapterError::new(
-                    AdapterErrorKind::NotSupported,
-                    "Introspective queries are disabled (--no-introspect).",
-                ));
-            }
-            let response = AdapterResponse {
-                message: "execute".to_string(),
-                code: sql.to_string(),
-                rows_affected: 1,
-                query_id: None,
-            };
-
-            let schema = Arc::new(Schema::new(vec![Field::new(
-                "names",
-                DataType::Decimal128(38, 10),
-                true,
-            )]));
-            let decimal_array: ArrayRef = Arc::new(Decimal128Array::from(vec![Some(42)]));
-            let batch = RecordBatch::try_new(schema, vec![decimal_array]).unwrap();
-
-            let table = AgateTable::from_record_batch(Arc::new(batch));
-
-            return Ok((response, table));
-        }
-        let ctx = match ctx.map(Cow::Borrowed) {
+        let resolved_ctx = match ctx.map(Cow::Borrowed) {
             Some(ctx) => ctx,
             None => {
                 let ctx = match state {
@@ -756,11 +1127,96 @@ impl AdapterImpl {
                 Cow::Owned(ctx)
             }
         };
+        if let Some(mock) = self.mock_state() {
+            if !self.introspect_enabled() {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::NotSupported,
+                    "Introspective queries are disabled (--no-introspect).",
+                ));
+            }
+            if is_metadata_only_query(sql) {
+                if let Some(fallback) = mock.metadata_fallback_engine.clone() {
+                    match fallback.new_connection(state, None) {
+                        Ok(mut real_conn) => {
+                            return self.execute_inner(
+                                fallback,
+                                state,
+                                real_conn.as_mut(),
+                                resolved_ctx.as_ref(),
+                                sql,
+                                auto_begin,
+                                fetch,
+                                limit,
+                                options,
+                                token,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "infer-schemas: metadata fallback connection failed, \
+                                 returning fabricated mock data for query: {e:?}"
+                            );
+                        }
+                    }
+                }
+            }
+            let response = AdapterResponse {
+                message: "execute".to_string(),
+                code: sql.to_string(),
+                rows_affected: 1,
+                query_id: None,
+            };
+
+            if let Some(columns) = seed_column_values(sql) {
+                let cols = columns
+                    .into_iter()
+                    .map(|(alias, values)| {
+                        let name = crate::format_ident::default_identifier_case(
+                            &alias,
+                            self.adapter_type(),
+                        );
+                        let array: ArrayRef = Arc::new(StringArray::from(values));
+                        (name, array)
+                    })
+                    .collect();
+                if let Some(table) = build_mock_agate_table(cols) {
+                    return Ok((response, table));
+                }
+            }
+
+            let column_names = mock_select_column_names(sql);
+            let table = if column_names.is_empty() {
+                let decimal_array: ArrayRef = Arc::new(Decimal128Array::from(vec![Some(42)]));
+                build_mock_agate_table(vec![("names".to_string(), decimal_array)])
+                    .unwrap_or_else(trivial_mock_agate_table)
+            } else {
+                let is_computed_expr = |name: &str| {
+                    name.strip_prefix("col_")
+                        .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_digit()))
+                };
+                let cols = column_names
+                    .iter()
+                    .map(|name| {
+                        let field_name =
+                            crate::format_ident::default_identifier_case(name, self.adapter_type());
+                        let array: ArrayRef = if is_computed_expr(name) {
+                            Arc::new(Int64Array::from(vec![Some(1)]))
+                        } else {
+                            Arc::new(StringArray::from(vec!["placeholder"]))
+                        };
+                        (field_name, array)
+                    })
+                    .collect();
+                build_mock_agate_table(cols).unwrap_or_else(trivial_mock_agate_table)
+            };
+
+            return Ok((response, table));
+        }
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_execute(
                 state,
                 conn,
-                ctx.as_ref(),
+                resolved_ctx.as_ref(),
                 sql,
                 auto_begin,
                 fetch,
@@ -771,7 +1227,7 @@ impl AdapterImpl {
                 Arc::clone(engine),
                 state,
                 conn,
-                ctx.as_ref(),
+                resolved_ctx.as_ref(),
                 sql,
                 auto_begin,
                 fetch,
@@ -1225,13 +1681,18 @@ impl AdapterImpl {
                     "Introspective queries are disabled (--no-introspect).",
                 ));
             }
+            let quoting = ResolvedQuoting {
+                database: true,
+                schema: true,
+                identifier: true,
+            };
             let relation = Relation::new(
                 Snowflake,
                 database.to_string(),
                 schema.to_string(),
                 identifier.to_string(),
             )
-            .with_quoting(self.quoting())
+            .with_quoting(quoting)
             .validate()?;
             return Ok(Some(Arc::new(relation)));
         }
@@ -1948,8 +2409,32 @@ impl AdapterImpl {
         state: &State,
         relation: &dyn BaseRelation,
     ) -> AdapterResult<Vec<Column>> {
-        // Mock adapter: return fake column without executing jinja macro
         if self.engine().is_mock() {
+            if let (Ok(database), Ok(schema), Ok(identifier)) = (
+                relation.database_as_str(),
+                relation.schema_as_str(),
+                relation.identifier_as_str(),
+            ) {
+                let relation_name = format!("{database}.{schema}.{identifier}");
+                if let Some(schema) = dbt_common::infer_schema_registry::lookup(&relation_name) {
+                    if !schema.columns.is_empty() {
+                        return Ok(schema
+                            .columns
+                            .into_iter()
+                            .map(|name| {
+                                Column::new(
+                                    self.adapter_type(),
+                                    name,
+                                    "text".to_string(),
+                                    Some(256),
+                                    None,
+                                    None,
+                                )
+                            })
+                            .collect());
+                    }
+                }
+            }
             return Ok(vec![Column::new(
                 self.adapter_type(),
                 "one".to_string(),
@@ -4918,6 +5403,7 @@ struct MockState {
     engine: Arc<dyn AdapterEngine>,
     flags: BTreeMap<String, Value>,
     behavior: Arc<Behavior>,
+    metadata_fallback_engine: Option<Arc<dyn AdapterEngine>>,
 }
 
 #[derive(Clone)]
@@ -4954,6 +5440,24 @@ impl AdapterImpl {
         quoting: ResolvedQuoting,
         type_ops: Arc<dyn TypeOps>,
         stmt_splitter: Arc<dyn StmtSplitter>,
+    ) -> Self {
+        Self::new_mock_with_metadata_fallback(
+            adapter_type,
+            flags,
+            quoting,
+            type_ops,
+            stmt_splitter,
+            None,
+        )
+    }
+
+    pub fn new_mock_with_metadata_fallback(
+        adapter_type: AdapterType,
+        flags: BTreeMap<String, Value>,
+        quoting: ResolvedQuoting,
+        type_ops: Arc<dyn TypeOps>,
+        stmt_splitter: Arc<dyn StmtSplitter>,
+        metadata_fallback_engine: Option<Arc<dyn AdapterEngine>>,
     ) -> Self {
         let backend = crate::adapter::adapter_factory::backend_of(adapter_type);
         let auth: Arc<dyn dbt_auth::Auth> =
@@ -4994,6 +5498,7 @@ impl AdapterImpl {
                 engine,
                 flags,
                 behavior,
+                metadata_fallback_engine,
             }),
             schema_store: None,
         }
@@ -6398,5 +6903,199 @@ mod tests {
             ("dbt".to_string(), "check_schema_exists".to_string())
         );
         Ok(())
+    }
+
+    #[test]
+    fn build_mock_agate_table_rejects_mismatched_column_lengths() {
+        let short: ArrayRef = Arc::new(StringArray::from(vec!["a"]));
+        let long: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        assert!(
+            build_mock_agate_table(vec![("a".to_string(), short), ("b".to_string(), long)])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn trivial_mock_agate_table_never_panics() {
+        let _ = trivial_mock_agate_table();
+    }
+
+    #[test]
+    fn mock_get_relation_forces_quoting_to_preserve_case_regardless_of_dialect() -> AdapterResult<()>
+    {
+        let quoting = ResolvedQuoting {
+            database: true,
+            schema: true,
+            identifier: true,
+        };
+        let relation = Relation::new(
+            Snowflake,
+            "my_database".to_string(),
+            "my_schema".to_string(),
+            "my_table".to_string(),
+        )
+        .with_quoting(quoting)
+        .validate()?;
+        assert_eq!(
+            relation.render_self_as_str(),
+            "\"my_database\".\"my_schema\".\"my_table\""
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn strip_sql_comments_handles_line_and_block_comments() {
+        assert_eq!(
+            strip_sql_comments("select 1 -- trailing comment\nfrom t"),
+            "select 1 \nfrom t"
+        );
+        assert_eq!(
+            strip_sql_comments("select /* block */ 1 from t"),
+            "select   1 from t"
+        );
+        assert_eq!(
+            strip_sql_comments("select 1 /* multi\nline */ from t"),
+            "select 1   from t"
+        );
+    }
+
+    #[test]
+    fn strip_sql_comments_ignores_markers_inside_string_literals() {
+        assert_eq!(
+            strip_sql_comments("select '-- not a comment' from t"),
+            "select '-- not a comment' from t"
+        );
+        assert_eq!(
+            strip_sql_comments("select '/* not a comment */' from t"),
+            "select '/* not a comment */' from t"
+        );
+    }
+
+    #[test]
+    fn is_metadata_only_query_ignores_namespace_words_inside_comments() {
+        assert!(!is_metadata_only_query(
+            "-- references svv_tables in a comment\nselect * from orders"
+        ));
+        assert!(!is_metadata_only_query(
+            "/* information_schema mentioned here */ select * from orders"
+        ));
+    }
+
+    #[test]
+    fn is_metadata_only_query_ignores_namespace_word_inside_a_larger_identifier() {
+        assert!(!is_metadata_only_query("select * from my_svv_data"));
+    }
+
+    #[test]
+    fn is_metadata_only_query_matches_real_namespace_references() {
+        assert!(is_metadata_only_query("select * from svv_tables"));
+        assert!(is_metadata_only_query(
+            "select * from information_schema.tables"
+        ));
+        assert!(is_metadata_only_query("select * from pg_catalog.pg_class"));
+    }
+
+    #[test]
+    fn find_top_level_select_skips_subquery_select() {
+        assert_eq!(find_top_level_select("select 1 from (select 2) t"), Some(0));
+        assert!(find_top_level_keyword_after("(select 1) as t", 0, "select").is_none());
+    }
+
+    #[test]
+    fn find_top_level_keyword_after_does_not_match_substring_of_identifier() {
+        assert!(find_top_level_keyword_after("select selection from t", 0, "select") == Some(0));
+        assert!(
+            find_top_level_keyword_after("select selection from t", "select".len(), "select")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn top_level_split_commas_ignores_commas_in_parens_and_strings() {
+        assert_eq!(
+            top_level_split_commas("a, coalesce(b, c), 'x,y'"),
+            vec!["a", "coalesce(b, c)", "'x,y'"]
+        );
+    }
+
+    #[test]
+    fn last_identifier_extracts_alias_after_as() {
+        assert_eq!(
+            last_identifier("some_expr AS my_alias"),
+            Some("my_alias".to_string())
+        );
+        assert_eq!(
+            last_identifier(r#"some_expr AS "My Alias""#),
+            Some("My Alias".to_string())
+        );
+    }
+
+    #[test]
+    fn last_identifier_extracts_bare_qualified_column() {
+        assert_eq!(last_identifier("t.my_col"), Some("my_col".to_string()));
+    }
+
+    #[test]
+    fn last_identifier_returns_none_for_star_and_call_expressions() {
+        assert_eq!(last_identifier("t.*"), None);
+        assert_eq!(last_identifier("count(*)"), None);
+    }
+
+    #[test]
+    fn mock_select_column_names_basic() {
+        assert_eq!(
+            mock_select_column_names("select a, b as bee, t.c from t"),
+            vec!["a", "bee", "c"]
+        );
+    }
+
+    #[test]
+    fn mock_select_column_names_star_gets_placeholder() {
+        assert_eq!(mock_select_column_names("select * from t"), vec!["col_0"]);
+    }
+
+    #[test]
+    fn mock_select_column_names_ignores_comments_and_distinct() {
+        assert_eq!(
+            mock_select_column_names("select distinct a, /* skip */ b -- trailing\nfrom t"),
+            vec!["a", "b"]
+        );
+    }
+
+    #[test]
+    fn mock_select_column_names_handles_nested_subquery_in_column_list() {
+        assert_eq!(
+            mock_select_column_names("select a, (select max(x) from u) as m from t"),
+            vec!["a", "m"]
+        );
+    }
+
+    #[test]
+    fn mock_select_column_names_handles_window_function() {
+        assert_eq!(
+            mock_select_column_names("select a, row_number() over (order by a) as rn from t"),
+            vec!["a", "rn"]
+        );
+    }
+
+    #[test]
+    fn select_source_column_extracts_base_column_before_alias() {
+        assert_eq!(
+            select_source_column("t.my_col as alias"),
+            Some("my_col".to_string())
+        );
+        assert_eq!(select_source_column("count(*) as n"), None);
+    }
+
+    #[test]
+    fn parse_from_relation_handles_quoted_and_dotted_names() {
+        assert_eq!(
+            parse_from_relation("db.schema.\"My Table\" as t"),
+            Some("db.schema.My Table".to_string())
+        );
+        assert_eq!(
+            parse_from_relation("my_table"),
+            Some("my_table".to_string())
+        );
     }
 }

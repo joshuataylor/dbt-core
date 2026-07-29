@@ -680,8 +680,13 @@ fn initialize_graph(
                 .collect();
         }
 
-        // for all fontier node, remove show phase
-        if schedule.frontier_nodes.contains(unique_id) {
+        // for all frontier nodes, and for ephemeral nodes only pulled in to satisfy rendering
+        // of a downstream selected node (in selected_nodes but not directly selected by the
+        // user, i.e. absent from all_selected_nodes), remove show phase
+        if schedule.frontier_nodes.contains(unique_id)
+            || (schedule.selected_nodes.contains(unique_id)
+                && !schedule.all_selected_nodes.contains(unique_id))
+        {
             expected_node_phases.retain(|&phase| phase != TP::Show);
         }
 

@@ -973,17 +973,25 @@ impl<'a> AllPhasesExecutor<'a> {
             )
             .await?;
 
-        // Validate show command selection before running any tasks
-        if let Command::Core(Show(ShowArgs { inline: None, .. })) = &self.cli.command
-            && schedule.selected_nodes.len() > 1
-        {
-            return Err(fs_err!(
-                ErrorCode::InvalidArgument,
-                "Only one node can be selected for show: {}, {}, and {} more",
-                schedule.selected_nodes.iter().next().unwrap().to_string(),
-                schedule.selected_nodes.iter().nth(1).unwrap().to_string(),
-                schedule.selected_nodes.len() - 1
-            ));
+        // Validate show command selection before running any tasks.
+        // Nodes present only because they were pulled in by ephemeral-ancestor expansion
+        // (i.e. in `selected_nodes` but not `all_selected_nodes`) don't count as user-selected
+        // targets here.
+        if let Command::Core(Show(ShowArgs { inline: None, .. })) = &self.cli.command {
+            let user_selected_nodes: Vec<&String> = schedule
+                .selected_nodes
+                .iter()
+                .filter(|n| schedule.all_selected_nodes.contains(*n))
+                .collect();
+            if user_selected_nodes.len() > 1 {
+                return Err(fs_err!(
+                    ErrorCode::InvalidArgument,
+                    "Only one node can be selected for show: {}, {}, and {} more",
+                    user_selected_nodes[0],
+                    user_selected_nodes[1],
+                    user_selected_nodes.len() - 1
+                ));
+            }
         }
 
         let (run_task_args, run_task_results, jinja_env, adapter, compilation_cache_state) =

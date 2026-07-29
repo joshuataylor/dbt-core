@@ -315,8 +315,8 @@ fn schedule_graph(
         });
 
     // Expand selected nodes to include all ephemeral upstream dependencies
-    // Skip this when the command is "list" or "show" as ephemeral nodes are not wanted
-    if args.command != FsCommand::List && args.command != FsCommand::Show {
+    // Skip this when the command is "list" as ephemeral nodes are not wanted.
+    if args.command != FsCommand::List {
         let mut ephemeral_to_add = BTreeSet::new();
         for node_id in &filtered_selected_nodes {
             collect_ephemeral_upstream(node_id, deps, nodes, &mut ephemeral_to_add);
@@ -3450,6 +3450,7 @@ mod cycle_detection_tests {
     use dbt_common::CodeLocationWithFile;
     use dbt_common::io_args::{FsCommand, StaticAnalysisKind, StaticAnalysisOffReason};
     use dbt_common::io_utils::StatusReporter;
+    use dbt_common::node_selector::{MethodName, SelectionCriteria};
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::{
         Access, DbtMaterialization, NodeDependsOn, ResolvedQuoting,
@@ -3911,6 +3912,165 @@ mod cycle_detection_tests {
         assert_contains!(schedule.selected_nodes, "model.regular");
         // 3. Extended model IS in frontier_nodes
         assert_contains!(schedule.frontier_nodes, "model.extended");
+    }
+
+    fn make_model_with_materialization(
+        uid: &str,
+        materialized: DbtMaterialization,
+        deps: &[&str],
+    ) -> Arc<DbtModel> {
+        Arc::new(DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: uid.to_string(),
+                tags: vec![],
+                meta: IndexMap::new(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                depends_on: NodeDependsOn {
+                    nodes_with_ref_location: deps
+                        .iter()
+                        .map(|d| ((*d).to_string(), CodeLocationWithFile::default()))
+                        .collect(),
+                    ..Default::default()
+                },
+                materialized,
+                quoting: ResolvedQuoting::trues(),
+                enabled: true,
+                extended_model: false,
+                static_analysis: StaticAnalysisKind::Strict.into(),
+                ..Default::default()
+            },
+            __model_attr__: DbtModelAttr {
+                access: Access::Protected,
+                group: None,
+                introspection: IntrospectionKind::None,
+                version: None,
+                latest_version: None,
+                constraints: vec![],
+                deprecation_date: None,
+                primary_key: vec![],
+                time_spine: None,
+                contract: None,
+                incremental_strategy: None,
+                freshness: None,
+                state: None,
+                event_time: None,
+                catalog_name: None,
+                alt_compute: None,
+                table_format: None,
+                sync: None,
+            },
+            __adapter_attr__: AdapterAttr::default(),
+            deprecated_config: ModelConfig::default(),
+            __other__: BTreeMap::new(),
+        })
+    }
+
+    /// Run `show -s <select>` (by fqn) against the given nodes/deps and return the schedule.
+    fn show_schedule(
+        nodes: &Nodes,
+        deps: &BTreeMap<String, BTreeSet<String>>,
+        select: &str,
+    ) -> Schedule<String> {
+        let resolved_selectors = ResolvedSelector {
+            include: Some(SelectExpression::Atom(SelectionCriteria::new(
+                MethodName::Fqn,
+                vec![],
+                select.to_string(),
+                false,
+                None,
+                None,
+                None,
+                None,
+            ))),
+            exclude: None,
+            ..Default::default()
+        };
+        let args = SchedulerArgs {
+            command: FsCommand::Show,
+            io: Default::default(),
+            resource_types: vec![],
+            exclude_resource_types: vec![],
+            exclude_unique_ids: Default::default(),
+        };
+        schedule_graph(
+            deps,
+            nodes,
+            None,
+            &resolved_selectors,
+            &args,
+            AdapterType::Bigquery,
+        )
+        .unwrap()
+    }
+
+    /// Nodes pulled in only by ephemeral-ancestor expansion: `selected_nodes - all_selected_nodes`.
+    fn expansion_only_nodes(schedule: &Schedule<String>) -> BTreeSet<String> {
+        schedule
+            .selected_nodes
+            .difference(&schedule.all_selected_nodes)
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn test_show_expands_ephemeral_ancestor_but_marks_it_as_expansion_only() {
+        // `show -s tbl` where `tbl` refs an ephemeral model `eph` must pull `eph` into
+        // selected_nodes (so it gets rendered/written to target/ephemeral/eph.sql), but `eph`
+        // must be tracked as expansion-only so it doesn't trip the show single-node check or
+        // get a Show phase task.
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            "model.eph".to_string(),
+            make_model_with_materialization("model.eph", DbtMaterialization::Ephemeral, &[]),
+        );
+        nodes.models.insert(
+            "model.tbl".to_string(),
+            make_model_with_materialization("model.tbl", DbtMaterialization::Table, &["model.eph"]),
+        );
+
+        let deps = BTreeMap::from([
+            (
+                "model.tbl".to_string(),
+                BTreeSet::from(["model.eph".to_string()]),
+            ),
+            ("model.eph".to_string(), BTreeSet::new()),
+        ]);
+
+        let schedule = show_schedule(&nodes, &deps, "model.tbl");
+
+        assert_contains!(schedule.selected_nodes, "model.tbl");
+        assert_contains!(schedule.selected_nodes, "model.eph");
+        let expansion_only = expansion_only_nodes(&schedule);
+        assert!(
+            !expansion_only.contains("model.tbl"),
+            "directly-selected node must not be marked as expansion-only"
+        );
+        assert_contains!(expansion_only, "model.eph");
+    }
+
+    #[test]
+    fn test_show_directly_selected_ephemeral_is_not_expansion_only() {
+        // `show -s eph` selecting the ephemeral model directly should keep full behavior
+        // (e.g. a Show phase task), since it wasn't pulled in only to satisfy a downstream ref.
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            "model.eph".to_string(),
+            make_model_with_materialization("model.eph", DbtMaterialization::Ephemeral, &[]),
+        );
+
+        let deps = BTreeMap::from([("model.eph".to_string(), BTreeSet::new())]);
+
+        let schedule = show_schedule(&nodes, &deps, "model.eph");
+
+        assert_contains!(schedule.selected_nodes, "model.eph");
+        // A directly selected ephemeral node is in `all_selected_nodes`, so it must not appear
+        // among the expansion-only nodes.
+        assert!(
+            !expansion_only_nodes(&schedule).contains("model.eph"),
+            "directly-selected ephemeral node must not be marked as expansion-only"
+        );
     }
 
     #[test]

@@ -1245,6 +1245,13 @@ pub async fn run_cache_service_before_execution(
                 ),
                 None,
             );
+            // The request failed, so the node rebuilds without tracking; its
+            // cached epoch/existence (e.g. from the prefetch, already awaited by
+            // the time a submit errors) is now stale. Evict it here so
+            // downstream nodes in this run re-query fresh state instead of
+            // reusing it — unlike the benign-skip path, which preserves a valid
+            // prefetched epoch.
+            evict_node_metadata_for_failed_state_request(ctx, node);
             RunCacheServiceDecision::execute_without_confirmation()
         }
     }
@@ -2921,6 +2928,31 @@ pub fn clear_stale_missing_last_modified_epoch_for_node(
     }
 }
 
+/// Evicts a node's cached warehouse metadata (last-modified epoch and existence)
+/// when its dbt State request failed and it will rebuild without tracking.
+///
+/// The prefetch is already awaited by the time a submit returns an error, so
+/// nothing re-populates the entry after this. The imminent untracked rebuild
+/// makes the cached value stale; without eviction, downstream nodes in the same
+/// invocation would report the relation's pre-build state to the service and
+/// could be incorrectly skipped. Mirrors the plugin's
+/// `clear_cache([target_table])`.
+///
+/// Unlike [`clear_stale_missing_last_modified_epoch_for_node`] (the benign-skip
+/// path), this clears a real cached epoch too, because a failed request means
+/// the rebuild happens without the service observing it.
+fn evict_node_metadata_for_failed_state_request(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+) {
+    if let Ok((name, _)) = relation_for_node(ctx, node) {
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .invalidate_relation_metadata(&name);
+    }
+}
+
 fn stamp_final_last_modified_epoch_for_node_heuristic(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
@@ -4585,6 +4617,47 @@ mod tests {
                 .run_cache_metadata
                 .last_modified_epoch(&target_fqn),
             Some(Some(1_700_000_000_000))
+        );
+    }
+
+    #[test]
+    fn evict_node_metadata_for_failed_state_request_clears_valid_epoch_and_existence() {
+        let ctx = test_task_runner_ctx(None);
+        let model = make_model(
+            "model.test.user_name_model",
+            "db",
+            "dbt_test",
+            "user_name_model",
+            DbtMaterialization::Table,
+        );
+        let target_fqn = fqn_of("db", "dbt_test", "user_name_model");
+        // A real (valid-looking) cached epoch and existence, which the benign
+        // skip path would preserve — but a failed request means the rebuild was
+        // unobserved, so both must be evicted here.
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_last_modified_epoch(&target_fqn, Some(1_700_000_000_000));
+        ctx.inner
+            .run_cache_ctx
+            .run_cache_metadata
+            .insert_relation_exists(&target_fqn, true);
+
+        evict_node_metadata_for_failed_state_request(&ctx, model.as_ref());
+
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .last_modified_epoch(&target_fqn),
+            None
+        );
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .relation_exists(&target_fqn),
+            None
         );
     }
 

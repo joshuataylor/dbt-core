@@ -111,22 +111,29 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<DatabricksAuthIR<'a>, Aut
         Ok(DatabricksAuthType::OAuth) => {
             // Token-first: if a preminted bearer token is in the payload, use it as
             // PAT regardless of which OAuth-app fields accompany it. This matches
-            // dbt-databricks' `_ensure_config` (token short-circuits past M2M and
-            // external-browser)
+            // dbt-databricks' `_ensure_config`, which does `if self.token:` — a
+            // truthy check that treats empty/null tokens as absent and falls
+            // through to M2M / external-browser.
             // https://github.com/databricks/dbt-databricks/blob/c1c74df4bc01e155dabcc07f23a5a414e04aad62/dbt/adapters/databricks/credentials.py#L360-L361
             //
-            // dbt Studio's U2M flow relies on
-            // completes the OAuth handshake on the cloud side and forwards
-            // `auth_type=oauth` together with the OAuth-app `client_id`/`client_secret`
-            // (which are *not* a Databricks service-principal credential) and the
-            // resulting access token. Without this short-circuit we would attempt an
-            // M2M client-credentials grant against Databricks with the cloud-app
+            // dbt Studio's U2M flow completes the OAuth handshake on the cloud
+            // side and forwards `auth_type=oauth` together with the OAuth-app
+            // `client_id`/`client_secret` (which are *not* a Databricks
+            // service-principal credential) and the resulting access token.
+            // Without this short-circuit we would attempt an M2M
+            // client-credentials grant against Databricks with the cloud-app
             // secret, which fails with `invalid_client`.
             // https://github.com/dbt-labs/dbt-cloud/blob/228283facb9103a2053d83e5b085f6a7b771e686/sinter/services/profile/util/adapters/adapter_profile_helper.py#L189-L190
-            if config.contains_key("token") {
-                Ok(DatabricksAuthIR::Token {
-                    token: config.require_str("token")?,
-                })
+            //
+            // The value must be non-empty: dbt Cloud's Databricks credentials
+            // schema defaults `token` to `""` when a customer selects OAuth or
+            // relies on extended attributes to inject the real token. Treating
+            // that empty placeholder as a real PAT would send an empty
+            // `databricks.access_token` to the ADBC driver, which rejects it
+            // with "access token is required when using auth type 'pat'".
+            // https://app.notion.com/p/dbtlabs/Databricks-OAuth-for-Deployment-Environments-22bbb38ebda780dc9608ef05cfd757ff?source=copy_link
+            if let Some(token) = config.get_str("token").filter(|s| !s.is_empty()) {
+                Ok(DatabricksAuthIR::Token { token })
             } else if config.contains_key("azure_client_secret") {
                 Ok(DatabricksAuthIR::AzureClientSecret {
                     azure_client_id: config.require_str("azure_client_id")?,
@@ -565,6 +572,74 @@ mod tests {
                 "sql/protocolv1/o/1030i40i30i50i3/my-cluster-id",
             ),
             (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (
+                databricks::AUTH_TYPE,
+                databricks::auth_type::EXTERNAL_BROWSER,
+            ),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    /// Regression: `auth_type=oauth` + valid M2M `client_id`/`client_secret` +
+    /// an *empty* `token` placeholder (e.g. dbt Cloud's default value or an
+    /// unfilled extended-attribute override) must still dispatch to OAuth M2M.
+    /// Treating the empty string as a real PAT would forward an empty
+    /// `databricks.access_token` to the ADBC driver, which rejects it with
+    /// "access token is required when using auth type 'pat'". Matches Python
+    /// `_ensure_config`'s `if self.token:` truthy check.
+    #[test]
+    fn test_oauth_m2m_with_empty_token_placeholder_routes_to_m2m() {
+        let mut config = base_config();
+        config.insert(
+            "http_path".into(),
+            "sql/protocolv1/o/1030i40i30i50i3/my-cluster-id".into(),
+        );
+        config.insert("client_id".into(), "M2M_CLIENT_ID".into());
+        config.insert("client_secret".into(), "M2M_CLIENT_SECRET".into());
+        config.insert("auth_type".into(), "oauth".into());
+        config.insert("token".into(), "".into());
+
+        let expected = vec![
+            (databricks::CLIENT_ID, "M2M_CLIENT_ID"),
+            (databricks::CLIENT_SECRET, "M2M_CLIENT_SECRET"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (
+                databricks::HTTP_PATH,
+                "sql/protocolv1/o/1030i40i30i50i3/my-cluster-id",
+            ),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::OAUTH_M2M),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    /// Companion to the M2M empty-token regression: with `auth_type=oauth`,
+    /// only `client_id`, and an empty `token` placeholder, we should fall
+    /// through to the external-browser branch instead of trying PAT with an
+    /// empty token.
+    #[test]
+    fn test_oauth_external_browser_with_empty_token_placeholder_routes_to_browser() {
+        let mut config = base_config();
+        config.insert(
+            "http_path".into(),
+            "sql/protocolv1/o/1030i40i30i50i3/my-cluster-id".into(),
+        );
+        config.insert("client_id".into(), "CLIENT_ID".into());
+        config.insert("auth_type".into(), "oauth".into());
+        config.insert("token".into(), "".into());
+
+        let expected = vec![
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (
+                databricks::HTTP_PATH,
+                "sql/protocolv1/o/1030i40i30i50i3/my-cluster-id",
+            ),
+            (databricks::CATALOG, "C"),
+            (databricks::CLIENT_ID, "CLIENT_ID"),
             (databricks::USER_AGENT, USER_AGENT_NAME),
             (
                 databricks::AUTH_TYPE,

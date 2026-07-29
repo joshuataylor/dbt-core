@@ -2,6 +2,7 @@ use crate::{AdapterConfig, Auth, AuthError, AuthOutcome};
 use database::Builder as DatabaseBuilder;
 use dbt_yaml::Value;
 use std::borrow::Cow;
+use std::time::Duration;
 
 use dbt_adbc::{Backend, database, databricks};
 
@@ -51,6 +52,11 @@ enum DatabricksAuthIR<'a> {
     ExternalBrowserOAuth {
         client_id: Option<&'a str>,
     },
+    // Token is minted against Azure AD, not the Databricks OIDC endpoint (cf. OAuthM2M).
+    AzureClientSecret {
+        azure_client_id: &'a str,
+        azure_client_secret: &'a str,
+    },
     Token {
         token: &'a str,
     },
@@ -75,6 +81,17 @@ impl<'a> DatabricksAuthIR<'a> {
                 builder.with_named_option(
                     databricks::AUTH_TYPE,
                     databricks::auth_type::EXTERNAL_BROWSER,
+                )?;
+            }
+            Self::AzureClientSecret {
+                azure_client_id,
+                azure_client_secret,
+            } => {
+                builder.with_named_option(databricks::AZURE_CLIENT_ID, azure_client_id)?;
+                builder.with_named_option(databricks::AZURE_CLIENT_SECRET, azure_client_secret)?;
+                builder.with_named_option(
+                    databricks::AUTH_TYPE,
+                    databricks::auth_type::AZURE_CLIENT_SECRET,
                 )?;
             }
             Self::Token { token } => {
@@ -109,6 +126,11 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<DatabricksAuthIR<'a>, Aut
             if config.contains_key("token") {
                 Ok(DatabricksAuthIR::Token {
                     token: config.require_str("token")?,
+                })
+            } else if config.contains_key("azure_client_secret") {
+                Ok(DatabricksAuthIR::AzureClientSecret {
+                    azure_client_id: config.require_str("azure_client_id")?,
+                    azure_client_secret: config.require_str("azure_client_secret")?,
                 })
             } else if config.contains_key("client_secret") {
                 Ok(DatabricksAuthIR::OAuthM2M {
@@ -146,7 +168,67 @@ fn apply_connection_args(
     builder.with_named_option(databricks::CATALOG, config.require_string("database")?)?;
     builder.with_named_option(databricks::HTTP_PATH, http_path)?;
 
+    // Azure SP: the tenant is a connection detail, not an auth credential, so it lives here
+    // rather than in the auth IR. Resolve it (explicit `azure_tenant_id`, else discover from
+    // the workspace) and pass it to the driver, which requires it.
+    if config.contains_key("azure_client_secret") {
+        let tenant_id = match config.get_str("azure_tenant_id") {
+            Some(tenant_id) => tenant_id.to_string(),
+            None => discover_azure_tenant_id(config.require_string("host")?.as_ref())?,
+        };
+        builder.with_named_option(databricks::AZURE_TENANT_ID, tenant_id)?;
+    }
+
     Ok(builder)
+}
+
+/// Resolve the Microsoft Entra ID tenant for an Azure Databricks workspace from the
+/// unauthenticated `<host>/aad/auth` redirect. Mirrors databricks-sdk-py's public
+/// `load_azure_tenant_id`; the Go SDK's equivalent is unexported and its Azure
+/// client-secret credentials won't activate without a tenant, so we resolve it here
+/// (in dbt-auth) rather than depend on the driver. Used only when `azure_tenant_id`
+/// is not supplied explicitly.
+fn discover_azure_tenant_id(host: &str) -> Result<String, AuthError> {
+    let login_url = format!("https://{host}/aad/auth");
+    // The tenant is in the 3xx Location header; do not follow the redirect, and
+    // treat a 3xx as a normal response rather than an error.
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build();
+    let agent = ureq::Agent::new_with_config(config);
+    let response = agent.get(&login_url).call().map_err(|e| {
+        AuthError::config(format!(
+            "azure tenant discovery request to {login_url} failed \
+             (set 'azure_tenant_id' explicitly): {e}"
+        ))
+    })?;
+    let location = response
+        .headers()
+        .get(ureq::http::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            AuthError::config(format!(
+                "could not resolve azure tenant id from {login_url}; \
+                 set 'azure_tenant_id' explicitly"
+            ))
+        })?;
+    parse_azure_tenant_from_location(location)
+}
+
+/// Extract the tenant id from an Entra ID authorize URL of the form
+/// `https://login.microsoftonline.com/<tenant-id>/oauth2/authorize?...` (the login
+/// domain varies by Azure cloud, e.g. `login.microsoftonline.us`).
+fn parse_azure_tenant_from_location(location: &str) -> Result<String, AuthError> {
+    let url = url::Url::parse(location)
+        .map_err(|e| AuthError::config(format!("could not parse Location '{location}': {e}")))?;
+    url.path_segments()
+        .and_then(|mut segments| segments.next())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .ok_or_else(|| AuthError::config(format!("could not extract tenant id from '{location}'")))
 }
 
 pub struct DatabricksAuth;
@@ -401,6 +483,67 @@ mod tests {
             (
                 databricks::AUTH_TYPE,
                 databricks::auth_type::EXTERNAL_BROWSER,
+            ),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    /// Azure service principal (Microsoft Entra ID) via `azure_client_id`/
+    /// `azure_client_secret` routes to `azure-client-secret` (distinct from M2M), and the
+    /// tenant — a connection param, not an auth-IR field — is forwarded to the driver.
+    /// Regression test for dbt-core#13986. (The no-tenant path resolves via `/aad/auth`
+    /// discovery, which is a network call and is covered by `parse_azure_tenant_from_location`
+    /// + live testing rather than here.)
+    #[test]
+    fn test_azure_client_secret_with_tenant() {
+        let mut config = base_config();
+        config.insert("auth_type".into(), "oauth".into());
+        config.insert("azure_client_id".into(), "AID".into());
+        config.insert("azure_client_secret".into(), "ASECRET".into());
+        config.insert("azure_tenant_id".into(), "TENANT".into());
+
+        let expected = vec![
+            (databricks::AZURE_CLIENT_ID, "AID"),
+            (databricks::AZURE_CLIENT_SECRET, "ASECRET"),
+            (databricks::AZURE_TENANT_ID, "TENANT"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (
+                databricks::AUTH_TYPE,
+                databricks::auth_type::AZURE_CLIENT_SECRET,
+            ),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    /// Azure SP fields take priority over the Databricks M2M `client_id`/
+    /// `client_secret` when both are present, matching dbt-databricks'
+    /// `_ensure_config` (azure branch precedes the oauth-m2m branch).
+    #[test]
+    fn test_azure_client_secret_takes_priority_over_m2m() {
+        let mut config = base_config();
+        config.insert("auth_type".into(), "oauth".into());
+        config.insert("azure_client_id".into(), "AID".into());
+        config.insert("azure_client_secret".into(), "ASECRET".into());
+        config.insert("azure_tenant_id".into(), "TENANT".into());
+        config.insert("client_id".into(), "OID".into());
+        config.insert("client_secret".into(), "OSECRET".into());
+
+        let expected = vec![
+            (databricks::AZURE_CLIENT_ID, "AID"),
+            (databricks::AZURE_CLIENT_SECRET, "ASECRET"),
+            (databricks::AZURE_TENANT_ID, "TENANT"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (
+                databricks::AUTH_TYPE,
+                databricks::auth_type::AZURE_CLIENT_SECRET,
             ),
         ];
         run_config_test(config, &expected).unwrap();
@@ -755,5 +898,33 @@ mod tests {
             result.is_err(),
             "expected an error when http_path is missing"
         );
+    }
+
+    /// Tenant extraction from the `/aad/auth` redirect Location across Azure clouds
+    /// and malformed inputs (the login domain varies by cloud).
+    #[test]
+    fn test_parse_azure_tenant_from_location() {
+        let tenant = "11111111-2222-3333-4444-555555555555";
+
+        // public cloud
+        assert_eq!(
+            parse_azure_tenant_from_location(&format!(
+                "https://login.microsoftonline.com/{tenant}/oauth2/authorize?response_type=code"
+            ))
+            .unwrap(),
+            tenant
+        );
+        // us gov cloud (different login domain)
+        assert_eq!(
+            parse_azure_tenant_from_location(&format!(
+                "https://login.microsoftonline.us/{tenant}/oauth2/v2.0/authorize"
+            ))
+            .unwrap(),
+            tenant
+        );
+        // no tenant path segment
+        assert!(parse_azure_tenant_from_location("https://login.microsoftonline.com/").is_err());
+        // unparseable
+        assert!(parse_azure_tenant_from_location("not a url").is_err());
     }
 }

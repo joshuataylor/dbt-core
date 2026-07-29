@@ -899,6 +899,12 @@ pub struct DatabricksDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_client_secret: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azure_tenant_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth_redirect_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oauth_scopes: Option<Vec<String>>,

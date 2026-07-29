@@ -667,7 +667,7 @@ impl Recording {
                 }
                 // Real writes are barriers - must match the next write in sequence.
                 // Writes ARE tracked and consumed.
-                self.find_next_write_in_segment(events, node_state, method, args)
+                self.find_next_write_in_segment(events, node_state, method)
             }
             SemanticCategory::MetadataRead => {
                 // Reads can match any read in the current segment with matching args.
@@ -693,7 +693,6 @@ impl Recording {
         events: &'a [AdapterCallEvent],
         state: &mut SemanticReplayState,
         method: &str,
-        args: &serde_json::Value,
     ) -> Option<&'a AdapterCallEvent> {
         let search_start = state.segment_start;
 
@@ -706,14 +705,18 @@ impl Recording {
             }
 
             // Found a write - check method name matches
-            if event.method != method
-                || !adapter_args_match_for_type(method, &event.args, args, self.adapter_type())
-            {
-                // Write mismatch (method or args) - sequencing error
+            if event.method != method {
+                // Write mismatch (method) - sequencing error
                 return None;
             }
 
-            // Match found. SQL validation should happen separately
+            // Match found by method name. SQL content is validated separately by
+            // `validate_event`, which uses a more permissive sanitizer pipeline
+            // (strips comments, query tags, UUIDs, ...) than the comparison here
+            // would. Gating consumption on SQL equality duplicated that check with
+            // stricter rules, so legitimate writes whose SQL contains tolerable
+            // dynamic content (e.g. audit-log timestamps) failed to match at all
+            // instead of surfacing as a normal SQL-mismatch validation error.
 
             // Advance the segment past this write
             let abs_idx = search_start + idx;

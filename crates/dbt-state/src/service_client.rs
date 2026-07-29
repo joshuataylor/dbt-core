@@ -73,6 +73,10 @@ pub enum RunCacheServiceError {
     Aborted,
     #[error("dbt State authentication timed out after {0}s")]
     Timeout(u64),
+    #[error(
+        "dbt State authentication requires an interactive terminal, but none is available in this environment"
+    )]
+    NoInteractiveTerminal,
 }
 
 impl RunCacheServiceError {

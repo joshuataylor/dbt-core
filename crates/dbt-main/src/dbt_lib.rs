@@ -556,7 +556,10 @@ impl<'a> AllPhasesExecutor<'a> {
                     .clone()
                     .unwrap_or_else(|| self.arg.io.out_dir.clone())
                     .join("run_results.json");
-                RetryState::from_run_results(&run_results_path)
+                // Gate the retryable `warn` status on the *retry* invocation's
+                // own --warn-error, matching dbt-core (which keys off the retry
+                // flags, not the original run's). dbt-labs/fs#12417.
+                RetryState::from_run_results(&run_results_path, retry_args.common_args.warn_error)
             }?;
 
             // Get the original command to execute
@@ -583,7 +586,7 @@ impl<'a> AllPhasesExecutor<'a> {
                 ProgressMessage::new_from_action_and_target(
                     "Retrying".to_string(),
                     format!(
-                        "{} failed nodes from previous {} command",
+                        "{} nodes from previous {} command",
                         retry_state.retryable_node_ids.len(),
                         retry_state.original_command
                     ),

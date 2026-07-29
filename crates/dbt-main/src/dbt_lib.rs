@@ -22,6 +22,7 @@ use dbt_common::{
     },
     create_root_info_span, fs_err,
     io_args::{DisplayFormat, EvalArgs, IoArgs, Phases, ShowOptions, SystemArgs},
+    node_selector::IndirectSelection,
     path::get_target_write_path,
     pretty_string::{GREEN, RED, color_quotes},
     stdfs,
@@ -599,10 +600,21 @@ impl<'a> AllPhasesExecutor<'a> {
             // Create a custom schedule for the retryable nodes from the original run.
             // This keeps retry bounded to nodes recorded in run_results.json instead
             // of broadening the selection by expanding descendants.
+            //
+            // Retry executes exactly the node ids recorded in run_results.json, so
+            // indirect selection must be `Empty`. The recorded set already contains
+            // every node that has to re-run -- in particular, tests skipped behind a
+            // failed model are recorded `skipped`, which is retryable -- so expanding
+            // is never needed. Any expansion is by construction a node the original
+            // command did not run: an already-passed unit test, or a test excluded by
+            // the original --indirect-selection / --exclude. This matches dbt-core,
+            // whose retry path replaces the graph queue outright and never consults
+            // indirect selection (dbt-labs/dbt-core#14536).
             let custom_schedule = Some(DbtCustomScheduleDescription {
                 unique_ids: retry_state.retryable_node_ids,
                 include_parents: false,
                 include_children: false,
+                indirect_selection: IndirectSelection::Empty,
             });
 
             self.previous_batch_results = retry_state.previous_batch_results;

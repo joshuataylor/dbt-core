@@ -1468,6 +1468,7 @@ impl DbtProjectCompilation {
                         &custom_schedule_desc.unique_ids,
                         custom_schedule_desc.include_parents,
                         custom_schedule_desc.include_children,
+                        custom_schedule_desc.indirect_selection,
                         arg.local_execution_backend,
                         token,
                     )

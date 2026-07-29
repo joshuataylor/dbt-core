@@ -1986,6 +1986,7 @@ pub fn manifest_model_to_dbt_model(
             alt_compute: model.config.alt_compute,
             table_format: model.config.table_format.clone(),
             sync: model.config.sync.clone(),
+            compiled_code: None,
         },
         __adapter_attr__: AdapterAttr::from_config_and_dialect(
             &model.config.__warehouse_specific_config__,

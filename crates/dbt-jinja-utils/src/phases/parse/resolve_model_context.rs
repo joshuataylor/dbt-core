@@ -257,6 +257,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             alt_compute: None,
             table_format: None,
             sync: None,
+            compiled_code: None,
         },
         __adapter_attr__: AdapterAttr::default(),
         __other__: BTreeMap::new(),

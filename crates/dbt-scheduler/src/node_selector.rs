@@ -1297,6 +1297,7 @@ mod tests {
                 alt_compute: None,
                 table_format: None,
                 sync: None,
+                compiled_code: None,
             },
             __adapter_attr__: AdapterAttr::default(),
             __other__: BTreeMap::new(),

@@ -605,6 +605,14 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         self.base().columns.clone()
     }
 
+    /// The node's compiled SQL, when the caller has populated it.
+    ///
+    /// Not part of the serialized node: at run scope the Jinja `model` object loads compiled SQL
+    /// lazily from disk, so it only reaches a typed node when something copies it across.
+    fn compiled_code(&self) -> Option<&str> {
+        None
+    }
+
     fn alias(&self) -> String {
         self.base().alias.clone()
     }
@@ -1288,6 +1296,10 @@ impl InternalDbtNode for DbtModel {
 impl InternalDbtNodeAttributes for DbtModel {
     fn get_access(&self) -> Option<Access> {
         Some(self.__model_attr__.access.clone())
+    }
+
+    fn compiled_code(&self) -> Option<&str> {
+        self.__model_attr__.compiled_code.as_deref()
     }
 
     fn search_name(&self) -> String {
@@ -5830,6 +5842,11 @@ pub struct DbtModelAttr {
     pub alt_compute: Option<ComputePlatform>,
     pub table_format: Option<String>,
     pub sync: Option<SyncConfig>,
+    /// Compiled SQL, populated only by callers that need to diff it (see
+    /// [`InternalDbtNodeAttributes::compiled_code`]). Transient: never round-trips through the
+    /// manifest.
+    #[serde(skip)]
+    pub compiled_code: Option<String>,
 }
 
 #[skip_serializing_none]

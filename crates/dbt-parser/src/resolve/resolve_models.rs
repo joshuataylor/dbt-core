@@ -821,6 +821,7 @@ pub async fn resolve_models(
                 alt_compute: model_config.alt_compute,
                 table_format: model_config.table_format.clone(),
                 sync: model_config.sync.clone(),
+                compiled_code: None,
             },
             __adapter_attr__: AdapterAttr::from_config_and_dialect(
                 &model_config.__warehouse_specific_config__,

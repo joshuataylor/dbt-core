@@ -3223,7 +3223,7 @@ impl Adapter {
                 let model_val = iter.next_arg::<&Value>()?;
                 iter.finish()?;
 
-                let node =
+                let mut node =
                     minijinja_value_to_typed_struct::<InternalDbtNodeWrapper>(model_val.clone())
                         .map_err(|e| {
                             minijinja::Error::new(
@@ -3231,6 +3231,16 @@ impl Adapter {
                                 e.to_string(),
                             )
                         })?;
+
+                // The Jinja `model` object loads compiled SQL from disk on access and keeps it out
+                // of its enumeration, so it never survives the conversion above. Copy it over for
+                // the components that diff a relation's query against its applied definition.
+                if let InternalDbtNodeWrapper::Model(model) = &mut node
+                    && let Ok(compiled_code) = model_val.get_attr("compiled_code")
+                    && let Some(compiled_code) = compiled_code.as_str()
+                {
+                    model.__model_attr__.compiled_code = Some(compiled_code.to_string());
+                }
 
                 Ok(adapter.get_config_from_model(&node)?)
             }

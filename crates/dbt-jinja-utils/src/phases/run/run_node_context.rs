@@ -214,18 +214,21 @@ fn build_model_context_fields<S: Serialize>(
         }
     };
 
-    let node_config = RunConfig {
-        model_config: config_map,
-        model: model_map.clone(),
-        valid_keys,
-    };
-
-    // Create the lazy wrappers for the model with the compiled path. Both
+    // Create the lazy wrappers for the model with the compiled path. All three
     // share one mutable map so `{% do model.update(...) %}` in a
-    // materialization is observable through `model` and `node` alike.
+    // materialization is observable through `model`, `node` and `config.model`
+    // alike.
     let compiled_path =
         node.get_node_path_abs(NodePathKind::Compiled, &io_args.in_dir, &io_args.out_dir);
     let shared_model_map = to_model_context_map(model_map);
+
+    let node_config = RunConfig {
+        model_config: config_map,
+        model: shared_model_map.clone(),
+        model_compiled_path: compiled_path.clone(),
+        valid_keys,
+    };
+
     let lazy_model = LazyModelWrapper::new(shared_model_map.clone(), compiled_path.clone());
     let lazy_node = LazyModelWrapper::new(shared_model_map, compiled_path);
 

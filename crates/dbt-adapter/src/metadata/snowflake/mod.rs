@@ -1054,10 +1054,10 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
         // All results are accumulated in an unordered map
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let table_names = relations
+        let keys: Vec<(String, String)> = relations
             .iter()
-            .map(|relation| relation.semantic_fqn())
-            .collect::<Vec<_>>();
+            .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
+            .collect();
 
         let factory = Box::new(AdapterConnectionFactory::new(
             self.adapter.engine().clone(),
@@ -1067,9 +1067,10 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
         let map_f = move |conn: &'_ mut dyn Connection,
-                          table_name: &String|
+                          key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
-            let sql = format!("describe table {};", &table_name);
+            let (_, rendered) = key;
+            let sql = format!("describe table {};", rendered);
             let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
             if let Some(node_id) = unique_id.clone() {
                 ctx = ctx.with_node_id(&node_id);
@@ -1083,14 +1084,15 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             Ok(schema)
         };
         let reduce_f = |acc: &mut Acc,
-                        table_name: String,
+                        key: (String, String),
                         schema: AdapterResult<Arc<Schema>>|
          -> Result<(), Cancellable<AdapterError>> {
-            acc.insert(table_name, schema);
+            let (semantic_fqn, _) = key;
+            acc.insert(semantic_fqn, schema);
             Ok(())
         };
         let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(table_names), token)
+        map_reduce.run(Arc::new(keys), token)
     }
 
     /// List relations schemas by patterns (use information schema query)

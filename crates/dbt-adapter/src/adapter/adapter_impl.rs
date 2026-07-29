@@ -612,7 +612,7 @@ impl AdapterImpl {
         _auto_begin: bool,
         fetch: bool,
         _limit: Option<i64>,
-        options: Option<HashMap<String, String>>,
+        options: Option<ExecuteOptions>,
         token: CancellationToken,
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
         let splitter = engine.splitter();
@@ -636,11 +636,7 @@ impl AdapterImpl {
             return Ok((AdapterResponse::default(), AgateTable::default()));
         }
 
-        let mut options = options
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(key, value)| (key, OptionValue::String(value)))
-            .collect::<Vec<_>>();
+        let mut options = options.unwrap_or_default();
         if let Some(state) = state {
             options.extend(self.get_adbc_execute_options(state));
         }
@@ -720,7 +716,7 @@ impl AdapterImpl {
         auto_begin: bool,
         fetch: bool,
         limit: Option<i64>,
-        options: Option<HashMap<String, String>>,
+        options: Option<ExecuteOptions>,
         token: CancellationToken,
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
         if self.mock_state().is_some() {
@@ -5127,7 +5123,7 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         auto_begin: bool,
         fetch: bool,
         limit: Option<i64>,
-        options: Option<HashMap<String, String>>,
+        options: Option<ExecuteOptions>,
     ) -> AdapterResult<(AdapterResponse, AgateTable)>;
 
     fn replay_add_query(

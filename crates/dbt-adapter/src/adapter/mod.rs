@@ -1,7 +1,7 @@
 use crate::cache::RelationCache;
 use crate::cast_util::downcast_value_to_dyn_base_relation;
 use crate::catalog_relation::CatalogRelation;
-use crate::engine::AdbcEngine;
+use crate::engine::{AdbcEngine, Options};
 use crate::errors::into_fs_error;
 use crate::metadata::*;
 use crate::parse::adapter::ParseAdapterState;
@@ -19,6 +19,7 @@ use crate::value::*;
 use crate::{AdapterResponse, AdapterResult};
 
 use crate::auth::DefaultAuthWarningPrinter;
+use adbc_core::options::OptionValue;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
@@ -310,6 +311,7 @@ impl Adapter {
         ctx: Option<&QueryCtx>,
         sql: &str,
         fetch: bool,
+        options: Option<Options>,
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
         match &self.inner {
             Typed { adapter, .. } => {
@@ -322,7 +324,7 @@ impl Adapter {
                     false,
                     fetch,
                     None,
-                    None,
+                    options,
                     self.cancellation_token.clone(),
                 )
             }
@@ -852,7 +854,7 @@ impl Adapter {
         auto_begin: bool,
         fetch: bool,
         limit: Option<i64>,
-        options: Option<HashMap<String, String>>,
+        options: Option<Options>,
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
         match &self.inner {
             Typed { adapter, .. } => {
@@ -3574,12 +3576,18 @@ impl Adapter {
                 let mut fetch = iter.next_kwarg::<Option<bool>>("fetch")?.unwrap_or(false);
                 let limit = iter.next_kwarg::<Option<i64>>("limit")?;
                 let options = if let Some(value) = iter.next_kwarg::<Option<Value>>("options")? {
-                    Some(HashMap::<String, String>::deserialize(value).map_err(|e| {
+                    let options = HashMap::<String, String>::deserialize(value).map_err(|e| {
                         minijinja::Error::new(
                             minijinja::ErrorKind::SerdeDeserializeError,
                             e.to_string(),
                         )
-                    })?)
+                    })?;
+                    Some(
+                        options
+                            .into_iter()
+                            .map(|(k, v)| (k, OptionValue::String(v)))
+                            .collect::<Options>(),
+                    )
                 } else {
                     None
                 };

@@ -259,9 +259,7 @@ impl AdbcEngine {
                 let mut database = driver
                     .new_database_with_opts(opts)
                     .map_err(adbc_error_to_adapter_error)?;
-                // DuckDB-backed adapters: apply extensions, settings, secrets, and
-                // catalog attachments.
-                if matches!(self.adapter_type, AdapterType::DuckDB | AdapterType::Alt) {
+                if self.adapter_type == AdapterType::DuckDB {
                     self.apply_duckdb_init_sql(&mut database, config)?;
                 }
                 write_guard.inner.insert(fingerprint, database.clone());

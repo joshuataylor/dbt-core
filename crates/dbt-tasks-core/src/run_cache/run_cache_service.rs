@@ -555,7 +555,7 @@ async fn warehouse_now_ms(ctx: &TaskRunnerCtx) -> Option<i64> {
         let adapter = ctx_inner.env.get_adapter_ref()?;
         let query_ctx = QueryCtx::default().with_desc("dbt State run clock");
         let (_, table) = adapter
-            .execute_without_state(Some(&query_ctx), sql, true)
+            .execute_without_state(Some(&query_ctx), sql, true, None)
             .ok()?;
         table.original_record_batch().first_value_as_i64()
     }))
@@ -1878,7 +1878,7 @@ fn execute_clone_sqls_blocking(
         .with_desc("dbt State clone");
     for sql in clone_sqls {
         adapter
-            .execute_without_state(Some(&query_ctx), sql, false)
+            .execute_without_state(Some(&query_ctx), sql, false, None)
             .map_err(|err| into_fs_error(Cancellable::Error(err)))?;
     }
     Ok(())

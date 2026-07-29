@@ -84,6 +84,10 @@ fn apply_connection_args(
         builder.with_named_option(alt::ORGANIZATION, org)?;
     }
 
+    if let Some(bundle) = config.get_str("catalog_bundle") {
+        builder.with_named_option(alt::CATALOG_BUNDLE, bundle)?;
+    }
+
     Ok(builder)
 }
 

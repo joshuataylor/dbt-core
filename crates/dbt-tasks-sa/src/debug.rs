@@ -164,7 +164,7 @@ pub async fn debug(
         let sql = "select 1 as id";
         let ctx = QueryCtx::default();
         base_adapter
-            .execute_without_state(Some(&ctx), sql, false)
+            .execute_without_state(Some(&ctx), sql, false, None)
             .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the specified database.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", e))?;
 
         // Check for allow_id_token parameter when using Snowflake with externalbrowser
@@ -174,7 +174,7 @@ pub async fn debug(
             let sql = "SHOW PARAMETERS LIKE 'ALLOW_ID_TOKEN' IN ACCOUNT";
 
             let allow_token_id = match base_adapter
-                .execute_without_state(Some(&ctx), sql, true)
+                .execute_without_state(Some(&ctx), sql, true, None)
                 .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "{}", e))
             {
                 Ok((_result, agate_table)) => {

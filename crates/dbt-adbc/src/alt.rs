@@ -28,6 +28,8 @@ pub const AUTH_API_KEY: &str = "adbc.dbt.auth.api_key";
 /// Static bearer token.
 pub const AUTH_TOKEN: &str = "adbc.dbt.auth.token";
 
+pub const CATALOG_BUNDLE: &str = "adbc.dbt.catalog_bundle";
+
 /// Okta authorization endpoint.
 pub const OKTA_AUTH_URL: &str = "adbc.dbt.auth.okta.auth_url";
 /// Okta token endpoint.

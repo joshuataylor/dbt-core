@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use dbt_adapter::Adapter;
 use dbt_common::FsError;
@@ -7,6 +8,8 @@ use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::create_info_span;
 use dbt_common::io_args::FsCommand;
+use dbt_common::stats::{NodeStatus, Stat};
+use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -339,7 +342,7 @@ impl TaskRunner {
             .did_visit_taskgraph(&run_task_args, &schedule, &graph, &mut ctx, &token)
             .await?;
 
-        let stats = summarize_task_runner_stats(&ctx, &schedule, self.resolved_state.as_ref());
+        let mut stats = summarize_task_runner_stats(&ctx, &schedule, self.resolved_state.as_ref());
         let results = stats.collect_as_results();
         let successful_relational_nodes =
             stats.collect_successful_relational_nodes(&self.resolved_state);
@@ -358,6 +361,10 @@ impl TaskRunner {
         let database_schemas_option = Some(database_schemas);
         let results_option = Some(results.clone());
 
+        // on-run-end hook results, recorded as `operation.<project>.<name>` nodes and
+        // merged into the run stats below.
+        let mut hook_stats: Vec<Stat> = Vec::new();
+
         let execute = Execute::from_compute_flag(run_task_args.local_execution_backend);
         if execute == Execute::Remote && !run_task_args.skip_post_hooks {
             // Create span for on-run-end phase if there are any hooks
@@ -370,19 +377,49 @@ impl TaskRunner {
                 None
             };
 
-            // Execute all on-run-end hooks and record status on phase span
+            // Execute all on-run-end hooks and record status on phase span.
+            //
+            // Hooks are attached to the *command*, not to individual models, so a failing
+            // on-run-end hook must NOT turn already-materialized models into `error`. We
+            // record each hook as its own `operation.<project>.<name>` result (matching
+            // dbt-core) and keep the real per-model stats, rather than unwinding out of
+            // `run()` — which discarded `stats` and let the caller stamp every selected
+            // node as a phantom "Compilation Error". The hook error is still recorded on
+            // its span, so it is surfaced and counted toward the exit code.
+            // dbt-labs/fs#12418.
             if let Some(ref span) = on_run_end_span {
+                let mut hook_failed = false;
                 let result: FsResult<()> = async {
+                    let mut first_error: Option<Box<FsError>> = None;
                     for (idx, operation) in
                         self.resolved_state.operations.on_run_end.iter().enumerate()
                     {
+                        let unique_id = operation.__common_attr__.unique_id.clone();
+                        let start_time = SystemTime::now();
+
+                        // dbt-core stops running hooks once one fails and records the
+                        // remainder as skipped.
+                        if hook_failed {
+                            hook_stats.push(Stat {
+                                unique_id,
+                                num_rows: None,
+                                rows_affected: None,
+                                start_time,
+                                end_time: SystemTime::now(),
+                                status: NodeStatus::SkippedUpstreamFailed,
+                                thread_id: "main".to_string(),
+                                message: None,
+                            });
+                            continue;
+                        }
+
                         // Create span for individual hook with HookProcessed event
                         let hook_span = create_info_span(HookProcessed::start_on_run(
                             operation.__common_attr__.package_name.as_str(),
                             operation.__common_attr__.name.as_str(),
                             HookType::OnRunEnd,
                             (idx + 1) as u32,
-                            operation.__common_attr__.unique_id.as_str(),
+                            unique_id.as_str(),
                         ));
 
                         let result = run_operation_on_run_with_ctx(
@@ -410,16 +447,59 @@ impl TaskRunner {
                             error_message.as_deref(),
                         );
 
-                        result?;
+                        let status = match &result {
+                            Ok(_) => NodeStatus::Succeeded,
+                            Err(_) => NodeStatus::Errored,
+                        };
+                        hook_stats.push(Stat {
+                            unique_id,
+                            num_rows: None,
+                            rows_affected: None,
+                            start_time,
+                            end_time: SystemTime::now(),
+                            status,
+                            thread_id: "main".to_string(),
+                            message: error_message,
+                        });
+
+                        if let Err(e) = result {
+                            // Surface and count the hook error the same way a model
+                            // execution failure is handled (see visitor.rs): emit it so it
+                            // prints and drives a non-zero exit code, without unwinding out
+                            // of `run()` and discarding the per-model stats.
+                            emit_error_log_from_fs_error(
+                                e.as_ref(),
+                                run_task_args.io.status_reporter.as_ref(),
+                            );
+                            hook_failed = true;
+                            first_error = Some(e);
+                        }
                     }
-                    Ok(())
+
+                    // Return the hook error only so the phase span records `error` in
+                    // telemetry. It is deliberately not propagated out of `run()` — the
+                    // error was already emitted/counted above.
+                    match first_error {
+                        Some(e) => Err(e),
+                        None => Ok(()),
+                    }
                 }
                 .instrument(span.clone())
                 .await
                 .record_status(span);
 
-                result?;
+                let _ = result;
             }
+        }
+
+        // When an on-run-end hook fails, record the hook results as `operation.` nodes
+        // in run_results.json (alongside the unmodified model results) so the failure is
+        // represented and not mis-attributed to models — matching dbt-core's failure
+        // output. All-success hook runs are intentionally left unrecorded here to avoid
+        // changing every existing artifact; recording successful hooks as operation nodes
+        // is a follow-up. dbt-labs/fs#12418.
+        if hook_stats.iter().any(|s| s.status == NodeStatus::Errored) {
+            stats.run.stats.extend(hook_stats);
         }
 
         let showables = self.hooks.collect_showables(&mut ctx);

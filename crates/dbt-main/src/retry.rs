@@ -79,6 +79,14 @@ impl RetryState {
                 RETRYABLE_STATUSES.contains(&r.status.as_str())
                     || (warn_error && WARN_ERROR_RETRYABLE_STATUSES.contains(&r.status.as_str()))
             })
+            // dbt-core skips operation nodes unless the original command was
+            // `run-operation`, because on-run-start / on-run-end hooks are attached
+            // to the command and re-execute as part of whatever command retry
+            // reconstructs — retrying the operation node itself would be wrong.
+            // (dbt-labs/fs#12418, core/dbt/task/retry.py.)
+            .filter(|r| {
+                original_command == "run-operation" || !r.unique_id.starts_with("operation.")
+            })
             .map(|r| r.unique_id.clone())
             .collect();
 

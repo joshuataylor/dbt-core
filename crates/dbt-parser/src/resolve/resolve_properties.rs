@@ -10,8 +10,8 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::serde::{from_yaml_raw, into_typed_with_jinja};
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::properties::{
-    AnalysesProperties, DbtPropertiesFileValues, MacrosProperties, MinimalSchemaValue,
-    MinimalTableValue, MinimalUnitTestValue,
+    AnalysesProperties, DbtPropertiesFileValues, MinimalSchemaValue, MinimalTableValue,
+    MinimalUnitTestValue,
 };
 use dbt_schemas::schemas::serde::FloatOrString;
 use dbt_schemas::state::DbtPackage;
@@ -547,7 +547,9 @@ impl MinimalProperties {
         }
         if let Some(macros) = other.macros {
             for macro_value in macros {
-                let macro_props = into_typed_with_jinja::<MacrosProperties, _>(
+                // Only `name` is needed here. The full `MacrosProperties` renders every string
+                // field and discards it, double-rendering what `apply_macro_patches` renders.
+                let macro_props = into_typed_with_jinja::<MinimalSchemaValue, _>(
                     io_args,
                     macro_value.clone(),
                     false,

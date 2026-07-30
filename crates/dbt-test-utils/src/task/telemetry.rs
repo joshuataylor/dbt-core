@@ -157,22 +157,6 @@ impl Task for ExecuteAndCompareTelemetry {
     }
 }
 
-#[async_trait]
-impl Task for Arc<ExecuteAndCompareTelemetry> {
-    async fn run(
-        &self,
-        project_env: &ProjectEnv,
-        test_env: &TestEnv,
-        task_index: usize,
-    ) -> TestResult<()> {
-        self.as_ref().run(project_env, test_env, task_index).await
-    }
-
-    fn is_counted(&self) -> bool {
-        true
-    }
-}
-
 /// Panics when a command vector already contains a flag owned by telemetry snapshot setup.
 fn assert_flag_absent(cmd_vec: &[String], flag: &str, message: &str) {
     if cmd_vec.iter().any(|arg| arg.contains(flag)) {

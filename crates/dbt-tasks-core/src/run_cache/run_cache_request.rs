@@ -1009,6 +1009,26 @@ mod tests {
     }
 
     #[test]
+    fn shadowing_builtin_maps_to_custom_execution_type() {
+        // The headline case for the dispatch-based check: a model materialized
+        // as a *built-in* name (`table`) whose materialization macro is
+        // shadowed by a user-defined macro. The old `Unknown(_)`-only heuristic
+        // classified this as `Full`; the resolver-based check must classify it
+        // as `DbtCustom`. This test would fail under the old heuristic and pins
+        // the fix in this PR.
+        let model = make_model(DbtMaterialization::Table);
+
+        let execution_type = execution_type_from_input(&model_execution_type_input(
+            &model,
+            false,
+            &custom_materialization_resolver("table"),
+        ))
+        .unwrap();
+
+        assert_eq!(execution_type, ModelExecutionType::DbtCustom);
+    }
+
+    #[test]
     fn custom_incremental_strategy_maps_to_custom_execution_type() {
         // A standard `incremental` model with a user-defined
         // `get_incremental_<name>_sql` strategy is submitted as DBT_CUSTOM so it

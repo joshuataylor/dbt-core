@@ -579,13 +579,20 @@ fn heuristic_clock_enabled_for_adapter(adapter_type: AdapterType) -> bool {
     )
 }
 
+fn has_non_empty_schema(relation: &dyn BaseRelation) -> bool {
+    relation
+        .schema()
+        .is_some_and(|schema| !schema.trim().is_empty())
+}
+
 /// Collect every relation and source freshness override needed for the run's
 /// metadata prefetch.
 ///
 /// Returns a map of `semantic_fqn → relation` covering every selected node's
 /// own target relation plus the relations of all their runtime dependencies
 /// (models, snapshots, seeds, sources). Ephemeral and inline models are skipped
-/// because they never submit to the service. A second map carries
+/// because they never submit to the service, as are graph-only nodes with no
+/// warehouse relation (see `has_non_empty_schema`). A second map carries
 /// `FreshnessOverride` entries for sources that declare `loaded_at_query` or
 /// `loaded_at_field`; these are passed through to `freshness_with_overrides`
 /// so the prefetch uses the same freshness strategy as per-node submits.
@@ -614,7 +621,9 @@ fn collect_global_prefetch_relations(
             }
         }
 
-        if let Ok(relation) = create_relation_from_node(adapter_type, node, None) {
+        if let Ok(relation) = create_relation_from_node(adapter_type, node, None)
+            && has_non_empty_schema(relation.as_ref())
+        {
             let fqn = relation.semantic_fqn();
             relations.entry(fqn).or_insert_with(|| relation.into());
         }
@@ -6455,6 +6464,75 @@ mod tests {
             "source dep should be included"
         );
         assert!(overrides.is_empty());
+    }
+
+    fn make_exposure(unique_id: &str) -> Arc<dbt_schemas::schemas::nodes::DbtExposure> {
+        let mut exposure = dbt_schemas::schemas::nodes::DbtExposure::default();
+        exposure.__common_attr__.unique_id = unique_id.to_string();
+        Arc::new(exposure)
+    }
+
+    #[test]
+    fn prefetch_keeps_real_relations_alongside_an_exposure() {
+        let model = make_model(
+            "model.pkg.orders",
+            "db",
+            "analytics",
+            "orders",
+            DbtMaterialization::Table,
+        );
+        let exposure = make_exposure("exposure.pkg.dashboard");
+        let mut nodes = nodes_from(vec![model], vec![]);
+        nodes
+            .exposures
+            .insert(exposure.__common_attr__.unique_id.clone(), exposure);
+
+        let runnable_set: BTreeSet<String> = [
+            "model.pkg.orders".to_string(),
+            "exposure.pkg.dashboard".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        let (relations, _) = collect_global_prefetch_relations(
+            AdapterType::Snowflake,
+            &runnable_set,
+            &BTreeMap::new(),
+            &nodes,
+        );
+
+        assert_eq!(
+            relations.keys().collect::<Vec<_>>(),
+            vec![&fqn_of("db", "analytics", "orders")],
+            "the exposure must be dropped without disturbing real relations"
+        );
+    }
+
+    #[test]
+    fn non_empty_schema_check_ignores_database() {
+        // BigQuery renders relations without a database; only a missing schema
+        // makes the metadata query unbuildable.
+        let no_database = create_relation(
+            AdapterType::Bigquery,
+            String::new(),
+            "analytics".to_string(),
+            Some("orders".to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap();
+        assert!(has_non_empty_schema(no_database.as_ref()));
+
+        let no_schema = create_relation(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            String::new(),
+            Some("orders".to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap();
+        assert!(!has_non_empty_schema(no_schema.as_ref()));
     }
 
     #[test]

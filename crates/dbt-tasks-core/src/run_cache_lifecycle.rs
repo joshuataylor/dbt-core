@@ -66,12 +66,7 @@ async fn initialize_run_cache_service(
     adapter_type: AdapterType,
     cloud_config: Option<&ResolvedCloudConfig>,
 ) -> FsResult<RunCacheServiceLifecycle> {
-    if !should_initialize_run_cache_service(
-        arg,
-        execute,
-        RunCacheServiceConfig::is_explicitly_requested_from_env(),
-        adapter_type,
-    ) {
+    if !should_initialize_run_cache_service(arg, execute, adapter_type) {
         increment_metric(
             FusionMetricKey::RunCacheService(RunCacheServiceMetricKey::Disabled),
             1,
@@ -255,12 +250,9 @@ where
 fn should_initialize_run_cache_service(
     arg: &RunTasksArgs,
     execute: Execute,
-    env_requested: bool,
     adapter_type: AdapterType,
 ) -> bool {
-    execute == Execute::Remote
-        && adapter_supports_dbt_state(adapter_type)
-        && (arg.run_cache_service || env_requested)
+    execute == Execute::Remote && adapter_supports_dbt_state(adapter_type) && arg.run_cache_service
 }
 
 /// Returns true when the adapter is supported by the dbt State service.
@@ -309,35 +301,26 @@ mod tests {
         RunTasksArgs::default()
     }
 
+    fn requested_args() -> RunTasksArgs {
+        let mut args = args();
+        args.run_cache_service = true;
+        args
+    }
+
     #[test]
     fn lifecycle_does_not_request_service_without_explicit_request() {
         assert!(!should_initialize_run_cache_service(
             &args(),
             Execute::Remote,
-            false,
-            AdapterType::Snowflake,
-        ));
-    }
-
-    #[test]
-    fn lifecycle_requests_service_from_explicit_env_opt_in() {
-        assert!(should_initialize_run_cache_service(
-            &args(),
-            Execute::Remote,
-            true,
             AdapterType::Snowflake,
         ));
     }
 
     #[test]
     fn lifecycle_requests_service_from_cli_flag() {
-        let mut args = args();
-        args.run_cache_service = true;
-
         assert!(should_initialize_run_cache_service(
-            &args,
+            &requested_args(),
             Execute::Remote,
-            false,
             AdapterType::Snowflake,
         ));
     }
@@ -345,38 +328,17 @@ mod tests {
     #[test]
     fn lifecycle_requires_remote_compute() {
         assert!(!should_initialize_run_cache_service(
-            &args(),
+            &requested_args(),
             Execute::Sidecar,
-            true,
-            AdapterType::Snowflake,
-        ));
-
-        let mut args = args();
-        args.run_cache_service = true;
-
-        assert!(!should_initialize_run_cache_service(
-            &args,
-            Execute::Sidecar,
-            false,
             AdapterType::Snowflake,
         ));
     }
 
     #[test]
     fn lifecycle_requires_supported_adapter() {
-        let mut requested_args = args();
-        requested_args.run_cache_service = true;
-
         assert!(!should_initialize_run_cache_service(
-            &requested_args,
+            &requested_args(),
             Execute::Remote,
-            false,
-            AdapterType::DuckDB,
-        ));
-        assert!(!should_initialize_run_cache_service(
-            &args(),
-            Execute::Remote,
-            true,
             AdapterType::DuckDB,
         ));
     }

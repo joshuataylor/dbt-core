@@ -379,6 +379,8 @@ got {:?}, expected an instance of {}",
     }
 
     pub fn to_eval_args(&self, system_arg: SystemArgs) -> FsResult<EvalArgs> {
+        validate_manage_state_env()?;
+
         use CoreCommand::*;
         let common_args = self.common_args();
         // Determine the input and output directories based on the command.
@@ -704,6 +706,12 @@ impl CompileArgs {
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
         }
+        configure_run_cache(
+            &mut eval_args,
+            &self.common_args,
+            false,
+            &RunCacheMode::ReadWrite,
+        );
 
         eval_args
     }
@@ -878,6 +886,12 @@ impl ShowArgs {
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
         }
+        configure_run_cache(
+            &mut eval_args,
+            &self.common_args,
+            false,
+            &RunCacheMode::ReadWrite,
+        );
         eval_args
     }
 }
@@ -2053,7 +2067,7 @@ pub struct CommonArgs {
     pub task_cache_url: String,
 
     /// Enable service-backed dbt State without legacy task-cache coordination
-    #[arg(global = true, long = "manage-state", default_value_t = false, action = ArgAction::SetTrue, env = MANAGE_STATE_ENV, value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
+    #[arg(global = true, long = "manage-state", default_value_t = false, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
     pub manage_state: bool,
     /// Disable service-backed dbt State
     #[arg(global = true, long = "no-manage-state", default_value_t = false, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new())]
@@ -2300,6 +2314,27 @@ fn manage_state_from_yaml(path: &Path) -> Option<bool> {
     file.flags.and_then(|flags| flags.manage_state)
 }
 
+fn parse_manage_state_env(value: Option<&OsStr>) -> FsResult<Option<bool>> {
+    let Some(value) = value.filter(|value| !value.to_string_lossy().trim().is_empty()) else {
+        return Ok(None);
+    };
+    BoolishValueParser::new()
+        .parse_ref(&clap::Command::new("dbt-fusion"), None, value)
+        .map(Some)
+        .map_err(|_| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "Invalid value for {}: '{}'. Expected a boolean.",
+                MANAGE_STATE_ENV,
+                value.to_string_lossy()
+            )
+        })
+}
+
+fn validate_manage_state_env() -> FsResult<()> {
+    parse_manage_state_env(env::var_os(MANAGE_STATE_ENV).as_deref()).map(|_| ())
+}
+
 fn maximum_seed_size_mib_from_yaml(path: &Path) -> Option<u64> {
     let content = stdfs::read_to_string(path).ok()?;
     let file = dbt_yaml::from_str::<FlagsFile>(&content).ok()?;
@@ -2336,6 +2371,8 @@ impl CommonArgs {
             .unwrap_or(DEFAULT_MAXIMUM_SEED_SIZE_MIB)
     }
 
+    /// Precedence: CLI flag, then an explicit config opt-out, then env var, then
+    /// config. Callers get an authoritative answer and must not re-read the env.
     fn get_manage_state_with(
         &self,
         project_dir: &Path,
@@ -2348,14 +2385,18 @@ impl CommonArgs {
         if self.manage_state {
             return true;
         }
-        if let Some(value) = manage_state_env {
-            return BoolishValueParser::new()
-                .parse_ref(&clap::Command::new("dbt-fusion"), None, value.as_ref())
-                .unwrap_or(self.manage_state);
+
+        let configured = manage_state_from_yaml(&project_dir.join(DBT_PROJECT_YML))
+            .or_else(|| user_settings_path.and_then(|path| manage_state_from_yaml(&path)));
+
+        if configured == Some(false) {
+            return false;
         }
-        manage_state_from_yaml(&project_dir.join(DBT_PROJECT_YML))
-            .or_else(|| user_settings_path.and_then(|path| manage_state_from_yaml(&path)))
-            .unwrap_or(false)
+
+        let env_value = parse_manage_state_env(manage_state_env.as_deref())
+            .ok()
+            .flatten();
+        env_value.or(configured).unwrap_or(false)
     }
 
     pub fn get_warn_error(&self) -> Option<bool> {
@@ -2933,6 +2974,217 @@ mod tests {
             None,
             None
         ));
+    }
+
+    /// The dbt platform path: the injected env var alone still enables dbt State.
+    #[test]
+    fn env_true_enables_manage_state() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let common_args = CommonArgs::default();
+
+        assert!(get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            Some("true"),
+            None
+        ));
+    }
+
+    /// dbt platform injects `DBT_ENGINE_MANAGE_STATE=true` on production
+    /// deployments, so an explicit opt-out has to beat it or users have no way to
+    /// turn dbt State off.
+    #[test]
+    fn no_manage_state_overrides_env_true() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let common_args = CommonArgs {
+            no_manage_state: true,
+            ..Default::default()
+        };
+
+        assert!(!get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            Some("true"),
+            None
+        ));
+    }
+
+    #[test]
+    fn project_flag_false_overrides_env_true() {
+        let project_dir = tempfile::tempdir().unwrap();
+        stdfs::write(
+            project_dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  manage_state: false\n",
+        )
+        .unwrap();
+        let common_args = CommonArgs::default();
+
+        assert!(!get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            Some("true"),
+            None
+        ));
+    }
+
+    #[test]
+    fn user_settings_false_overrides_env_true() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        stdfs::create_dir_all(home_dir.path().join(".dbt")).unwrap();
+        let user_settings = home_dir.path().join(USER_SETTINGS_YML);
+        stdfs::write(&user_settings, "flags:\n  manage_state: false\n").unwrap();
+        let common_args = CommonArgs::default();
+
+        assert!(!get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            Some("true"),
+            Some(user_settings)
+        ));
+    }
+
+    /// Guards the clap wiring itself: if `manage_state` regains `env = ...`, the env
+    /// var becomes indistinguishable from the flag and a config opt-out stops working.
+    #[test]
+    fn manage_state_flag_is_not_populated_from_env() {
+        use clap::CommandFactory;
+
+        let reads_env = CompileArgs::command()
+            .get_arguments()
+            .find(|arg| arg.get_id() == "manage_state")
+            .map(|arg| arg.get_env().is_some());
+
+        assert_eq!(
+            reads_env,
+            Some(false),
+            "--manage-state must not read DBT_ENGINE_MANAGE_STATE via clap"
+        );
+    }
+
+    #[test]
+    fn invalid_env_value_is_rejected() {
+        let err = parse_manage_state_env(Some(OsStr::new("treu"))).unwrap_err();
+
+        assert!(
+            err.to_string().contains(MANAGE_STATE_ENV) && err.to_string().contains("treu"),
+            "error must name the variable and the bad value, got: {err}"
+        );
+    }
+
+    #[test]
+    fn valid_and_unset_env_values_parse() {
+        assert_eq!(parse_manage_state_env(None).unwrap(), None);
+        assert_eq!(
+            parse_manage_state_env(Some(OsStr::new("   "))).unwrap(),
+            None
+        );
+        assert_eq!(
+            parse_manage_state_env(Some(OsStr::new("true"))).unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            parse_manage_state_env(Some(OsStr::new("false"))).unwrap(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn empty_env_value_is_treated_as_unset() {
+        let project_dir = tempfile::tempdir().unwrap();
+        stdfs::write(
+            project_dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  manage_state: true\n",
+        )
+        .unwrap();
+
+        assert!(get_manage_state_with_env(
+            &CommonArgs::default(),
+            project_dir.path(),
+            Some("   "),
+            None
+        ));
+    }
+
+    #[test]
+    fn project_flag_true_beats_user_settings_false() {
+        let project_dir = tempfile::tempdir().unwrap();
+        stdfs::write(
+            project_dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  manage_state: true\n",
+        )
+        .unwrap();
+        let home_dir = tempfile::tempdir().unwrap();
+        stdfs::create_dir_all(home_dir.path().join(".dbt")).unwrap();
+        let user_settings = home_dir.path().join(USER_SETTINGS_YML);
+        stdfs::write(&user_settings, "flags:\n  manage_state: false\n").unwrap();
+
+        assert!(get_manage_state_with_env(
+            &CommonArgs::default(),
+            project_dir.path(),
+            None,
+            Some(user_settings)
+        ));
+    }
+
+    /// An explicit `--manage-state` is the user acting right now, so it still wins
+    /// over a stale project-level opt-out.
+    #[test]
+    fn manage_state_flag_overrides_project_flag_false() {
+        let project_dir = tempfile::tempdir().unwrap();
+        stdfs::write(
+            project_dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  manage_state: false\n",
+        )
+        .unwrap();
+        let common_args = CommonArgs {
+            manage_state: true,
+            ..Default::default()
+        };
+
+        assert!(get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            None,
+            None
+        ));
+    }
+
+    #[test]
+    fn compile_resolves_manage_state_from_project_flags() {
+        let project_dir = tempfile::tempdir().unwrap();
+        stdfs::write(
+            project_dir.path().join(DBT_PROJECT_YML),
+            "flags:\n  manage_state: true\n",
+        )
+        .unwrap();
+
+        let compile_args = CompileArgs {
+            common_args: CommonArgs {
+                manage_state: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let system_args = SystemArgs {
+            command: FsCommand::Compile,
+            io: IoArgs::default(),
+            from_main: false,
+            exit_process_on_panic: false,
+            num_threads: None,
+            no_parallel: false,
+            target: None,
+        };
+        let eval_args = compile_args.to_eval_args(
+            system_args,
+            project_dir.path(),
+            &project_dir.path().join("target"),
+        );
+
+        assert!(
+            eval_args.run_cache_service,
+            "compile must resolve dbt State like the other auto-defer commands"
+        );
     }
 
     #[test]

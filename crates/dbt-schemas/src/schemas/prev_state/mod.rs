@@ -924,8 +924,14 @@ fn unrendered_configs_eq(
 ) -> bool {
     let relevance = UnrenderedKeyRelevance::for_node_type(node_type);
 
-    let previous = canonicalize_hook_keys(previous_uc);
-    let current = canonicalize_hook_keys(current_uc);
+    let mut previous = canonicalize_hook_keys(previous_uc);
+    let mut current = canonicalize_hook_keys(current_uc);
+
+    // Gate on `meta` being a relevant key at all: for Allowlist types (data tests) `meta` is not a
+    // compared key, so running this could only ever suppress a genuine modifier diff.
+    if relevance.key_is_relevant("meta") {
+        reconcile_meta_relocated_keys(&mut previous, &mut current, unique_id);
+    }
 
     let all_keys: std::collections::BTreeSet<&str> = previous
         .keys()
@@ -940,13 +946,7 @@ fn unrendered_configs_eq(
         }
         let a = previous.get(key);
         let b = current.get(key);
-        // Hooks may be authored as a YAML sequence or as a stringified list literal; compare them
-        // by their entries so representation/whitespace differences do not count as a modification.
-        let values_eq = if key == "pre-hook" || key == "post-hook" {
-            unrendered_hook_value_eq(a, b)
-        } else {
-            unrendered_value_eq(a, b)
-        };
+        let values_eq = unrendered_key_value_eq(key, a, b);
         if !values_eq {
             all_eq = false;
             log_state_mod_diff(
@@ -1059,6 +1059,110 @@ fn canonicalize_hook_keys(
             (k, v.clone())
         })
         .collect()
+}
+
+/// The comparator `unrendered_configs_eq`'s loop applies to one `unrendered_config` key. Extracted
+/// so `meta_relocated_keys` decides "same value" by exactly the same rule the comparison loop uses.
+fn unrendered_key_value_eq(
+    key: &str,
+    a: Option<&dbt_yaml::Value>,
+    b: Option<&dbt_yaml::Value>,
+) -> bool {
+    if key == "pre-hook" || key == "post-hook" {
+        unrendered_hook_value_eq(a, b)
+    } else {
+        unrendered_value_eq(a, b)
+    }
+}
+
+/// Reconcile a config key that was relocated into `meta` on one side of the comparison (e.g.
+/// dbt-autofix: "Moved unrecognized config '+access' to '+meta'" when a config key has no field on
+/// Fusion's typed config struct). `meta` IS a compared key, so a value that moved from top-level
+/// `K` into `meta.K` manufactures a phantom `meta` diff plus a phantom top-level `K` diff for a
+/// config that never changed. Deliberately fuzzy and engine-agnostic: keyed on value identity only,
+/// not on whether `K` is a recognized field anywhere on either side; applies bidirectionally
+/// (either side may be the relocated one), so it helps dbt-core-vs-Fusion and Fusion-vs-Fusion
+/// comparisons alike.
+///
+/// Suppress-only: only ever touches a key pair that is ALREADY unequal (decided against the
+/// unmutated maps before any removal is applied), so this can only make `unrendered_configs_eq`
+/// report *more* equality — never introduce a new inequality.
+fn reconcile_meta_relocated_keys(
+    previous: &mut std::collections::BTreeMap<String, dbt_yaml::Value>,
+    current: &mut std::collections::BTreeMap<String, dbt_yaml::Value>,
+    unique_id: &str,
+) {
+    // Nothing to explain unless `meta` itself already disagrees: if `meta` is equal on both sides,
+    // nothing "arrived" there, and a top-level-only diff on `K` is a genuine config removal, not a
+    // relocation. Also makes this a cheap no-op for the overwhelming majority of nodes.
+    if unrendered_value_eq(previous.get("meta"), current.get("meta")) {
+        return;
+    }
+
+    // Compute both directions against the unmutated maps, then apply.
+    let previous_side = meta_relocated_keys(previous, current);
+    let current_side = meta_relocated_keys(current, previous);
+
+    for key in &previous_side {
+        strip_relocated_key(previous, current, key, unique_id);
+    }
+    for key in &current_side {
+        strip_relocated_key(current, previous, key, unique_id);
+    }
+}
+
+/// Top-level keys of `top` whose value also sits, unchanged, at `nested["meta"][key]`.
+///
+/// `top`/`nested` are the two sides of one direction of the comparison; call twice with the
+/// arguments swapped for bidirectional coverage.
+fn meta_relocated_keys(
+    top: &std::collections::BTreeMap<String, dbt_yaml::Value>,
+    nested: &std::collections::BTreeMap<String, dbt_yaml::Value>,
+) -> Vec<String> {
+    let Some(meta) = nested.get("meta").and_then(|v| v.as_mapping()) else {
+        return Vec::new();
+    };
+    top.keys()
+        .filter(|key| key.as_str() != "meta")
+        .filter(|key| {
+            let top_value = top.get(key.as_str());
+            // Suppress-only guard: only ever touch a pair that is already unequal.
+            if unrendered_key_value_eq(key, top_value, nested.get(key.as_str())) {
+                return false;
+            }
+            // The same value must actually be present at `meta[key]` on the other side.
+            meta.get(key.as_str())
+                .is_some_and(|meta_value| unrendered_key_value_eq(key, top_value, Some(meta_value)))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Remove the relocated pair: `key` from `top`'s top level and `key` from `nested`'s `meta` map.
+/// Everything else in `nested`'s `meta` is left intact so unrelated genuine `meta` differences still
+/// surface. An emptied `meta` mapping is left in place — `unrendered_value_eq` already treats an
+/// empty mapping and an absent key as equivalent.
+fn strip_relocated_key(
+    top: &mut std::collections::BTreeMap<String, dbt_yaml::Value>,
+    nested: &mut std::collections::BTreeMap<String, dbt_yaml::Value>,
+    key: &str,
+    unique_id: &str,
+) {
+    top.remove(key);
+    if let Some(meta) = nested.get_mut("meta").and_then(|v| v.as_mapping_mut()) {
+        meta.shift_remove(key);
+    }
+    // `log_state_mod_diff` only emits when the check flag is `false` — pass `false` here to make
+    // this suppression visible in traces, not because the values disagree.
+    log_state_mod_diff(
+        unique_id,
+        "unrendered_config_meta_relocated",
+        [(
+            "meta_relocated_key",
+            false,
+            Some((key.to_string(), format!("meta.{key}"))),
+        )],
+    );
 }
 
 #[cfg(test)]
@@ -1196,6 +1300,223 @@ mod tests {
             None,
             AdapterType::Snowflake
         ));
+    }
+
+    fn config_map(pairs: &[(&str, &str)]) -> BTreeMap<String, dbt_yaml::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), yml_value(v)))
+            .collect()
+    }
+
+    #[test]
+    fn meta_relocated_key_is_not_a_config_modification() {
+        // Mirrors the real repro: dbt-autofix moved an unrecognized `+access` snapshot config into
+        // `+meta` because Fusion's typed config has no `access` field. The previous (dbt-core)
+        // manifest carries `access` at top level with no `meta` key at all; the current (Fusion)
+        // manifest carries it nested under `meta`. No real project change occurred.
+        let previous = config_map(&[("access", "public"), ("strategy", "check")]);
+        let current = config_map(&[("meta", "{access: public}"), ("strategy", "check")]);
+        assert!(unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_key_reconciles_in_both_directions() {
+        // Mirror of the case above: this time the CURRENT side holds the top-level key and the
+        // PREVIOUS side holds it nested under `meta`.
+        let previous = config_map(&[("meta", "{access: public}"), ("strategy", "check")]);
+        let current = config_map(&[("access", "public"), ("strategy", "check")]);
+        assert!(unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_key_with_differing_value_still_modified() {
+        // The value actually changed (public -> private), not merely relocated. Must still be
+        // reported as modified.
+        let previous = config_map(&[("access", "public")]);
+        let current = config_map(&[("meta", "{access: private}")]);
+        assert!(!unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_key_leaves_unrelated_meta_diffs() {
+        // `access` was relocated (accounted for), but `owner` inside `meta` genuinely changed and
+        // must still surface as a modification.
+        let previous = config_map(&[("access", "public"), ("meta", "{owner: old_team}")]);
+        let current = config_map(&[("meta", "{access: public, owner: new_team}")]);
+        assert!(!unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+
+        // Confirm precisely what the reconciliation removed: only `access`/`meta.access`, leaving
+        // the genuine `owner` disagreement intact on both sides.
+        let mut previous = previous;
+        let mut current = current;
+        reconcile_meta_relocated_keys(&mut previous, &mut current, "snapshot.pkg.s");
+        assert_eq!(previous.get("access"), None);
+        assert_eq!(previous.get("meta"), Some(&yml_value("{owner: old_team}")));
+        assert_eq!(current.get("access"), None);
+        assert_eq!(current.get("meta"), Some(&yml_value("{owner: new_team}")));
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_skips_keys_equal_on_both_sides() {
+        // `access` is already equal at the top level on both sides; `meta.access` is merely an
+        // additional (genuinely new) entry on the current side, not a relocation of the top-level
+        // value. Reconciling this pair would DELETE the top-level `access` from `previous` only
+        // (current has no top-level `access` to begin with), turning an equal pair into an unequal
+        // one -- exactly the "introduce a new inequality" hazard the suppress-only guard exists to
+        // prevent.
+        let previous = config_map(&[("access", "public")]);
+        let current = config_map(&[("access", "public"), ("meta", "{access: public}")]);
+        assert!(!unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+
+        let mut previous_mut = previous.clone();
+        let mut current_mut = current;
+        reconcile_meta_relocated_keys(&mut previous_mut, &mut current_mut, "snapshot.pkg.s");
+        assert_eq!(previous_mut.get("access"), previous.get("access"));
+        assert_eq!(
+            current_mut.get("meta"),
+            Some(&yml_value("{access: public}"))
+        );
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_is_noop_when_meta_agrees() {
+        // `meta` is already equal on both sides, so nothing "arrived" there -- the top-level-only
+        // `access` diff is a genuine removal, not evidence of a relocation. Must not be touched.
+        let mut previous = config_map(&[("access", "public"), ("meta", "{access: public}")]);
+        let mut current = config_map(&[("meta", "{access: public}")]);
+        let previous_before = previous.clone();
+        let current_before = current.clone();
+
+        reconcile_meta_relocated_keys(&mut previous, &mut current, "snapshot.pkg.s");
+
+        assert_eq!(previous, previous_before);
+        assert_eq!(current, current_before);
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_applies_to_excluded_keys() {
+        // `tags` is a Stage-1 parity-exclude for snapshots, but the reconciliation is gated only on
+        // `meta`'s own relevance, not on `K`'s -- the phantom diff lands on `meta`, which IS
+        // relevant regardless of what `K` is.
+        let previous = config_map(&[("tags", "[a]")]);
+        let current = config_map(&[("meta", "{tags: [a]}")]);
+        assert!(unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_is_noop_for_data_tests() {
+        // Data tests use the Allowlist rule (`DBTTEST_CONFIG_MODIFIERS`), where `meta` is not a
+        // compared key at all. The reconciliation must not run for this node type, since it could
+        // only ever mask an unrelated, genuinely relevant Allowlist modifier that also happens to
+        // be duplicated under `meta`.
+        let previous = config_map(&[("severity", "warn")]);
+        let current = config_map(&[("meta", "{severity: warn}")]);
+        assert!(!unrendered_configs_eq(
+            NodeType::Test,
+            &previous,
+            &current,
+            "test.pkg.t"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_applies_to_sources() {
+        // The reconciliation is not snapshot-specific.
+        let previous = config_map(&[("event_time", "updated_at")]);
+        let current = config_map(&[("meta", "{event_time: updated_at}")]);
+        assert!(unrendered_configs_eq(
+            NodeType::Source,
+            &previous,
+            &current,
+            "source.pkg.s"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_ignores_non_mapping_meta() {
+        let previous = config_map(&[("access", "public")]);
+        let current = config_map(&[("meta", "\"not_a_map\""), ("access", "private")]);
+        assert!(!unrendered_configs_eq(
+            NodeType::Snapshot,
+            &previous,
+            &current,
+            "snapshot.pkg.s"
+        ));
+    }
+
+    #[test]
+    fn meta_relocated_reconciliation_never_introduces_inequality() {
+        // Table of already-Stage-1-equal map pairs. `reconcile_meta_relocated_keys` must leave all
+        // of them byte-identical to their pre-call state, and `unrendered_configs_eq` must still
+        // report equal.
+        let cases: Vec<(
+            BTreeMap<String, dbt_yaml::Value>,
+            BTreeMap<String, dbt_yaml::Value>,
+        )> = vec![
+            // Identical maps.
+            (
+                config_map(&[("access", "public"), ("meta", "{owner: team}")]),
+                config_map(&[("access", "public"), ("meta", "{owner: team}")]),
+            ),
+            // `meta: {}` vs absent `meta` (already equivalent via `is_effectively_empty`).
+            (config_map(&[("meta", "{}")]), config_map(&[])),
+            // Hook-alias pair (already handled by `canonicalize_hook_keys`, not by this fix, but
+            // must not be disturbed by it).
+            (
+                config_map(&[("pre-hook", "[\"a\"]")]),
+                config_map(&[("pre-hook", "[\"a\"]")]),
+            ),
+            // `meta: null` vs absent `meta` (also already-equivalent via `is_effectively_empty`;
+            // note `meta: {}` vs `meta: null`, both Some but neither None, is NOT already-equal
+            // under `unrendered_value_eq`'s current semantics -- a separate, deliberately
+            // out-of-scope gap -- so is not used as a case here).
+            (config_map(&[("meta", "null")]), config_map(&[])),
+        ];
+
+        for (previous, current) in cases {
+            let mut previous_mut = previous.clone();
+            let mut current_mut = current.clone();
+            reconcile_meta_relocated_keys(&mut previous_mut, &mut current_mut, "snapshot.pkg.s");
+            assert_eq!(previous_mut, previous);
+            assert_eq!(current_mut, current);
+            assert!(unrendered_configs_eq(
+                NodeType::Snapshot,
+                &previous,
+                &current,
+                "snapshot.pkg.s"
+            ));
+        }
     }
 
     #[test]

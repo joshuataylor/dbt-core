@@ -47,6 +47,7 @@ use crate::schemas::project::configs::common::{
 };
 use crate::schemas::project::dbt_project::ResolvableConfig;
 use crate::schemas::project::dbt_project::TypedRecursiveConfig;
+use crate::schemas::properties::model_properties::ModelConstraint;
 use crate::schemas::properties::{ModelFreshness, ModelState};
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
@@ -268,6 +269,8 @@ pub struct ProjectModelConfig {
     pub incremental_predicates: Option<Vec<String>>,
     #[serde(rename = "+incremental_strategy")]
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
+    #[serde(rename = "+constraints")]
+    pub constraints: Option<Vec<ModelConstraint>>,
     #[serde(rename = "+initialize")]
     pub initialize: Option<String>,
     #[serde(rename = "+scheduler")]
@@ -590,6 +593,10 @@ pub struct ModelConfig {
     pub materialized: Option<DbtMaterialization>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
     pub incremental_predicates: Option<Vec<String>>,
+    // Model-level constraints authored via `{{ config(constraints=[...]) }}`, as opposed to
+    // the schema.yml `constraints:` model property (see `resolve_models.rs`, which prefers
+    // this when set and otherwise falls back to the schema.yml-resolved value).
+    pub constraints: Option<Vec<ModelConstraint>>,
     pub batch_size: Option<DbtBatchSize>,
     #[resolved(promote, default = 1)]
     pub lookback: Option<i32>,
@@ -703,6 +710,7 @@ impl From<ProjectModelConfig> for ModelConfig {
             grants: config.grants,
             group: config.group,
             incremental_predicates: config.incremental_predicates,
+            constraints: config.constraints,
             incremental_strategy: config.incremental_strategy,
             location: config.location,
             lookback: config.lookback,
@@ -868,6 +876,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             grants: config.grants,
             group: config.group,
             incremental_predicates: config.incremental_predicates,
+            constraints: config.constraints,
             incremental_strategy: config.incremental_strategy,
             location: config.location,
             lookback: config.lookback,
@@ -1059,6 +1068,7 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
             materialized,
             incremental_strategy,
             incremental_predicates,
+            constraints,
             batch_size,
             lookback,
             begin,
@@ -1150,6 +1160,7 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
                 materialized,
                 incremental_strategy,
                 incremental_predicates,
+                constraints,
                 batch_size,
                 lookback,
                 begin,

@@ -309,12 +309,16 @@ pub fn model_sql_semantic_extra_config(
         extras.remove("on_schema_change");
     }
 
-    // `constraints` lives on the resolved model attributes (merging schema.yml
-    // declarations and any `{{ config(constraints=...) }}` override), not on
-    // `ModelConfig` directly, so it can't be picked up in
-    // `model_config_sql_semantic_extra_config`. Only include it when set,
-    // mirroring the Python plugin's `if key in node_config` gating.
-    if !model.__model_attr__.constraints.is_empty() {
+    // `{{ config(constraints=...) }}` is picked up directly from `ModelConfig` in
+    // `model_config_sql_semantic_extra_config` above. dbt-core has no functional
+    // path from `config()` to a model's real constraints (only the schema.yml
+    // `constraints:` property feeds `model.constraints`/contract enforcement), so
+    // this only affects cache-key hashing here, not enforcement (matching dbt-core
+    // parity — see `resolve_versioned_fields` in dbt-parser, which is the sole
+    // functional source of `__model_attr__.constraints`). Only fall back to the
+    // schema.yml-resolved value when `config()` didn't set one, so cache
+    // invalidation still reacts to schema.yml-declared constraint changes too.
+    if !extras.contains_key("constraints") && !model.__model_attr__.constraints.is_empty() {
         extras.insert(
             "constraints".to_string(),
             Some(serde_json::to_value(&model.__model_attr__.constraints)?),
@@ -403,6 +407,7 @@ fn model_config_sql_semantic_extra_config(
         "merge_exclude_columns",
         config.merge_exclude_columns.as_ref(),
     )?;
+    insert_json(&mut extras, "constraints", config.constraints.as_ref())?;
     insert_json(&mut extras, "contract", config.contract.as_ref())?;
     insert_json(&mut extras, "unique_key", config.unique_key.as_ref())?;
     insert_json(&mut extras, "grants", config.grants.as_ref())?;
@@ -1186,6 +1191,53 @@ mod tests {
             request.semantic_extras.get("auto_liquid_cluster").unwrap(),
             "true"
         );
+    }
+
+    #[test]
+    fn model_semantic_extras_constraints_prefer_config_over_properties() {
+        use dbt_schemas::schemas::common::ConstraintType;
+        use dbt_schemas::schemas::properties::ModelConstraint;
+
+        // `__model_attr__.constraints` (schema.yml-property-derived, the only source
+        // dbt-core actually enforces) should be used for the cache-key extras only
+        // as a fallback when `{{ config(constraints=...) }}` didn't set anything.
+        let mut model = make_model(DbtMaterialization::Table);
+        model.__model_attr__.constraints = vec![ModelConstraint {
+            type_: ConstraintType::PrimaryKey,
+            columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        }];
+        model.deprecated_config.constraints = Some(vec![ModelConstraint {
+            type_: ConstraintType::NotNull,
+            expression: Some("id".to_string()),
+            ..Default::default()
+        }]);
+
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
+
+        let constraints = request.semantic_extras.get("constraints").unwrap();
+        assert!(constraints.contains("\"type\":\"not_null\""));
+        assert!(!constraints.contains("primary_key"));
+    }
+
+    #[test]
+    fn model_semantic_extras_constraints_fall_back_to_properties_when_config_unset() {
+        use dbt_schemas::schemas::common::ConstraintType;
+        use dbt_schemas::schemas::properties::ModelConstraint;
+
+        let mut model = make_model(DbtMaterialization::Table);
+        model.__model_attr__.constraints = vec![ModelConstraint {
+            type_: ConstraintType::PrimaryKey,
+            columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        }];
+
+        let request =
+            build_model_sql_request(&model, sql_context(false), &test_resolver()).unwrap();
+
+        let constraints = request.semantic_extras.get("constraints").unwrap();
+        assert!(constraints.contains("primary_key"));
     }
 
     #[test]

@@ -1196,6 +1196,9 @@ impl From<ManifestModelConfig> for ModelConfig {
             materialized: config.materialized,
             incremental_strategy: config.incremental_strategy,
             incremental_predicates: config.incremental_predicates,
+            // ManifestModelConfig has no constraints field: dbt-core keeps constraints on
+            // the node itself (`__model_attr__.constraints`), not under `config`.
+            constraints: None,
             batch_size: config.batch_size,
             lookback: config.lookback,
             begin: config.begin,

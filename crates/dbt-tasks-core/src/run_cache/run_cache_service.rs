@@ -3357,6 +3357,18 @@ async fn collect_query_dependencies(
         Err(err) => return query_dependencies_for_parse_error(ctx, node, sql, err).await,
     };
     if relations.is_empty() {
+        // A custom materialization's compiled SQL isn't necessarily a query,
+        // so an empty SQL-derived result isn't proof of no upstreams. Fall
+        // back to the manifest's depends_on graph. Built-ins are exempt:
+        // their compiled SQL is always a real query, so an empty result is
+        // trustworthy.
+        if node_uses_custom_materialization(node, &ctx.inner.materialization_resolver) {
+            let manifest_relations = cacheable_manifest_dependency_relations(ctx, node);
+            if !manifest_relations.is_empty() {
+                return collect_query_dependencies_from_relations(ctx, node, manifest_relations)
+                    .await;
+            }
+        }
         return Ok(CollectedViewQueryDependencies::complete(
             Vec::new(),
             BTreeSet::new(),
@@ -3464,6 +3476,13 @@ async fn query_dependencies_for_parse_error(
     };
 
     if relations.is_empty() {
+        // Same fallback as in `collect_query_dependencies`: an empty
+        // expression-parse result isn't proof of no upstreams.
+        let manifest_relations = cacheable_manifest_dependency_relations(ctx, node);
+        if !manifest_relations.is_empty() {
+            return collect_query_dependencies_from_relations(ctx, node, manifest_relations).await;
+        }
+
         emit_trace_log_message(|| {
             format!(
                 "dbt State dependency extraction accepted standalone SQL expression for custom materialization {unique_id}"
@@ -3477,6 +3496,38 @@ async fn query_dependencies_for_parse_error(
         ));
     }
     collect_query_dependencies_from_relations(ctx, node, relations).await
+}
+
+/// Resolves a node's manifest depends_on graph into relations, restricted
+/// to cacheable node kinds. Fallback dependency source when SQL-derived
+/// extraction finds none.
+fn cacheable_manifest_dependency_relations(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+) -> BTreeMap<String, Arc<dyn BaseRelation>> {
+    let mut relations = BTreeMap::new();
+    for dep_id in &node.base().depends_on.nodes {
+        let Some(dep_node) = ctx.nodes().get_node(dep_id) else {
+            continue;
+        };
+        if !is_cacheable_resource_type(dep_node.resource_type()) {
+            continue;
+        }
+        let Ok((name, relation)) = relation_for_node(ctx, dep_node) else {
+            continue;
+        };
+        relations.insert(name, relation);
+    }
+    relations
+}
+
+/// Mirrors the `is_cacheable` filter used elsewhere in the run-cache path:
+/// only these node kinds participate in dependency freshness checks.
+fn is_cacheable_resource_type(resource_type: NodeType) -> bool {
+    matches!(
+        resource_type,
+        NodeType::Source | NodeType::Model | NodeType::Snapshot | NodeType::Seed
+    )
 }
 
 fn node_uses_custom_materialization(
@@ -4390,6 +4441,135 @@ mod tests {
         assert!(deps.dependencies.is_empty());
         assert!(deps.seen_tables.is_empty());
         assert!(deps.parser_seen_relations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn custom_materialization_bare_relation_reference_falls_back_to_manifest_deps() {
+        let mut model = make_model(
+            "model.test.copy_target",
+            "db",
+            "analytics",
+            "copy_target",
+            DbtMaterialization::Unknown("custom_table".to_string()),
+        );
+        Arc::make_mut(&mut model)
+            .__base_attr__
+            .depends_on
+            .nodes
+            .push("model.test.copy_source".to_string());
+        let upstream = make_model(
+            "model.test.copy_source",
+            "db",
+            "analytics",
+            "copy_source",
+            DbtMaterialization::Table,
+        );
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes_from(vec![model.clone(), upstream], vec![]),
+            ["model.test.copy_target".to_string()].into_iter().collect(),
+        );
+
+        let deps =
+            collect_query_dependencies(&ctx, model.as_ref(), "db.analytics.copy_source", false)
+                .await
+                .expect("bare relation reference for a custom materialization should be cacheable");
+
+        assert!(
+            !deps.metadata_complete || !deps.seen_tables.is_empty(),
+            "must not silently report zero dependencies when depends_on.nodes has a real upstream"
+        );
+        assert!(deps.dependencies.is_empty());
+    }
+
+    #[test]
+    fn cacheable_manifest_dependency_relations_resolves_only_cacheable_deps() {
+        let mut model = make_model(
+            "model.test.copy_target",
+            "db",
+            "analytics",
+            "copy_target",
+            DbtMaterialization::Unknown("custom_table".to_string()),
+        );
+        Arc::make_mut(&mut model)
+            .__base_attr__
+            .depends_on
+            .nodes
+            .push("model.test.copy_source".to_string());
+        Arc::make_mut(&mut model)
+            .__base_attr__
+            .depends_on
+            .nodes
+            .push("exposure.test.some_dashboard".to_string());
+        let upstream = make_model(
+            "model.test.copy_source",
+            "db",
+            "analytics",
+            "copy_source",
+            DbtMaterialization::Table,
+        );
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes_from(vec![model.clone(), upstream], vec![]),
+            ["model.test.copy_target".to_string()].into_iter().collect(),
+        );
+
+        let relations = cacheable_manifest_dependency_relations(&ctx, model.as_ref());
+
+        assert_eq!(relations.len(), 1);
+        assert!(relations.contains_key(&fqn_of("db", "analytics", "copy_source")));
+    }
+
+    #[tokio::test]
+    async fn custom_materialization_parse_error_expression_empty_falls_back_to_manifest_deps() {
+        let mut model = make_model(
+            "model.test.copy_target",
+            "db",
+            "analytics",
+            "copy_target",
+            DbtMaterialization::Unknown("custom_table".to_string()),
+        );
+        Arc::make_mut(&mut model)
+            .__base_attr__
+            .depends_on
+            .nodes
+            .push("model.test.copy_source".to_string());
+        let upstream = make_model(
+            "model.test.copy_source",
+            "db",
+            "analytics",
+            "copy_source",
+            DbtMaterialization::Table,
+        );
+        let ctx = test_task_runner_ctx_with_nodes(
+            None,
+            RunCacheMode::ReadWrite,
+            false,
+            Arc::new(EmptySourcesExtractor),
+            nodes_from(vec![model.clone(), upstream], vec![]),
+            ["model.test.copy_target".to_string()].into_iter().collect(),
+        );
+
+        let deps = query_dependencies_for_parse_error(
+            &ctx,
+            model.as_ref(),
+            "db.analytics.copy_source",
+            synthetic_extraction_error(),
+        )
+        .await
+        .expect("bare relation reference for a custom materialization should be cacheable");
+
+        assert!(
+            !deps.metadata_complete || !deps.seen_tables.is_empty(),
+            "must not silently report zero dependencies when depends_on.nodes has a real upstream"
+        );
+        assert!(deps.dependencies.is_empty());
     }
 
     #[tokio::test]

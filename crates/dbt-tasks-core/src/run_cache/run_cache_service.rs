@@ -1997,6 +1997,29 @@ async fn submit_sql_with_speculation(
         return Ok(None);
     };
 
+    // Re-check readiness at the last responsible moment. `build_sql_request`
+    // blocks on the view-definition traversal (fetching view DDL from the
+    // warehouse) while the background prefetch runs concurrently, so the
+    // prefetch often completes during that window. The decision above was made
+    // against a now-stale snapshot: if the prefetch is ready, submit
+    // non-speculatively with fully-resolved epochs instead of wasting a
+    // speculative round-trip that would only come back `Undecided` and force a
+    // resubmit. `is_prefetch_ready` is a cheap atomic read, and the rebuild
+    // reuses the traverser's warm cache, so no view definition is re-fetched.
+    if is_prefetch_ready(ctx) {
+        return build_and_submit_non_speculative(
+            ctx,
+            node,
+            sql,
+            is_view,
+            full_refresh,
+            microbatch_window,
+            client,
+            &build_request,
+        )
+        .await;
+    }
+
     let unique_id = node.unique_id();
     let verdict = client
         .submit_enriched_sql_speculative(request.clone())
@@ -5072,6 +5095,64 @@ mod tests {
             "a ready prefetch must skip the speculative RPC entirely"
         );
         assert_eq!(client.submitted_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn prefetch_completing_during_request_build_skips_speculation() {
+        // Regression test for the last-responsible-moment re-check. The
+        // speculative-vs-regular decision is taken at entry, before
+        // `build_sql_request` runs. In production `build_sql_request` blocks on
+        // the view-definition traversal (inside `build_sql_context`), during
+        // which the background prefetch frequently completes. This test drives
+        // the same observable condition deterministically: the prefetch is in
+        // flight at entry but becomes ready before `build_sql_request` returns.
+        // The node must then re-check and submit non-speculatively, leaving the
+        // canned skip verdict below unconsulted.
+        let client = Arc::new(RecordingRunCacheClient::with_speculative_response(
+            speculative_skip_response(),
+        ));
+        let shared: dbt_state::service_client::SharedRunCacheServiceClient = client.clone();
+        let ctx = test_task_runner_ctx(Some(shared.clone()));
+        // Started but not yet done: the entry-point readiness check sees the
+        // prefetch in flight and enters the speculative branch.
+        ctx.inner.run_cache_ctx.prefetch.mark_started();
+        let model = speculative_test_model();
+
+        // The `build_request` closure is invoked at the end of
+        // `build_sql_request`, after `build_sql_context` returns (that is where
+        // the view traversal runs in production). Marking the prefetch done here
+        // models it completing by the time the request build finishes — exactly
+        // the state the re-check inspects. `build_and_submit_non_speculative`
+        // invokes the closure a second time; `mark_done` is idempotent.
+        let build = |context| {
+            ctx.inner.run_cache_ctx.prefetch.mark_done();
+            build_model_sql_request(model.as_ref(), context, &ctx.inner.materialization_resolver)
+        };
+
+        let result = submit_sql_with_speculation(
+            &ctx,
+            model.as_ref(),
+            "select 'alice' as first_name".to_string(),
+            false,
+            false,
+            None,
+            &shared,
+            build,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_some());
+        assert_eq!(
+            client.speculative_submitted_count(),
+            0,
+            "a prefetch that completes during the build must skip the speculative RPC"
+        );
+        assert_eq!(
+            client.submitted_count(),
+            1,
+            "the node must fall through to a single non-speculative submit"
+        );
     }
 
     #[tokio::test]

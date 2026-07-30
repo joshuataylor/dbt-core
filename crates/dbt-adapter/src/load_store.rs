@@ -48,9 +48,10 @@ impl ResultStore {
 
             // Record rows_affected on the NodeEvaluated span if non-negative.
             // dbt-core uses -1 to indicate unknown rows affected. Telemetry uses `None` for unknown.
-            if response.rows_affected >= 0 {
+            let rows_affected = response.rows_affected_i64();
+            if rows_affected >= 0 {
                 find_and_update_span_attrs::<_, NodeEvaluated>(|attrs| {
-                    attrs.rows_affected = Some(response.rows_affected as u64);
+                    attrs.rows_affected = Some(rows_affected as u64);
                 });
             }
 
@@ -135,12 +136,10 @@ impl ResultStore {
             };
 
             // Create adapter response (keep original semantics: default to 0 if not present)
-            let response = AdapterResponse {
-                message: message.unwrap_or_default(),
-                code: code.unwrap_or_default(),
-                rows_affected,
-                query_id: None,
-            };
+            let response = AdapterResponse::new()
+                .with_message(message.unwrap_or_default())
+                .with_code(code.unwrap_or_default())
+                .with_rows_affected(rows_affected);
             let mut results = store.results.lock().unwrap();
             let value = Value::from_object(ResultObject::new(
                 response,

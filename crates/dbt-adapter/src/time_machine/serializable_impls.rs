@@ -490,12 +490,11 @@ mod tests {
 
     #[test]
     fn test_adapter_response_roundtrip() {
-        let original = crate::response::AdapterResponse {
-            message: "SUCCESS 42".to_string(),
-            code: "SUCCESS".to_string(),
-            rows_affected: 42,
-            query_id: Some("query-123".to_string()),
-        };
+        let original = crate::response::AdapterResponse::new()
+            .with_message("SUCCESS 42")
+            .with_code("SUCCESS")
+            .with_rows_affected(42)
+            .with_query_id("query-123");
 
         let json = original.to_time_machine_json();
         assert_eq!(json["message"], "SUCCESS 42");
@@ -506,8 +505,8 @@ mod tests {
         let response = value
             .downcast_object::<crate::response::AdapterResponse>()
             .unwrap();
-        assert_eq!(response.message, original.message);
-        assert_eq!(response.rows_affected, original.rows_affected);
+        assert_eq!(response.message(), original.message());
+        assert_eq!(response.rows_affected(), original.rows_affected());
     }
 
     #[test]

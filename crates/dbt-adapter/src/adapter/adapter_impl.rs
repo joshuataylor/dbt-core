@@ -1075,10 +1075,14 @@ impl AdapterImpl {
 
         let last_batch = last_batch.expect("last_batch should never be None");
 
-        let response = AdapterResponse::new(
-            last_batch.rows_affected(self.adapter_type()),
-            last_batch.query_id(self.adapter_type()),
-        );
+        let rows_affected = last_batch.rows_affected(self.adapter_type());
+        let mut response = AdapterResponse::new()
+            .with_message(format!("SUCCESS {}", rows_affected))
+            .with_code("SUCCESS")
+            .with_rows_affected(rows_affected);
+        if let Some(query_id) = last_batch.query_id(self.adapter_type()) {
+            response = response.with_query_id(query_id);
+        }
 
         // Deduplicate column names to match dbt-core's behavior, which renames
         // duplicate columns to `col_2`, `col_3`, etc.
@@ -1160,12 +1164,10 @@ impl AdapterImpl {
                     }
                 }
             }
-            let response = AdapterResponse {
-                message: "execute".to_string(),
-                code: sql.to_string(),
-                rows_affected: 1,
-                query_id: None,
-            };
+            let response = AdapterResponse::new()
+                .with_message("execute".to_string())
+                .with_code(sql.to_string())
+                .with_rows_affected(1);
 
             if let Some(columns) = seed_column_values(sql) {
                 let cols = columns

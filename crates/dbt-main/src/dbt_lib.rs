@@ -10,15 +10,16 @@ use dbt_adapter::{
 };
 use dbt_clap_core::{
     Cli, Command, CompileArgs, CoreCommand, DocsServeArgs as ClapDocsServeArgs, DocsSubcommand,
-    InternalCommand, LoginSubcommand, ProjectTemplate, ShowArgs,
+    InternalCommand, LoginSubcommand, ProjectTemplate, ShowArgs, StateSubcommand,
 };
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::io_utils::StatusReporter;
+use dbt_common::io_utils::{StatusReporter, determine_project_dir};
 use dbt_common::{
     ErrorCode, FsResult,
     artifact_io::write_artifact_to_file,
     constants::{
-        DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, ERROR, INSTALLING, VALIDATING,
+        DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, DBT_PROJECT_YML, ERROR,
+        INSTALLING, VALIDATING,
     },
     create_root_info_span, fs_err,
     io_args::{DisplayFormat, EvalArgs, IoArgs, Phases, ShowOptions, SystemArgs},
@@ -76,6 +77,7 @@ use dbt_schemas::{
     },
     state::ResolverState,
 };
+use dbt_state::explain::{StateExplainOptions, execute_state_explain};
 use dbt_tasks_core::{
     RunTaskResults, task_runner_hooks::TaskRunnerHooksFactory,
     utils::write_run_results_json_or_warn,
@@ -258,6 +260,49 @@ async fn do_execute_fs(
         .hooks
         .will_execute(&cli, eval_arg, &feature_stack)
         .await?;
+
+    if let Command::Core(State(state_args)) = &cli.command {
+        let StateSubcommand::Explain(explain_args) = &state_args.subcommand;
+        if state_args.common_args.selector.is_some() {
+            let err = fs_err!(
+                ErrorCode::InvalidArgument,
+                "`dbt state explain` does not support --selector. Use --select and --exclude to filter explain output."
+            );
+            emit_error_log_from_fs_error(err.as_ref(), eval_arg.io.status_reporter.as_ref());
+            return Err(FsError::exit_with_status(1));
+        }
+        let project_dir = state_args
+            .common_args
+            .project_dir
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(|| {
+                if explain_args.log_file.is_some() {
+                    std::env::current_dir().map_err(Into::into)
+                } else {
+                    determine_project_dir(&[], DBT_PROJECT_YML)
+                }
+            })?;
+        let manage_state = state_args.common_args.get_manage_state(&project_dir, true);
+        let result = execute_state_explain(StateExplainOptions {
+            project_dir,
+            log_path: state_args.common_args.log_path.clone(),
+            log_file: explain_args.log_file.clone(),
+            select: state_args.common_args.select.clone(),
+            exclude: state_args.common_args.exclude.clone(),
+            manage_state,
+            verbose: explain_args.verbose,
+        })
+        .await;
+        return match result {
+            Ok(()) => Ok(()),
+            Err(err) if err.exit_status().is_some() => Err(err),
+            Err(err) => {
+                emit_error_log_from_fs_error(err.as_ref(), eval_arg.io.status_reporter.as_ref());
+                Err(FsError::exit_with_status(1))
+            }
+        };
+    }
 
     if let Command::Core(Man(_)) = &cli.command {
         return execute_man_command(eval_arg).await;
@@ -1481,7 +1526,7 @@ async fn run_docs_serve(
     project_dir: &std::path::Path,
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
-    let has_dbt_state = common_args.get_manage_state(project_dir);
+    let has_dbt_state = common_args.get_manage_state(project_dir, false);
     let send_anonymous_usage_stats =
         common_args.get_send_anonymous_usage_stats_for_project(project_dir);
     let args = dbt_docs_server::DocsServeArgs {

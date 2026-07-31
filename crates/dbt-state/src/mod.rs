@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod explain;
 pub mod hash;
 pub mod metadata_cache;
 pub mod node_session;

@@ -10,6 +10,7 @@ use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::{DisplayFormat, EvalArgs, ReplayMode};
 use dbt_common::io_args::{Phases, RunCacheMode};
+use dbt_common::node_selector::SelectExpression;
 use dbt_common::static_analysis::{
     is_static_analysis_off_or_baseline, normalize_static_analysis_kind,
 };
@@ -83,6 +84,10 @@ pub struct RunTasksArgs {
     pub phase: Phases,
     /// Optional (resolved) sampling plan to locate local sampled data for sources
     pub sample_renaming: BTreeMap<String, (String, String, String)>,
+    /// Parsed select expression from the invocation.
+    pub select: Option<SelectExpression>,
+    /// Parsed exclude expression from the invocation.
+    pub exclude: Option<SelectExpression>,
     /// Backend used for local execution of runnable nodes
     pub local_execution_backend: LocalExecutionBackendKind,
     /// Sidecar/service should not time out. (Used by REPL to keep the runner alive across multiple commands.)
@@ -152,6 +157,8 @@ impl RunTasksArgs {
             favor_state: arg.favor_state,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
+            select: arg.select.clone(),
+            exclude: arg.exclude.clone(),
             phase: arg.phase.clone(),
             local_execution_backend: arg.local_execution_backend,
             long_living: arg.long_living,

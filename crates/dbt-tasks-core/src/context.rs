@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ use dbt_schemas::schemas::nodes::TestMetadata;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{BatchResults, InternalDbtNode, InternalDbtNodeAttributes, Nodes};
 use dbt_schemas::state::{DbtProfile, DbtRuntimeConfig, NodeResolverTracker, ResolverState};
+use dbt_state::explain::StateExplainDevClone;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
@@ -44,11 +46,13 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 /// construction time from the extended-context factory.
 pub struct RunCacheCtx {
     pub run_cache_metadata: Arc<RunCacheMetadataCache>,
-    pub run_cache_dev_cloned_nodes: DashMap<String, ()>,
+    pub run_cache_dev_cloned_nodes: DashMap<String, StateExplainDevClone>,
     pub run_cache_deferred_fqns: BTreeSet<String>,
     pub run_cache_service_requested: bool,
     pub run_cache_service_config: Option<RunCacheServiceConfig>,
     pub run_cache_service_client: Option<SharedRunCacheServiceClient>,
+    /// Run-scoped dbt State explain log file, when state config is available.
+    pub state_explain_log_path: Option<PathBuf>,
     pub view_traverser: Option<Arc<ViewDefinitionTraverser>>,
     /// Run-start warehouse clock, set once in `run_cache_service_before_run`.
     /// When present, `confirm_run_cache_service_execution` uses it to stamp

@@ -179,6 +179,7 @@ pub enum FsCommand {
     Debug,
     Retry,
     Docs,
+    State,
     Completions,
     /// Undocumented plumbing commands (e.g. `dbt internal get-distribution-info`)
     Internal,
@@ -211,6 +212,7 @@ impl FsCommand {
             FsCommand::Debug => "debug",
             FsCommand::Retry => "retry",
             FsCommand::Docs => "docs",
+            FsCommand::State => "state",
             FsCommand::Completions => "completions",
             FsCommand::Internal => "internal",
             FsCommand::Extension(s) => s,

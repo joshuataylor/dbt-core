@@ -43,6 +43,9 @@ use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
 };
+use dbt_state::explain::{
+    StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo, append_state_explain_log_record,
+};
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::node_session::ExecutionGuard;
 use dbt_state::proto::query_cache::{
@@ -1141,6 +1144,7 @@ pub async fn run_cache_service_before_execution(
             ),
             None,
         );
+        write_state_explain_node(ctx, node, None);
         return RunCacheServiceDecision::execute_without_confirmation();
     }
 
@@ -1153,15 +1157,18 @@ pub async fn run_cache_service_before_execution(
             ),
             None,
         );
+        write_state_explain_node(ctx, node, None);
         return RunCacheServiceDecision::execute_without_confirmation();
     };
     if client.is_disabled() {
+        write_state_explain_node(ctx, node, None);
         return RunCacheServiceDecision::execute_without_confirmation();
     }
 
     if !should_honor_service_skip(ctx) {
         let result =
             prepare_write_only_execution_record(ctx, node, task_result, microbatch_window).await;
+        write_state_explain_node(ctx, node, None);
         return match result {
             Ok(Some(record)) => RunCacheServiceDecision::execute_with_record(record),
             Ok(None) => {
@@ -1196,10 +1203,12 @@ pub async fn run_cache_service_before_execution(
                     "dbt State service submit skipped for no-op model materialization (node {unique_id}, materialization {materialization})"
                 )
             });
+            write_state_explain_node(ctx, node, None);
             return RunCacheServiceDecision::execute_without_confirmation();
         }
         if model.common().language.as_deref() != Some("sql") {
             record_unsupported_node(node, "non-SQL model");
+            write_state_explain_node(ctx, node, None);
             return RunCacheServiceDecision::execute_without_confirmation();
         }
         submit_model(ctx, model, task_result, client, microbatch_window).await
@@ -1211,6 +1220,7 @@ pub async fn run_cache_service_before_execution(
         submit_test(ctx, test, task_result, client).await
     } else {
         record_unsupported_node(node, "unsupported node type");
+        write_state_explain_node(ctx, node, None);
         return RunCacheServiceDecision::execute_without_confirmation();
     };
 
@@ -1230,12 +1240,20 @@ pub async fn run_cache_service_before_execution(
                 .run_cache_ctx
                 .run_cache_dev_cloned_nodes
                 .contains_key(node.unique_id().as_str());
-            relabel_skip_for_dev_cloned_node(is_dev_cloned, decision)
+            let decision = relabel_skip_for_dev_cloned_node(is_dev_cloned, decision);
+            write_state_explain_node(
+                ctx,
+                node,
+                state_explain_execution_decision_id(Some(&outcome.response), &decision),
+            );
+            decision
         }
         Ok(Some(RunCacheSubmitResult::ExecuteUntracked(record))) => {
             // A speculative `ReadyToExecuteUntracked` verdict: execute now and
             // record the outcome after the fact. Never a Skip, so no dev-cloned
-            // relabel applies.
+            // relabel applies. The verdict carries no execution decision id, so
+            // the node only gets a local fallback explain record.
+            write_state_explain_node(ctx, node, None);
             RunCacheServiceDecision::execute_with_record(record)
         }
         Ok(None) => {
@@ -1243,9 +1261,13 @@ pub async fn run_cache_service_before_execution(
             emit_trace_log_message(|| {
                 format!("dbt State service submit skipped for node {unique_id}; executing normally")
             });
+            write_state_explain_node(ctx, node, None);
             RunCacheServiceDecision::execute_without_confirmation()
         }
-        Err(_) if client.is_disabled() => RunCacheServiceDecision::execute_without_confirmation(),
+        Err(_) if client.is_disabled() => {
+            write_state_explain_node(ctx, node, None);
+            RunCacheServiceDecision::execute_without_confirmation()
+        }
         Err(err) => {
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,
@@ -1255,6 +1277,7 @@ pub async fn run_cache_service_before_execution(
                 ),
                 None,
             );
+            write_state_explain_node(ctx, node, None);
             // The request failed, so the node rebuilds without tracking; its
             // cached epoch/existence (e.g. from the prefetch, already awaited by
             // the time a submit errors) is now stale. Evict it here so
@@ -1264,6 +1287,142 @@ pub async fn run_cache_service_before_execution(
             evict_node_metadata_for_failed_state_request(ctx, node);
             RunCacheServiceDecision::execute_without_confirmation()
         }
+    }
+}
+
+fn write_state_explain_node(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    execution_decision_id: Option<String>,
+) {
+    let Some(path) = ctx.inner.run_cache_ctx.state_explain_log_path.as_ref() else {
+        return;
+    };
+    let record = StateExplainLogRecord::Node(StateExplainNode {
+        node_unique_id: node.unique_id(),
+        node_name: node.name(),
+        node_info: state_explain_node_info(ctx, node),
+        execution_decision_id,
+    });
+    if let Err(err) = append_state_explain_log_record(path, &record) {
+        emit_warn_log_message(
+            ErrorCode::StateServiceWarn,
+            format!("Failed to write dbt State explain node record: {err}"),
+            None,
+        );
+    }
+}
+
+fn state_explain_execution_decision_id(
+    response: Option<&SubmitSqlResponse>,
+    decision: &RunCacheServiceDecision,
+) -> Option<String> {
+    let response = response?;
+    match decision {
+        RunCacheServiceDecision::Execute {
+            after_success: RunCacheAfterSuccess::Confirm(_),
+            ..
+        }
+        | RunCacheServiceDecision::Clone { .. }
+        | RunCacheServiceDecision::Skip { .. } => execution_decision_id_from_response(response),
+        RunCacheServiceDecision::Execute { .. } | RunCacheServiceDecision::Disabled => None,
+    }
+}
+
+fn state_explain_node_info(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+) -> StateExplainNodeInfo {
+    let mut node_info =
+        state_explain_node_info_for_parts(ctx.adapter_type(), ctx.inner.arg.full_refresh, node);
+    node_info.dev_clone = ctx
+        .inner
+        .run_cache_ctx
+        .run_cache_dev_cloned_nodes
+        .get(node.unique_id().as_str())
+        .map(|entry| entry.value().clone());
+    node_info.deferrals = state_explain_deferrals(ctx, node);
+    node_info
+}
+
+fn state_explain_deferrals(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+) -> HashMap<String, String> {
+    let Some(defer_nodes) = ctx.defer_nodes() else {
+        return HashMap::new();
+    };
+
+    node.base()
+        .depends_on
+        .nodes
+        .iter()
+        .filter_map(|dependency_id| {
+            let deferred_node = defer_nodes.get_node(dependency_id)?;
+            let deferred_fqn = create_relation_from_node(ctx.adapter_type(), deferred_node, None)
+                .ok()?
+                .semantic_fqn();
+            if !ctx
+                .inner
+                .run_cache_ctx
+                .run_cache_deferred_fqns
+                .contains(&deferred_fqn)
+            {
+                return None;
+            }
+
+            let local_node = ctx.nodes().get_node(dependency_id)?;
+            let local_fqn = create_relation_from_node(ctx.adapter_type(), local_node, None)
+                .ok()?
+                .semantic_fqn();
+            Some((local_fqn, deferred_fqn))
+        })
+        .collect()
+}
+
+fn state_explain_node_info_for_parts(
+    adapter_type: AdapterType,
+    full_refresh: bool,
+    node: &dyn InternalDbtNodeAttributes,
+) -> StateExplainNodeInfo {
+    let materialized = node.base().materialized.clone();
+    // No-op materializations are inlined into their consumers, so they never get
+    // a warehouse relation. Reporting one would name a table that cannot exist.
+    let is_ephemeral = is_no_op_model_materialization(materialized.clone());
+    let fqn = if is_ephemeral {
+        String::new()
+    } else {
+        create_relation_from_node(adapter_type, node, None)
+            .map(|relation| relation.semantic_fqn())
+            .unwrap_or_default()
+    };
+    let is_full_refresh = if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
+        effective_full_refresh(full_refresh, model.deprecated_config.full_refresh)
+    } else if let Some(snapshot) = node.as_any().downcast_ref::<DbtSnapshot>() {
+        effective_full_refresh(full_refresh, snapshot.deprecated_config.full_refresh)
+    } else {
+        false
+    };
+
+    StateExplainNodeInfo {
+        fqn,
+        node_resource_type: node.resource_type().as_static_ref().to_string(),
+        is_view: materialized == DbtMaterialization::View,
+        is_table: matches!(
+            materialized,
+            DbtMaterialization::Table
+                | DbtMaterialization::Incremental
+                | DbtMaterialization::Snapshot
+                | DbtMaterialization::Seed
+        ),
+        is_ephemeral,
+        is_incremental_or_snapshot: matches!(
+            materialized,
+            DbtMaterialization::Incremental | DbtMaterialization::Snapshot
+        ),
+        is_full_refresh,
+        dev_clone: None,
+        deferrals: HashMap::new(),
     }
 }
 
@@ -3831,6 +3990,21 @@ fn record_service_decision(
     }
 }
 
+/// Extract the service-side explain decision id from a submit response.
+pub(crate) fn execution_decision_id_from_response(response: &SubmitSqlResponse) -> Option<String> {
+    match response.response.as_ref()? {
+        submit_sql_response::Response::ReadyToExecute(response) => {
+            response.execution_decision_id.clone()
+        }
+        submit_sql_response::Response::SkipExecution(response) => {
+            response.execution_decision_id.clone()
+        }
+        submit_sql_response::Response::ReadyToClone(response) => {
+            response.execution_decision_id.clone()
+        }
+    }
+}
+
 /// Map a `SkipExecutionResponse` to the [`NodeStatus`] used for downstream
 /// reporting. When the service admitted a candidate despite at least one
 /// upstream having changed (`explained_decision.is_stale == true`), emit
@@ -3966,6 +4140,51 @@ mod tests {
         model.__common_attr__.unique_id = "model.test.orders".to_string();
         model.__model_attr__.state = Some(state);
         model
+    }
+
+    #[test]
+    fn state_explain_node_info_identifies_incremental_model() {
+        let model = state_explain_model(DbtMaterialization::Incremental);
+
+        let info = state_explain_node_info_for_parts(AdapterType::Postgres, true, &model);
+
+        assert_eq!(info.node_resource_type, "model");
+        assert_eq!(info.fqn, "\"analytics\".\"marts\".\"orders\"");
+        assert!(!info.is_view);
+        assert!(info.is_table);
+        assert!(info.is_incremental_or_snapshot);
+        assert!(info.is_full_refresh);
+    }
+
+    #[test]
+    fn state_explain_node_info_reports_ephemeral_without_a_relation() {
+        let model = state_explain_model(DbtMaterialization::Ephemeral);
+
+        let info = state_explain_node_info_for_parts(AdapterType::Postgres, false, &model);
+
+        assert!(info.is_ephemeral);
+        assert!(!info.is_table);
+        assert!(!info.is_view);
+        // Ephemeral models are inlined into their consumers, so naming a
+        // warehouse relation for them would name a table that cannot exist.
+        assert!(info.fqn.is_empty());
+    }
+
+    #[test]
+    fn state_explain_node_info_identifies_seed_and_snapshot() {
+        let seed = state_explain_seed();
+        let snapshot = state_explain_snapshot();
+
+        let seed_info = state_explain_node_info_for_parts(AdapterType::Postgres, true, &seed);
+        let snapshot_info =
+            state_explain_node_info_for_parts(AdapterType::Postgres, false, &snapshot);
+
+        assert_eq!(seed_info.node_resource_type, "seed");
+        assert!(seed_info.is_table);
+        assert!(!seed_info.is_incremental_or_snapshot);
+        assert!(!seed_info.is_full_refresh);
+        assert_eq!(snapshot_info.node_resource_type, "snapshot");
+        assert!(snapshot_info.is_incremental_or_snapshot);
     }
 
     #[test]
@@ -6424,6 +6643,7 @@ mod tests {
                 run_cache_service_requested: true,
                 run_cache_service_config: Some(RunCacheServiceConfig::disabled()),
                 run_cache_service_client,
+                state_explain_log_path: None,
                 view_traverser: None,
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
@@ -7074,6 +7294,113 @@ mod tests {
     }
 
     #[test]
+    fn execution_decision_id_from_response_extracts_service_ids() {
+        let mut ready = ready_to_execute_response();
+        let Some(submit_sql_response::Response::ReadyToExecute(response)) = ready.response.as_mut()
+        else {
+            panic!("expected ready response");
+        };
+        response.execution_decision_id = Some("ready-id".to_string());
+
+        let mut skip = skip_execution_response();
+        let Some(submit_sql_response::Response::SkipExecution(response)) = skip.response.as_mut()
+        else {
+            panic!("expected skip response");
+        };
+        response.execution_decision_id = Some("skip-id".to_string());
+
+        let mut clone = ready_to_clone_response();
+        let Some(submit_sql_response::Response::ReadyToClone(response)) = clone.response.as_mut()
+        else {
+            panic!("expected clone response");
+        };
+        response.execution_decision_id = Some("clone-id".to_string());
+
+        assert_eq!(
+            execution_decision_id_from_response(&ready).as_deref(),
+            Some("ready-id")
+        );
+        assert_eq!(
+            execution_decision_id_from_response(&skip).as_deref(),
+            Some("skip-id")
+        );
+        assert_eq!(
+            execution_decision_id_from_response(&clone).as_deref(),
+            Some("clone-id")
+        );
+        assert!(execution_decision_id_from_response(&empty_response()).is_none());
+    }
+
+    #[test]
+    fn state_explain_execution_decision_id_allows_missing_service_response() {
+        let mut ready = ready_to_execute_response();
+        let Some(submit_sql_response::Response::ReadyToExecute(response)) = ready.response.as_mut()
+        else {
+            panic!("expected ready response");
+        };
+        response.execution_decision_id = Some("ready-id".to_string());
+        let ready_decision = record_service_decision("model.test.orders", &ready, 0, true);
+
+        assert_eq!(
+            state_explain_execution_decision_id(Some(&ready), &ready_decision).as_deref(),
+            Some("ready-id")
+        );
+        assert!(state_explain_execution_decision_id(None, &ready_decision).is_none());
+    }
+
+    #[test]
+    fn state_explain_execution_decision_id_ignores_data_test_skip_fallback() {
+        let mut response = skip_execution_response();
+        let Some(submit_sql_response::Response::SkipExecution(skip)) = response.response.as_mut()
+        else {
+            panic!("expected skip response");
+        };
+        skip.execution_decision_id = Some("skip-id".to_string());
+
+        let decision = record_service_decision(
+            "test.test.not_null_orders_order_date.abc123",
+            &response,
+            0,
+            true,
+        );
+
+        assert_eq!(
+            decision,
+            RunCacheServiceDecision::Execute {
+                after_success: RunCacheAfterSuccess::None,
+                sao_guard: None,
+            }
+        );
+        assert!(state_explain_execution_decision_id(Some(&response), &decision).is_none());
+    }
+
+    #[test]
+    fn state_explain_execution_decision_id_keeps_honored_skip() {
+        let mut response = skip_execution_response_with_test_result(CachedTestExecutionResult {
+            failures: 0,
+            should_warn: false,
+            should_error: false,
+        });
+        let Some(submit_sql_response::Response::SkipExecution(skip)) = response.response.as_mut()
+        else {
+            panic!("expected skip response");
+        };
+        skip.execution_decision_id = Some("skip-id".to_string());
+
+        let decision = record_service_decision(
+            "test.test.not_null_orders_order_date.abc123",
+            &response,
+            0,
+            true,
+        );
+
+        assert_eq!(
+            state_explain_execution_decision_id(Some(&response), &decision).as_deref(),
+            Some("skip-id")
+        );
+    }
+
+    #[test]
     fn clone_chain_depth_limit_for_adapter_returns_n_minus_1_for_prod() {
         assert_eq!(
             clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true),
@@ -7107,5 +7434,45 @@ mod tests {
             clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false),
             None
         );
+    }
+
+    fn state_explain_model(materialized: DbtMaterialization) -> DbtModel {
+        let mut model = DbtModel::default();
+        model.__common_attr__.unique_id = "model.test.orders".to_string();
+        model.__common_attr__.name = "orders".to_string();
+        set_state_explain_base(&mut model.__base_attr__, materialized, "orders");
+        model
+    }
+
+    fn state_explain_seed() -> DbtSeed {
+        let mut seed = DbtSeed::default();
+        seed.__common_attr__.unique_id = "seed.test.cities".to_string();
+        seed.__common_attr__.name = "cities".to_string();
+        set_state_explain_base(&mut seed.__base_attr__, DbtMaterialization::Seed, "cities");
+        seed
+    }
+
+    fn state_explain_snapshot() -> DbtSnapshot {
+        let mut snapshot = DbtSnapshot::default();
+        snapshot.__common_attr__.unique_id = "snapshot.test.orders_snapshot".to_string();
+        snapshot.__common_attr__.name = "orders_snapshot".to_string();
+        set_state_explain_base(
+            &mut snapshot.__base_attr__,
+            DbtMaterialization::Snapshot,
+            "orders_snapshot",
+        );
+        snapshot
+    }
+
+    fn set_state_explain_base(
+        base: &mut dbt_schemas::schemas::nodes::NodeBaseAttributes,
+        materialized: DbtMaterialization,
+        alias: &str,
+    ) {
+        base.database = "analytics".to_string();
+        base.schema = "marts".to_string();
+        base.alias = alias.to_string();
+        base.materialized = materialized;
+        base.quoting = ResolvedQuoting::trues();
     }
 }

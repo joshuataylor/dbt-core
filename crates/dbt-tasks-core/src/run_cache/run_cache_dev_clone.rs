@@ -10,6 +10,7 @@ use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::schemas::properties::StatePreClone;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtModel, DbtSnapshot, InternalDbtNode, InternalDbtNodeAttributes};
+use dbt_state::explain::StateExplainDevClone;
 use dbt_state::proto::query_cache::{CloneResponse, ReadyToCloneResponse, clone_response};
 use dbt_state::request_builder::{CloneRequestInput, execution_type_from_input};
 use dbt_state::service_config::CloneIncrementalInDev;
@@ -96,6 +97,10 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     .await
     {
         Ok(_) => {
+            let explain_dev_clone = StateExplainDevClone {
+                source_table_fqn: prepared.clone_source_table.clone(),
+                target_table_fqn: prepared.target_table.clone(),
+            };
             ctx.inner
                 .run_cache_ctx
                 .run_cache_metadata
@@ -115,7 +120,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
             ctx.inner
                 .run_cache_ctx
                 .run_cache_dev_cloned_nodes
-                .insert(node_id.to_string(), ());
+                .insert(node_id.to_string(), explain_dev_clone);
             confirm_run_cache_service_execution(
                 ctx,
                 node.as_ref(),

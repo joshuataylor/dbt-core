@@ -9,7 +9,7 @@ use strum_macros::Display;
 use crate::{
     BuildArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs, DebugArgs, DepsArgs,
     DocsArgs, InitArgs, InternalArgs, ListArgs, LoginArgs, ManArgs, ParseArgs, RetryArgs, RunArgs,
-    RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, TestArgs,
+    RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, StateArgs, TestArgs,
 };
 
 #[derive(clap::Subcommand, Debug, Clone, Display)]
@@ -56,6 +56,8 @@ pub enum CoreCommand {
     Docs(DocsArgs),
     /// Authenticate with dbt platform
     Login(LoginArgs),
+    /// dbt State utilities
+    State(StateArgs),
     /// Generate shell completion scripts
     #[clap(hide = true)]
     Completions(CompletionsArgs),
@@ -89,6 +91,7 @@ impl CoreCommand {
             Retry(..) => FsCommand::Retry,
             Docs(..) => FsCommand::Docs,
             Login(..) => FsCommand::Login,
+            State(..) => FsCommand::State,
             Completions(..) => FsCommand::Completions,
             Internal(..) => FsCommand::Internal,
         }
@@ -122,6 +125,7 @@ impl CoreCommand {
             Retry(args) => &args.common_args,
             Docs(args) => &args.common_args,
             Login(args) => &args.common_args,
+            State(args) => &args.common_args,
             Completions(args) => &args.common_args,
             Internal(args) => args.common_args(),
         }
@@ -151,6 +155,7 @@ impl CoreCommand {
             Retry(retry_args) => retry_args.static_analysis,
             Docs(_) => None,
             Login(_) => None,
+            State(_) => None,
             Completions(_) => None,
             Internal(_) => None,
         }

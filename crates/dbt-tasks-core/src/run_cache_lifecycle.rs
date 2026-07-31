@@ -160,11 +160,7 @@ async fn initialize_run_cache_service(
                     ),
                     None,
                 );
-                return Ok(RunCacheServiceLifecycle {
-                    requested: false,
-                    config: Some(config),
-                    client: None,
-                });
+                return Ok(disconnected_run_cache_service(config));
             }
         };
 
@@ -222,6 +218,16 @@ async fn initialize_run_cache_service(
                 client: None,
             })
         }
+    }
+}
+
+/// dbt State and the local cache path are mutually exclusive, so a client that failed
+/// to connect must leave the service unrequested for the local path to stay active.
+fn disconnected_run_cache_service(config: RunCacheServiceConfig) -> RunCacheServiceLifecycle {
+    RunCacheServiceLifecycle {
+        requested: false,
+        config: Some(config),
+        client: None,
     }
 }
 
@@ -291,10 +297,11 @@ mod tests {
     use dbt_state::service_client::{
         ClientVersionStatus, RunCacheServiceClient, RunCacheServiceError,
     };
+    use dbt_state::service_config::RunCacheServiceConfig;
 
     use super::{
-        RunTasksArgs, adapter_supports_dbt_state, should_initialize_run_cache_service,
-        validate_client_version_for_initialization,
+        RunTasksArgs, adapter_supports_dbt_state, disconnected_run_cache_service,
+        should_initialize_run_cache_service, validate_client_version_for_initialization,
     };
 
     fn args() -> RunTasksArgs {
@@ -305,6 +312,15 @@ mod tests {
         let mut args = args();
         args.run_cache_service = true;
         args
+    }
+
+    #[test]
+    fn client_init_failure_leaves_service_unrequested() {
+        let lifecycle = disconnected_run_cache_service(RunCacheServiceConfig::disabled());
+
+        assert!(!lifecycle.requested);
+        assert!(lifecycle.config.is_some());
+        assert!(lifecycle.client.is_none());
     }
 
     #[test]

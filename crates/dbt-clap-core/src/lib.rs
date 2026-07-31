@@ -366,7 +366,9 @@ got {:?}, expected an instance of {}",
     pub fn is_project_command(&self) -> bool {
         use CoreCommand::*;
         match &self.command {
-            Command::Core(Man(_) | Init(_) | Docs(_) | Login(_) | Completions(_) | Internal(_)) => {
+            Command::Core(
+                Man(_) | Init(_) | Docs(_) | Login(_) | State(_) | Completions(_) | Internal(_),
+            ) => {
                 // These commands do not require a project directory
                 false
             }
@@ -417,6 +419,7 @@ got {:?}, expected an instance of {}",
                 Retry(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Docs(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Login(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+                State(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Completions(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Internal(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
             },
@@ -478,6 +481,7 @@ got {:?}, expected an instance of {}",
                 Retry(args) => args.common_args.phase.clone().unwrap_or(Phases::All),
                 Docs(_args) => unreachable!("Docs command does not need a phase"),
                 Login(_args) => unreachable!("Login command does not need a phase"),
+                State(_args) => unreachable!("State command does not need a phase"),
                 Completions(_args) => unreachable!("Completions command does not need a phase"),
                 Internal(_args) => unreachable!("Internal command does not need a phase"),
             },
@@ -1293,7 +1297,7 @@ fn configure_run_cache(
         return;
     }
 
-    let manage_state = common_args.get_manage_state(&eval_args.io.in_dir);
+    let manage_state = common_args.get_manage_state(&eval_args.io.in_dir, false);
     if common_args.task_cache_url != NOOP || manage_state {
         eval_args.run_cache_service = manage_state;
         eval_args.run_cache_mode = if force_node_selection {
@@ -1446,6 +1450,35 @@ pub struct GetDistributionInfoArgs {
 
     #[clap(flatten)]
     pub common_args: CommonArgs,
+}
+
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+pub struct StateArgs {
+    #[clap(flatten)]
+    pub common_args: CommonArgs,
+
+    #[command(subcommand)]
+    pub subcommand: StateSubcommand,
+}
+
+impl StateArgs {
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        self.common_args.to_eval_args(arg, in_dir, out_dir)
+    }
+}
+
+#[derive(clap::Subcommand, Debug, Clone, Serialize, Deserialize)]
+pub enum StateSubcommand {
+    Explain(StateExplainArgs),
+}
+
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct StateExplainArgs {
+    #[arg(short, long)]
+    pub verbose: bool,
+
+    #[arg(short = 'l', long = "log-file")]
+    pub log_file: Option<PathBuf>,
 }
 
 impl ManArgs {
@@ -2401,11 +2434,14 @@ fn user_settings_path() -> Option<PathBuf> {
 }
 
 impl CommonArgs {
-    pub fn get_manage_state(&self, project_dir: &Path) -> bool {
+    /// `default` applies only when neither the flags, `DBT_ENGINE_MANAGE_STATE`,
+    /// `dbt_project.yml`, nor the user settings say anything.
+    pub fn get_manage_state(&self, project_dir: &Path, default: bool) -> bool {
         self.get_manage_state_with(
             project_dir,
             env::var_os(MANAGE_STATE_ENV),
             user_settings_path(),
+            default,
         )
     }
 
@@ -2422,6 +2458,7 @@ impl CommonArgs {
         project_dir: &Path,
         manage_state_env: Option<OsString>,
         user_settings_path: Option<PathBuf>,
+        default: bool,
     ) -> bool {
         if self.no_manage_state {
             return false;
@@ -2440,7 +2477,7 @@ impl CommonArgs {
         let env_value = parse_manage_state_env(manage_state_env.as_deref())
             .ok()
             .flatten();
-        env_value.or(configured).unwrap_or(false)
+        env_value.or(configured).unwrap_or(default)
     }
 
     pub fn get_warn_error(&self) -> Option<bool> {
@@ -2927,11 +2964,13 @@ mod tests {
         project_dir: &Path,
         env_value: Option<&str>,
         user_settings_path: Option<PathBuf>,
+        default: bool,
     ) -> bool {
         common_args.get_manage_state_with(
             project_dir,
             env_value.map(OsString::from),
             user_settings_path,
+            default,
         )
     }
 
@@ -2944,7 +2983,22 @@ mod tests {
             &common_args,
             project_dir.path(),
             None,
-            None
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn manage_state_uses_supplied_default() {
+        let project_dir = tempfile::tempdir().unwrap();
+        let common_args = CommonArgs::default();
+
+        assert!(get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            None,
+            None,
+            true
         ));
     }
 
@@ -2962,7 +3016,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             None,
-            None
+            None,
+            false
         ));
     }
 
@@ -2979,7 +3034,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             None,
-            Some(user_settings)
+            Some(user_settings),
+            false
         ));
     }
 
@@ -2995,7 +3051,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             Some("false"),
-            None
+            None,
+            false
         ));
     }
 
@@ -3016,7 +3073,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             None,
-            None
+            None,
+            false
         ));
     }
 
@@ -3030,7 +3088,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             Some("true"),
-            None
+            None,
+            false
         ));
     }
 
@@ -3049,7 +3108,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             Some("true"),
-            None
+            None,
+            false
         ));
     }
 
@@ -3067,7 +3127,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             Some("true"),
-            None
+            None,
+            false
         ));
     }
 
@@ -3084,7 +3145,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             Some("true"),
-            Some(user_settings)
+            Some(user_settings),
+            false
         ));
     }
 
@@ -3146,7 +3208,8 @@ mod tests {
             &CommonArgs::default(),
             project_dir.path(),
             Some("   "),
-            None
+            None,
+            false
         ));
     }
 
@@ -3167,7 +3230,8 @@ mod tests {
             &CommonArgs::default(),
             project_dir.path(),
             None,
-            Some(user_settings)
+            Some(user_settings),
+            false
         ));
     }
 
@@ -3190,7 +3254,8 @@ mod tests {
             &common_args,
             project_dir.path(),
             None,
-            None
+            None,
+            false
         ));
     }
 
@@ -3245,7 +3310,15 @@ mod tests {
             &common_args,
             project_dir.path(),
             Some("false"),
-            None
+            None,
+            false
+        ));
+        assert!(!get_manage_state_with_env(
+            &common_args,
+            project_dir.path(),
+            Some("false"),
+            None,
+            true
         ));
     }
 
@@ -3326,6 +3399,10 @@ mod tests {
             Man(ManArgs::default()),
             Docs(DocsArgs::default()),
             Login(LoginArgs::default()),
+            State(StateArgs {
+                common_args: CommonArgs::default(),
+                subcommand: StateSubcommand::Explain(StateExplainArgs::default()),
+            }),
             Completions(CompletionsArgs {
                 shell: Shell::Bash,
                 common_args: CommonArgs::default(),

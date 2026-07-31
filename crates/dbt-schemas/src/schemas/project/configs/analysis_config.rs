@@ -9,10 +9,10 @@ use std::collections::BTreeMap;
 type YmlValue = dbt_yaml::Value;
 
 use crate::schemas::common::DocsConfig;
-use crate::schemas::project::configs::common::default_docs;
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{StringOrArrayOfStrings, bool_or_string_bool};
 use dbt_common::io_args::StaticAnalysisKind;
+use dbt_proc_macros::DefaultTo;
 use dbt_yaml::ShouldBe;
 use std::collections::btree_map::Iter;
 
@@ -59,7 +59,9 @@ impl TypedRecursiveConfig for ProjectAnalysisConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Resolvable, Deserialize, Serialize, Debug, Default, Clone, PartialEq, Eq, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Default, Clone, PartialEq, Eq, DbtSchema,
+)]
 pub struct AnalysesConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -67,7 +69,11 @@ pub struct AnalysesConfig {
     // We don't want to do static analysis for analysis nodes unless they are explicitly enabled
     #[resolved(promote, default = StaticAnalysisKind::Off.into())]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
+    // NOTE: unlike other config structs, analysis meta/tags use simple replace-if-none
+    // semantics (matching legacy behavior), not the merge_meta/merge_tags helpers.
+    #[default_to(skip)]
     pub meta: Option<IndexMap<String, YmlValue>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -98,25 +104,13 @@ impl ResolvableConfig<AnalysesConfig> for AnalysesConfig {
     type ResolveDefaults = ();
 
     fn default_to(&mut self, other: &AnalysesConfig) {
-        if self.enabled.is_none() {
-            self.enabled = other.enabled;
-        }
-        if self.static_analysis.is_none() {
-            self.static_analysis = other.static_analysis.clone();
-        }
         if self.meta.is_none() {
             self.meta = other.meta.clone();
         }
         if self.tags.is_none() {
             self.tags = other.tags.clone();
         }
-        if self.description.is_none() {
-            self.description = other.description.clone();
-        }
-        if self.group.is_none() {
-            self.group = other.group.clone();
-        }
-        default_docs(&mut self.docs, &other.docs);
+        self.default_to_fields(other);
     }
 
     fn get_enabled_with_default(&self) -> bool {

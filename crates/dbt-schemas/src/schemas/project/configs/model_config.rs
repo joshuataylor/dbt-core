@@ -16,9 +16,7 @@ use std::collections::btree_map::Iter;
 use std::collections::{BTreeMap, HashSet};
 
 use super::config_keys::ConfigKeys;
-use super::omissible_utils::handle_omissible_override;
 
-use crate::default_to;
 use crate::schemas::common::ComputePlatform;
 use crate::schemas::common::DbtBatchSize;
 use crate::schemas::common::DbtContract;
@@ -33,13 +31,8 @@ use crate::schemas::common::{DocsConfig, OnConfigurationChange, OnError};
 use crate::schemas::common::{Hooks, OnSchemaChange, hooks_equal};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::default_classifiers;
-use crate::schemas::project::configs::common::default_column_types;
-use crate::schemas::project::configs::common::default_docs;
-use crate::schemas::project::configs::common::default_hooks;
-use crate::schemas::project::configs::common::default_meta_and_tags;
 use crate::schemas::project::configs::common::default_packages;
-use crate::schemas::project::configs::common::default_quoting;
-use crate::schemas::project::configs::common::default_to_grants;
+use crate::schemas::project::configs::common::default_tags;
 use crate::schemas::project::configs::common::log_state_mod_diff;
 use crate::schemas::project::configs::common::{
     WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
@@ -55,7 +48,7 @@ use crate::schemas::serde::{
     f64_or_string_f64, hours_to_expiration_or_string, string_or_number_to_string,
     u64_or_string_u64,
 };
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::ShouldBe;
 
 /// Represents the latest version view configuration for versioned models.
@@ -552,7 +545,9 @@ impl TypedRecursiveConfig for ProjectModelConfig {
     }
 }
 
-#[derive(Resolvable, Deserialize, Serialize, Debug, Default, Clone, PartialEq, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Default, Clone, PartialEq, DbtSchema,
+)]
 pub struct ModelConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -565,11 +560,13 @@ pub struct ModelConfig {
     // serialize_with ensures tags is always present as [] when None for Jinja macros
     // that call obj.config.tags.extend(...) or similar list operations.
     // See: https://github.com/dbt-labs/dbt-fusion/issues/1198
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
     pub tags: Option<StringOrArrayOfStrings>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -615,6 +612,7 @@ pub struct ModelConfig {
     pub on_configuration_change: Option<OnConfigurationChange>,
     pub on_error: Option<OnError>,
     pub grants: OmissibleGrantConfig,
+    #[default_to(skip)]
     pub packages: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "string_or_number_to_string")]
     #[schemars(with = "Option<String>", skip_serializing_if = "Option::is_none")]
@@ -1036,175 +1034,11 @@ impl From<ModelConfig> for ProjectModelConfig {
 
 impl ResolvableConfig<ModelConfig> for ModelConfig {
     /// Default this config to the parent config
-    ///
-    /// This method ensures that:
-    /// 1. All fields are explicitly handled
-    /// 2. Custom merge logic is applied where needed
-    /// 3. Compile-time safety through exhaustive pattern matching
-    #[allow(clippy::cognitive_complexity)]
     fn default_to(&mut self, parent: &ModelConfig) {
-        // Handle simple fields - using a pattern that ensures all fields are covered
-        let ModelConfig {
-            // Custom fields (already handled above)
-            post_hook,
-            pre_hook,
-            meta,
-            tags,
-            classifiers,
-            quoting,
-
-            // Flattened config (already handled above)
-            __warehouse_specific_config__: warehouse_specific_config,
-
-            // Simple fields (handle with macro)
-            enabled,
-            alias,
-            schema,
-            database,
-            catalog_name,
-            alt_compute,
-            compute,
-            group,
-            materialized,
-            incremental_strategy,
-            incremental_predicates,
-            constraints,
-            batch_size,
-            lookback,
-            begin,
-            persist_docs,
-            column_types,
-            full_refresh,
-            unique_key,
-            on_schema_change,
-            on_configuration_change,
-            on_error,
-            grants,
-            packages,
-            python_version,
-            imports,
-            secrets,
-            external_access_integrations,
-            use_anonymous_sproc,
-            docs,
-            contract,
-            event_time,
-            concurrent_batches,
-            merge_update_columns,
-            merge_exclude_columns,
-            access,
-            table_format,
-            static_analysis,
-            freshness,
-            state,
-            latest_version_pointer,
-            sql_header,
-            location,
-            predicates,
-            submission_method,
-            job_cluster_config,
-            python_job_config,
-            cluster_id,
-            http_path,
-            create_notebook,
-            index_url,
-            additional_libs,
-            user_folder_for_python,
-            config_keys_used,
-            config_keys_defaults,
-            meta_keys_used,
-            meta_keys_defaults,
-            sync,
-        } = self;
-
-        // Handle flattened configs
-        #[allow(unused, clippy::let_unit_value)]
-        let warehouse_specific_config =
-            warehouse_specific_config.default_to(&parent.__warehouse_specific_config__);
-
-        // Protect the mutable refs from being used in the default_to macro
-        #[allow(unused, clippy::let_unit_value)]
-        let pre_hook = default_hooks(pre_hook, &parent.pre_hook);
-        #[allow(unused, clippy::let_unit_value)]
-        let post_hook = default_hooks(post_hook, &parent.post_hook);
-        #[allow(unused, clippy::let_unit_value)]
-        let quoting = default_quoting(quoting, &parent.quoting);
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused, clippy::let_unit_value)]
-        let tags = ();
-        #[allow(unused, clippy::let_unit_value)]
-        let classifiers = default_classifiers(classifiers, &parent.classifiers);
-        #[allow(unused, clippy::let_unit_value)]
-        let column_types = default_column_types(column_types, &parent.column_types);
-        #[allow(unused, clippy::let_unit_value)]
-        let grants = default_to_grants(grants, &parent.grants);
-        #[allow(unused, clippy::let_unit_value)]
-        let packages = default_packages(packages, &parent.packages);
-        #[allow(unused, clippy::let_unit_value)]
-        let docs = default_docs(docs, &parent.docs);
-
-        // Handle Omissible fields for hierarchical overrides
-        handle_omissible_override(schema, &parent.schema);
-        handle_omissible_override(database, &parent.database);
-
-        default_to!(
-            parent,
-            [
-                enabled,
-                alias,
-                catalog_name,
-                alt_compute,
-                compute,
-                group,
-                materialized,
-                incremental_strategy,
-                incremental_predicates,
-                constraints,
-                batch_size,
-                lookback,
-                begin,
-                persist_docs,
-                full_refresh,
-                unique_key,
-                on_schema_change,
-                on_configuration_change,
-                on_error,
-                python_version,
-                use_anonymous_sproc,
-                secrets,
-                external_access_integrations,
-                imports,
-                contract,
-                event_time,
-                concurrent_batches,
-                merge_update_columns,
-                merge_exclude_columns,
-                access,
-                table_format,
-                static_analysis,
-                freshness,
-                state,
-                latest_version_pointer,
-                sql_header,
-                location,
-                predicates,
-                submission_method,
-                job_cluster_config,
-                python_job_config,
-                cluster_id,
-                http_path,
-                create_notebook,
-                index_url,
-                additional_libs,
-                user_folder_for_python,
-                config_keys_used,
-                config_keys_defaults,
-                meta_keys_used,
-                meta_keys_defaults,
-                sync,
-            ]
-        );
+        default_tags(&mut self.tags, &parent.tags);
+        default_classifiers(&mut self.classifiers, &parent.classifiers);
+        default_packages(&mut self.packages, &parent.packages);
+        self.default_to_fields(parent);
     }
 
     type Resolved = ResolvedModelConfig;

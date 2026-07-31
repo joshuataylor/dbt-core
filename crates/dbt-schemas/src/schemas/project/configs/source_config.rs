@@ -10,20 +10,19 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Iter;
 
 use super::config_keys::ConfigKeys;
-use super::omissible_utils::handle_omissible_override;
-use crate::default_to;
 use crate::schemas::common::PartitionConfig;
 use crate::schemas::common::{
     ClusterConfig, FreshnessDefinition, Schedule, SchemaOrigin, SyncConfig,
 };
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::default_meta_and_tags;
+use crate::schemas::project::configs::common::default_tags;
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
     IndexesConfig, PartitionsConfig, PrimaryKeyConfig, StringOrArrayOfStrings, StringOrInteger,
     bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string, u64_or_string_u64,
 };
+use dbt_proc_macros::DefaultTo;
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -240,7 +239,9 @@ impl TypedRecursiveConfig for ProjectSourceConfig {
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, Default, PartialEq, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, PartialEq, DbtSchema,
+)]
 pub struct SourceConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -250,6 +251,7 @@ pub struct SourceConfig {
     pub meta: Option<IndexMap<String, YmlValue>>,
     #[serde(default)]
     pub freshness: Omissible<Option<FreshnessDefinition>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -517,49 +519,8 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
     }
 
     fn default_to(&mut self, parent: &SourceConfig) {
-        let SourceConfig {
-            enabled,
-            event_time,
-            meta,
-            freshness,
-            tags,
-            loaded_at_field,
-            loaded_at_query,
-            static_analysis,
-            schema_origin,
-            sync,
-            external_location,
-            formatter,
-            __warehouse_specific_config__: warehouse_specific_config,
-        } = self;
-
-        // Handle flattened configs
-        #[allow(unused, clippy::let_unit_value)]
-        let warehouse_specific_config =
-            warehouse_specific_config.default_to(&parent.__warehouse_specific_config__);
-
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused, clippy::let_unit_value)]
-        let tags = ();
-
-        // Handle Omissible fields for hierarchical overrides
-        handle_omissible_override(freshness, &parent.freshness);
-
-        default_to!(
-            parent,
-            [
-                enabled,
-                event_time,
-                loaded_at_field,
-                loaded_at_query,
-                static_analysis,
-                schema_origin,
-                sync,
-                external_location,
-                formatter,
-            ]
-        );
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }
 

@@ -10,18 +10,14 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Iter;
 
 use super::config_keys::ConfigKeys;
-use super::omissible_utils::handle_omissible_override;
-use crate::default_to;
 use crate::schemas::common::PartitionConfig;
 use crate::schemas::common::{
     ClusterConfig, DbtMaterialization, DbtQuoting, Schedule, Severity, StoreFailuresAs,
 };
 use crate::schemas::manifest::GrantAccessToTarget;
-use crate::schemas::project::configs::common::{
-    WarehouseSpecificNodeConfig, default_meta_and_tags, default_quoting,
-};
+use crate::schemas::project::configs::common::{WarehouseSpecificNodeConfig, default_tags};
 use crate::schemas::properties::DataTestState;
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
@@ -335,7 +331,7 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, Default, DbtSchema)]
+#[derive(Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, DbtSchema)]
 pub struct DataTestConfig {
     pub alias: Option<String>,
     pub compute: Option<ComputeArg>,
@@ -363,6 +359,7 @@ pub struct DataTestConfig {
     pub store_failures: Option<bool>,
     pub store_failures_as: Option<StoreFailuresAs>,
     pub sql_header: Option<String>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -693,75 +690,8 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
     }
 
     fn default_to(&mut self, parent: &DataTestConfig) {
-        let DataTestConfig {
-            alias,
-            compute,
-            database,
-            enabled,
-            error_if,
-            fail_calc,
-            full_refresh,
-            group,
-            limit,
-            meta,
-            schema,
-            severity,
-            store_failures,
-            store_failures_as,
-            sql_header,
-            tags,
-            warn_if,
-            quoting,
-            where_,
-            static_analysis,
-            materialized,
-            state,
-            // Adapter specific configs
-            __warehouse_specific_config__: warehouse_specific_config,
-        } = self;
-
-        // Handle adapter-specific configs
-        #[allow(unused, clippy::let_unit_value)]
-        let warehouse_specific_config =
-            warehouse_specific_config.default_to(&parent.__warehouse_specific_config__);
-        // Protect the mutable refs from being used in the default_to macro
-        #[allow(unused, clippy::let_unit_value)]
-        let quoting = default_quoting(quoting, &parent.quoting);
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused, clippy::let_unit_value)]
-        let tags = ();
-        // Unlike other node configs where schema: null means "use target schema directly",
-        // DataTestConfig has a non-null default ("dbt_test__audit") applied during finalization.
-        // Omissible lets us distinguish an explicit null (opt out of the suffix) from an absent
-        // key (inherit the default). handle_omissible_override preserves that signal across
-        // config inheritance, so Present(None) from a child wins over a parent's Present(Some(_)).
-        #[allow(unused, clippy::let_unit_value)]
-        let schema = handle_omissible_override(schema, &parent.schema);
-
-        default_to!(
-            parent,
-            [
-                enabled,
-                compute,
-                store_failures,
-                store_failures_as,
-                sql_header,
-                limit,
-                severity,
-                error_if,
-                warn_if,
-                fail_calc,
-                full_refresh,
-                alias,
-                database,
-                group,
-                where_,
-                static_analysis,
-                materialized,
-                state,
-            ]
-        );
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }
 

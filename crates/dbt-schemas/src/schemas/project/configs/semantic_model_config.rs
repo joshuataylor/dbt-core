@@ -1,5 +1,5 @@
 use crate::schemas::serde::bool_or_string_bool;
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::{DbtSchema, ShouldBe};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -8,12 +8,10 @@ use std::collections::{BTreeMap, btree_map::Iter};
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
-use crate::{
-    default_to,
-    schemas::{
-        project::{ResolvableConfig, TypedRecursiveConfig, configs::common::default_meta_and_tags},
-        serde::StringOrArrayOfStrings,
-    },
+use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::{
+    project::{ResolvableConfig, TypedRecursiveConfig},
+    serde::StringOrArrayOfStrings,
 };
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
@@ -42,13 +40,16 @@ impl TypedRecursiveConfig for ProjectSemanticModelConfig {
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, PartialEq, Eq, DbtSchema,
+)]
 pub struct SemanticModelConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     pub enabled: Option<bool>,
     pub group: Option<String>,
     #[serde(serialize_with = "crate::schemas::serde::serialize_option_as_empty_map")]
     pub meta: Option<IndexMap<String, YmlValue>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -99,18 +100,7 @@ impl ResolvableConfig<SemanticModelConfig> for SemanticModelConfig {
     }
 
     fn default_to(&mut self, parent: &SemanticModelConfig) {
-        let SemanticModelConfig {
-            enabled,
-            group,
-            meta,
-            tags,
-        } = self;
-
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused)]
-        let tags = ();
-
-        default_to!(parent, [enabled, group]);
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }

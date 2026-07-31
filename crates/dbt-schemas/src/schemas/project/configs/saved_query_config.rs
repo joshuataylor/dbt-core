@@ -8,14 +8,12 @@ use serde_with::skip_serializing_none;
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 
-use crate::{
-    default_to,
-    schemas::{
-        project::{ResolvableConfig, TypedRecursiveConfig, configs::common::default_meta_and_tags},
-        serde::{StringOrArrayOfStrings, bool_or_string_bool},
-    },
+use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::{
+    project::{ResolvableConfig, TypedRecursiveConfig},
+    serde::{StringOrArrayOfStrings, bool_or_string_bool},
 };
 
 #[skip_serializing_none]
@@ -49,7 +47,7 @@ impl TypedRecursiveConfig for ProjectSavedQueryConfig {
     }
 }
 
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, PartialEq, DbtSchema)]
+#[derive(Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, PartialEq, DbtSchema)]
 pub struct SavedQueryConfig {
     pub cache: Option<SavedQueryCache>,
     #[resolved(promote, method = get_enabled_with_default)]
@@ -59,6 +57,7 @@ pub struct SavedQueryConfig {
     pub schema: Option<String>,
     pub group: Option<String>,
     pub meta: Option<IndexMap<String, YmlValue>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -147,21 +146,7 @@ impl ResolvableConfig<SavedQueryConfig> for SavedQueryConfig {
     }
 
     fn default_to(&mut self, parent: &SavedQueryConfig) {
-        let SavedQueryConfig {
-            cache,
-            enabled,
-            export_as,
-            schema,
-            group,
-            meta,
-            tags,
-        } = self;
-
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused)]
-        let tags = ();
-
-        default_to!(parent, [cache, enabled, export_as, schema, group]);
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }

@@ -9,23 +9,21 @@ type YmlValue = dbt_yaml::Value;
 use serde_with::skip_serializing_none;
 use std::collections::{BTreeMap, btree_map::Iter};
 
-use crate::{
-    default_to,
-    schemas::{
-        common::{ClusterConfig, PartitionConfig, Schedule},
-        manifest::GrantAccessToTarget,
-        project::{
-            ResolvableConfig, TypedRecursiveConfig,
-            configs::{
-                common::{WarehouseSpecificNodeConfig, default_meta_and_tags},
-                config_keys::ConfigKeys,
-            },
+use dbt_proc_macros::DefaultTo;
+
+use crate::schemas::{
+    common::{ClusterConfig, PartitionConfig, Schedule},
+    manifest::GrantAccessToTarget,
+    project::{
+        ResolvableConfig, TypedRecursiveConfig,
+        configs::{
+            common::WarehouseSpecificNodeConfig, common::default_tags, config_keys::ConfigKeys,
         },
-        serde::{
-            IndexesConfig, PartitionsConfig, PrimaryKeyConfig, QueryTag, StringOrArrayOfStrings,
-            StringOrInteger, bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string,
-            u64_or_string_u64,
-        },
+    },
+    serde::{
+        IndexesConfig, PartitionsConfig, PrimaryKeyConfig, QueryTag, StringOrArrayOfStrings,
+        StringOrInteger, bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string,
+        u64_or_string_u64,
     },
 };
 
@@ -287,7 +285,9 @@ impl TypedRecursiveConfig for ProjectUnitTestConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, Default, PartialEq, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, PartialEq, DbtSchema,
+)]
 pub struct UnitTestConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -296,6 +296,7 @@ pub struct UnitTestConfig {
     #[resolved(promote, expect = "static_analysis set by apply_resolve_defaults")]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
     pub meta: Option<IndexMap<String, YmlValue>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -550,26 +551,8 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
     }
 
     fn default_to(&mut self, parent: &UnitTestConfig) {
-        let UnitTestConfig {
-            enabled,
-            compute,
-            static_analysis,
-            meta,
-            tags,
-            __warehouse_specific_config__: warehouse_specific_config,
-        } = self;
-
-        // Handle adapter-specific configs
-        #[allow(unused, clippy::let_unit_value)]
-        let warehouse_specific_config =
-            warehouse_specific_config.default_to(&parent.__warehouse_specific_config__);
-
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused, clippy::let_unit_value)]
-        let tags = ();
-
-        default_to!(parent, [enabled, compute, static_analysis]);
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }
 

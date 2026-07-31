@@ -1,5 +1,5 @@
 use crate::schemas::project::TypedRecursiveConfig;
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::{DbtSchema, ShouldBe};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -9,12 +9,10 @@ use std::collections::btree_map::Iter;
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
-use crate::{
-    default_to,
-    schemas::{
-        project::{ResolvableConfig, configs::common::default_meta_and_tags},
-        serde::{StringOrArrayOfStrings, bool_or_string_bool},
-    },
+use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::{
+    project::ResolvableConfig,
+    serde::{StringOrArrayOfStrings, bool_or_string_bool},
 };
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
@@ -40,13 +38,16 @@ impl TypedRecursiveConfig for ProjectExposureConfig {
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, Default, DbtSchema, PartialEq)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, DbtSchema, PartialEq,
+)]
 pub struct ExposureConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     #[serde(serialize_with = "crate::schemas::serde::serialize_option_as_empty_map")]
     pub meta: Option<IndexMap<String, YmlValue>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -95,17 +96,7 @@ impl ResolvableConfig<ExposureConfig> for ExposureConfig {
     }
 
     fn default_to(&mut self, parent: &ExposureConfig) {
-        let ExposureConfig {
-            meta,
-            tags,
-            enabled,
-        } = self;
-
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused)]
-        let tags = ();
-
-        default_to!(parent, [enabled]);
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }

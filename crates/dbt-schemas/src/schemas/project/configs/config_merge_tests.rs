@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::omissible_utils::handle_omissible_override;
+    use super::super::config_merge::DefaultTo;
     use crate::schemas::project::ResolvableConfig;
     use crate::schemas::project::dbt_project::ResolvedConfig;
     use dbt_common::serde_utils::Omissible;
@@ -41,12 +41,9 @@ mod tests {
         type ResolveDefaults = ();
 
         fn default_to(&mut self, parent: &TestConfig) {
-            handle_omissible_override(&mut self.name, &parent.name);
-            handle_omissible_override(&mut self.value, &parent.value);
-
-            if self.enabled.is_none() {
-                self.enabled = parent.enabled;
-            }
+            self.name.inherit_from(&parent.name);
+            self.value.inherit_from(&parent.value);
+            self.enabled.inherit_from(&parent.enabled);
         }
 
         fn get_enabled_with_default(&self) -> bool {

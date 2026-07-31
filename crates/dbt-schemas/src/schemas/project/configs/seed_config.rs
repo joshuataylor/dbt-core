@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Iter;
 
 use super::config_keys::ConfigKeys;
-use crate::default_to;
 use crate::schemas::common::DbtMaterialization;
 use crate::schemas::common::DbtQuoting;
 use crate::schemas::common::DocsConfig;
@@ -28,12 +27,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::default_column_types;
-use crate::schemas::project::configs::common::default_docs;
-use crate::schemas::project::configs::common::default_hooks;
-use crate::schemas::project::configs::common::default_meta_and_tags;
-use crate::schemas::project::configs::common::default_quoting;
-use crate::schemas::project::configs::common::default_to_grants;
+use crate::schemas::project::configs::common::default_tags;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
@@ -41,6 +35,7 @@ use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, f64_or_string_f64,
     hours_to_expiration_or_string, u64_or_string_u64,
 };
+use dbt_proc_macros::DefaultTo;
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -312,7 +307,9 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
-#[derive(Resolvable, Deserialize, Serialize, Debug, Default, PartialEq, Clone, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Default, PartialEq, Clone, DbtSchema,
+)]
 pub struct SeedConfig {
     pub column_types: Option<BTreeMap<Spanned<String>, String>>,
     #[serde(alias = "project", alias = "data_space")]
@@ -341,6 +338,7 @@ pub struct SeedConfig {
     pub post_hook: Verbatim<Option<Hooks>>,
     #[serde(alias = "pre-hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -631,71 +629,8 @@ impl ResolvableConfig<SeedConfig> for SeedConfig {
     }
 
     fn default_to(&mut self, parent: &SeedConfig) {
-        // Handle simple fields - using a pattern that ensures all fields are covered
-        let SeedConfig {
-            post_hook,
-            pre_hook,
-            meta,
-            tags,
-            quoting,
-            column_types,
-            database,
-            schema,
-            alias,
-            catalog_name,
-            docs,
-            enabled,
-            grants,
-            quote_columns,
-            delimiter,
-            event_time,
-            full_refresh,
-            group,
-            persist_docs,
-            materialized,
-            static_analysis,
-            // Adapter specific configs
-            __warehouse_specific_config__: warehouse_specific_config,
-        } = self;
-
-        // Handle adapter-specific configs
-        #[allow(unused, clippy::let_unit_value)]
-        let warehouse_specific_config =
-            warehouse_specific_config.default_to(&parent.__warehouse_specific_config__);
-
-        #[allow(unused, clippy::let_unit_value)]
-        let pre_hook = default_hooks(pre_hook, &parent.pre_hook);
-        #[allow(unused, clippy::let_unit_value)]
-        let post_hook = default_hooks(post_hook, &parent.post_hook);
-        #[allow(unused, clippy::let_unit_value)]
-        let quoting = default_quoting(quoting, &parent.quoting);
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused, clippy::let_unit_value)]
-        let column_types = default_column_types(column_types, &parent.column_types);
-        #[allow(unused, clippy::let_unit_value)]
-        let grants = default_to_grants(grants, &parent.grants);
-        #[allow(unused, clippy::let_unit_value)]
-        let docs = default_docs(docs, &parent.docs);
-
-        default_to!(
-            parent,
-            [
-                database,
-                schema,
-                alias,
-                catalog_name,
-                enabled,
-                quote_columns,
-                delimiter,
-                event_time,
-                full_refresh,
-                group,
-                persist_docs,
-                static_analysis,
-                materialized,
-            ]
-        );
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }
 

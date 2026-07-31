@@ -1,4 +1,4 @@
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::{DbtSchema, ShouldBe};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -8,12 +8,10 @@ use std::collections::{BTreeMap, btree_map::Iter};
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
-use crate::{
-    default_to,
-    schemas::{
-        project::{ResolvableConfig, TypedRecursiveConfig, configs::common::default_meta_and_tags},
-        serde::{StringOrArrayOfStrings, bool_or_string_bool},
-    },
+use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::{
+    project::{ResolvableConfig, TypedRecursiveConfig},
+    serde::{StringOrArrayOfStrings, bool_or_string_bool},
 };
 
 #[skip_serializing_none]
@@ -41,12 +39,13 @@ impl TypedRecursiveConfig for ProjectMetricConfigs {
     }
 }
 
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq)]
+#[derive(Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq)]
 pub struct MetricConfig {
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     pub meta: Option<IndexMap<String, YmlValue>>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -109,18 +108,7 @@ impl ResolvableConfig<MetricConfig> for MetricConfig {
     }
 
     fn default_to(&mut self, parent: &MetricConfig) {
-        let MetricConfig {
-            enabled,
-            meta,
-            tags,
-            group,
-        } = self;
-
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused)]
-        let tags = ();
-
-        default_to!(parent, [enabled, group]);
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }

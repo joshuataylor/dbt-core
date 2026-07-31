@@ -17,7 +17,6 @@ use std::collections::btree_map::Iter;
 type YmlValue = dbt_yaml::Value;
 
 use super::config_keys::ConfigKeys;
-use crate::default_to;
 use crate::schemas::common::DbtMaterialization;
 use crate::schemas::common::DbtQuoting;
 use crate::schemas::common::DocsConfig;
@@ -31,11 +30,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::default_docs;
-use crate::schemas::project::configs::common::default_hooks;
-use crate::schemas::project::configs::common::default_meta_and_tags;
-use crate::schemas::project::configs::common::default_quoting;
-use crate::schemas::project::configs::common::default_to_grants;
+use crate::schemas::project::configs::common::default_tags;
 use crate::schemas::properties::ModelState;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
@@ -44,7 +39,7 @@ use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, f64_or_string_f64,
     hours_to_expiration_or_string, u64_or_string_u64,
 };
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -373,7 +368,9 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
 }
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
-#[derive(Resolvable, Deserialize, Serialize, Debug, Clone, DbtSchema, Default, PartialEq)]
+#[derive(
+    Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, DbtSchema, Default, PartialEq,
+)]
 pub struct SnapshotConfig {
     // Snapshot-specific Configuration
     #[serde(alias = "project", alias = "data_space")]
@@ -401,6 +398,7 @@ pub struct SnapshotConfig {
     pub enabled: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub full_refresh: Option<bool>,
+    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
@@ -858,95 +856,9 @@ impl ResolvableConfig<SnapshotConfig> for SnapshotConfig {
         self.finalize_resolved()
     }
 
-    #[allow(clippy::cognitive_complexity)]
     fn default_to(&mut self, parent: &SnapshotConfig) {
-        let SnapshotConfig {
-            database,
-            schema,
-            alias,
-            materialized,
-            strategy,
-            unique_key,
-            check_cols,
-            updated_at,
-            dbt_valid_to_current,
-            snapshot_meta_column_names,
-            hard_deletes,
-            target_database,
-            target_schema,
-            compute,
-            enabled,
-            full_refresh,
-            tags,
-            pre_hook,
-            post_hook,
-            persist_docs,
-            grants,
-            event_time,
-            quoting,
-            meta,
-            group,
-            quote_columns,
-            invalidate_hard_deletes,
-            docs,
-            static_analysis,
-            sync,
-            state,
-            // Flattened configs
-            __warehouse_specific_config__: warehouse_specific_config,
-        } = self;
-
-        // Handle flattened configs
-        #[allow(unused, clippy::let_unit_value)]
-        let warehouse_specific_config =
-            warehouse_specific_config.default_to(&parent.__warehouse_specific_config__);
-
-        #[allow(unused, clippy::let_unit_value)]
-        let pre_hook = default_hooks(pre_hook, &parent.pre_hook);
-        #[allow(unused, clippy::let_unit_value)]
-        let post_hook = default_hooks(post_hook, &parent.post_hook);
-        #[allow(unused, clippy::let_unit_value)]
-        let quoting = default_quoting(quoting, &parent.quoting);
-        #[allow(unused, clippy::let_unit_value)]
-        let meta = default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        #[allow(unused, clippy::let_unit_value)]
-        let tags = ();
-        #[allow(unused, clippy::let_unit_value)]
-        let grants = default_to_grants(grants, &parent.grants);
-        #[allow(unused, clippy::let_unit_value)]
-        let docs = default_docs(docs, &parent.docs);
-
-        // Use the improved default_to macro for simple fields
-        default_to!(
-            parent,
-            [
-                enabled,
-                compute,
-                full_refresh,
-                alias,
-                schema,
-                database,
-                target_database,
-                target_schema,
-                materialized,
-                group,
-                persist_docs,
-                unique_key,
-                event_time,
-                quote_columns,
-                invalidate_hard_deletes,
-                strategy,
-                updated_at,
-                dbt_valid_to_current,
-                snapshot_meta_column_names,
-                hard_deletes,
-                check_cols,
-                static_analysis,
-                materialized,
-                sync,
-                state,
-            ]
-        );
+        default_tags(&mut self.tags, &parent.tags);
+        self.default_to_fields(parent);
     }
 }
 

@@ -350,7 +350,11 @@ impl FieldCollector {
                 let other_attrs: Vec<_> = field
                     .attrs
                     .iter()
-                    .filter(|a| !a.path().is_ident("serde") && !a.path().is_ident("schemars"))
+                    .filter(|a| {
+                        !a.path().is_ident("serde")
+                            && !a.path().is_ident("schemars")
+                            && !a.path().is_ident("default_to")
+                    })
                     .collect();
 
                 if let Some(inner_ty) = extract_generic_inner(field_ty, "Omissible") {
@@ -384,7 +388,11 @@ impl FieldCollector {
         let other_attrs: Vec<_> = field
             .attrs
             .iter()
-            .filter(|a| !a.path().is_ident("serde") && !a.path().is_ident("schemars"))
+            .filter(|a| {
+                !a.path().is_ident("serde")
+                    && !a.path().is_ident("schemars")
+                    && !a.path().is_ident("default_to")
+            })
             .collect();
         self.resolved_field_defs
             .push(quote! { #(#other_attrs)* #vis #field_name: #field_ty });
@@ -416,6 +424,76 @@ fn is_spanned_type(ty: &Type) -> bool {
         }
     }
     false
+}
+
+/// `#[derive(DefaultTo)]` generates `fn default_to_fields(&mut self, parent: &Self)` for a
+/// config struct.
+///
+/// For each named field in the struct, the generated method calls
+/// `dbt_schemas::schemas::project::configs::config_merge::DefaultTo::inherit_from` on the
+/// field with the corresponding parent field.
+///
+/// Fields annotated with `#[default_to(skip)]` are excluded from the generated body.
+#[proc_macro_derive(DefaultTo, attributes(default_to))]
+pub fn derive_default_to(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::ItemStruct);
+
+    let struct_name = &input.ident;
+
+    let named_fields = match &input.fields {
+        Fields::Named(f) => &f.named,
+        _ => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "#[derive(DefaultTo)] requires a struct with named fields",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let trait_path = quote! {
+        crate::schemas::project::configs::config_merge::DefaultTo
+    };
+
+    let inherit_calls: Vec<TokenStream2> = named_fields
+        .iter()
+        .filter_map(|field| {
+            let field_name = field.ident.as_ref()?;
+
+            let skip = field.attrs.iter().any(|attr| {
+                if !attr.path().is_ident("default_to") {
+                    return false;
+                }
+                let mut found_skip = false;
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("skip") {
+                        found_skip = true;
+                    }
+                    Ok(())
+                });
+                found_skip
+            });
+
+            if skip {
+                return None;
+            }
+
+            Some(quote! {
+                #trait_path::inherit_from(&mut self.#field_name, &parent.#field_name);
+            })
+        })
+        .collect();
+
+    let output = quote! {
+        impl #struct_name {
+            pub fn default_to_fields(&mut self, parent: &Self) {
+                #(#inherit_calls)*
+            }
+        }
+    };
+
+    output.into()
 }
 
 fn extract_generic_inner<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {

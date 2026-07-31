@@ -13,11 +13,9 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Iter;
 
 use super::config_keys::ConfigKeys;
-use super::omissible_utils::handle_omissible_override;
 
-use dbt_proc_macros::Resolvable;
+use dbt_proc_macros::{DefaultTo, Resolvable};
 
-use crate::default_to;
 use crate::schemas::common::DocsConfig;
 use crate::schemas::common::{Access, DbtQuoting};
 use crate::schemas::project::configs::common::log_state_mod_diff;
@@ -27,9 +25,7 @@ use super::common::{
     same_warehouse_config,
 };
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::{
-    default_docs, default_meta_and_tags, default_packages, default_quoting, default_to_grants,
-};
+use crate::schemas::project::configs::common::{default_packages, default_tags};
 use crate::schemas::project::dbt_project::{
     ResolvableConfig, ResolvedConfig, TypedRecursiveConfig,
 };
@@ -52,7 +48,7 @@ pub struct FunctionSnowflakeConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
+#[derive(DefaultTo, Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ProjectFunctionConfig {
     #[serde(rename = "+access")]
     pub access: Option<Access>,
@@ -80,6 +76,7 @@ pub struct ProjectFunctionConfig {
     pub schema: Omissible<Option<String>>,
     #[serde(rename = "+static_analysis")]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
+    #[default_to(skip)]
     #[serde(rename = "+tags")]
     pub tags: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+type")]
@@ -90,12 +87,14 @@ pub struct ProjectFunctionConfig {
     pub runtime_version: Option<String>,
     #[serde(rename = "+entry_point")]
     pub entry_point: Option<String>,
+    #[default_to(skip)]
     #[serde(rename = "+packages")]
     pub packages: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+snowflake")]
     pub snowflake: Option<FunctionSnowflakeConfig>,
 
     // Additional properties for directory structure
+    #[default_to(skip)]
     pub __additional_properties__: BTreeMap<String, ShouldBe<ProjectFunctionConfig>>,
 }
 
@@ -151,57 +150,9 @@ impl ResolvableConfig<ProjectFunctionConfig> for ProjectFunctionConfig {
     }
 
     fn default_to(&mut self, parent: &ProjectFunctionConfig) {
-        let ProjectFunctionConfig {
-            access,
-            alias,
-            database,
-            description,
-            docs,
-            enabled,
-            grants,
-            group,
-            meta,
-            on_configuration_change,
-            quoting,
-            schema,
-            static_analysis,
-            tags,
-            function_kind,
-            volatility,
-            runtime_version,
-            entry_point,
-            packages,
-            snowflake,
-            __additional_properties__: _,
-        } = self;
-
-        // Handle special cases
-        default_quoting(quoting, &parent.quoting);
-        default_meta_and_tags(meta, &parent.meta, tags, &parent.tags);
-        default_to_grants(grants, &parent.grants);
-        handle_omissible_override(database, &parent.database);
-        handle_omissible_override(schema, &parent.schema);
-        #[allow(unused, clippy::let_unit_value)]
-        let packages = default_packages(packages, &parent.packages);
-        default_docs(docs, &parent.docs);
-
-        default_to!(
-            parent,
-            [
-                access,
-                alias,
-                description,
-                enabled,
-                group,
-                on_configuration_change,
-                static_analysis,
-                function_kind,
-                volatility,
-                runtime_version,
-                entry_point,
-                snowflake,
-            ]
-        );
+        default_tags(&mut self.tags, &parent.tags);
+        default_packages(&mut self.packages, &parent.packages);
+        self.default_to_fields(parent);
     }
 }
 
@@ -216,7 +167,9 @@ impl TypedRecursiveConfig for ProjectFunctionConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Resolvable, Debug, Clone, Serialize, Deserialize, Default, PartialEq, DbtSchema)]
+#[derive(
+    Resolvable, DefaultTo, Debug, Clone, Serialize, Deserialize, Default, PartialEq, DbtSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub struct FunctionConfig {
     pub access: Option<Access>,
@@ -247,6 +200,7 @@ pub struct FunctionConfig {
     pub volatility: Option<Volatility>,
     pub runtime_version: Option<String>,
     pub entry_point: Option<String>,
+    #[default_to(skip)]
     pub packages: Option<StringOrArrayOfStrings>,
     pub snowflake: Option<FunctionSnowflakeConfig>,
 
@@ -284,61 +238,8 @@ impl ResolvableConfig<FunctionConfig> for FunctionConfig {
     }
 
     fn default_to(&mut self, parent: &FunctionConfig) {
-        let FunctionConfig {
-            access,
-            enabled,
-            alias,
-            database,
-            schema,
-            tags,
-            meta,
-            group,
-            docs,
-            grants,
-            quoting,
-            on_configuration_change,
-            static_analysis,
-            function_kind,
-            volatility,
-            runtime_version,
-            entry_point,
-            packages,
-            snowflake,
-            __warehouse_specific_config__: warehouse_config,
-        } = self;
-
-        // Handle warehouse config
-        warehouse_config.default_to(&parent.__warehouse_specific_config__);
-
-        // Handle omissible database and schema fields separately
-        handle_omissible_override(database, &parent.database);
-        handle_omissible_override(schema, &parent.schema);
-
-        // Handle grants with custom merge logic
-        default_to_grants(grants, &parent.grants);
-        #[allow(unused, clippy::let_unit_value)]
-        let packages = default_packages(packages, &parent.packages);
-        default_docs(docs, &parent.docs);
-
-        default_to!(
-            parent,
-            [
-                access,
-                enabled,
-                alias,
-                tags,
-                meta,
-                group,
-                quoting,
-                on_configuration_change,
-                static_analysis,
-                function_kind,
-                volatility,
-                runtime_version,
-                entry_point,
-                snowflake,
-            ]
-        );
+        default_packages(&mut self.packages, &parent.packages);
+        self.default_to_fields(parent);
     }
 }
 

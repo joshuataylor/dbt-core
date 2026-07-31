@@ -46,7 +46,10 @@ fn is_sql_method(method: &str) -> bool {
 /// These are calls that use execute/run_query but are semantically reads —
 /// for example compile-time probe queries from dbt macros like dbt_utils.date_spine
 /// (`SELECT datediff(...)`) or Snowflake parameter reads (`SHOW PARAMETERS ...`).
-fn is_read_only_sql(sql: &str) -> bool {
+///
+/// Public so the Mantle replay engine (`sdf-adapter`) classifies read-only statements
+/// identically; both engines must agree on what counts as an ordering barrier.
+pub fn is_read_only_sql(sql: &str) -> bool {
     // Only check the first 8 chars to keep this O(1).
     let prefix: String = sql
         .trim()

@@ -3039,12 +3039,15 @@ impl Adapter {
     pub fn is_cluster(&self, state: &State) -> Result<Value, minijinja::Error> {
         let is_cluster = match &self.inner {
             Typed { adapter, .. } => {
-                if let Some(replay_adapter) = adapter.as_replay() {
-                    replay_adapter
+                let recorded = match adapter.as_replay() {
+                    Some(replay_adapter) => replay_adapter
                         .replay_is_cluster(state)
-                        .map_err(minijinja::Error::from)?
-                } else {
-                    adapter.is_cluster().map_err(minijinja::Error::from)?
+                        .map_err(minijinja::Error::from)?,
+                    None => None,
+                };
+                match recorded {
+                    Some(is_cluster) => is_cluster,
+                    None => adapter.is_cluster().map_err(minijinja::Error::from)?,
                 }
             }
             Parse(_) => false,

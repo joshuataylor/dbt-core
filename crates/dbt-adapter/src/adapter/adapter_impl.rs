@@ -4292,8 +4292,10 @@ impl AdapterImpl {
     ) -> AdapterResult<bool> {
         debug_assert!(self.adapter_type() == Databricks);
 
-        if let Replay(_, replay) = self.inner_adapter() {
-            return replay.replay_has_dbr_capability(state, capability_name);
+        if let Replay(_, replay) = self.inner_adapter()
+            && let Some(recorded) = replay.replay_has_dbr_capability(state, capability_name)?
+        {
+            return Ok(recorded);
         }
 
         let capability = dbr_capabilities::DbrCapability::from_str(capability_name)
@@ -4593,8 +4595,10 @@ impl AdapterImpl {
     ) -> AdapterResult<bool> {
         match self.adapter_type() {
             adapter_type @ Databricks => {
-                if let Replay(_, replay) = self.inner_adapter() {
-                    return replay.replay_is_uniform(state);
+                if let Replay(_, replay) = self.inner_adapter()
+                    && let Some(recorded) = replay.replay_is_uniform(state)?
+                {
+                    return Ok(recorded);
                 }
 
                 // TODO(anna): Ideally from_model_config_and_catalogs would just take in an InternalDbtNodeWrapper instead of a Value. This is blocked by a Snowflake hack in `snowflake__drop_table`.
@@ -4704,8 +4708,9 @@ impl AdapterImpl {
     ) -> AdapterResult<RelationConfig> {
         use crate::relation::databricks::config::relation_types;
 
-        if let Replay(_, replay) = self.inner_adapter() {
-            let recorded = replay.replay_get_relation_config(state)?;
+        if let Replay(_, replay) = self.inner_adapter()
+            && let Some(recorded) = replay.replay_get_relation_config(state)?
+        {
             let relation_type = relation.relation_type().ok_or_else(|| {
                 AdapterError::new(
                     AdapterErrorKind::Configuration,
@@ -5815,19 +5820,24 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         _strategy: Arc<SnapshotStrategy>,
     ) -> AdapterResult<()>;
 
-    fn replay_is_uniform(&self, state: &State) -> AdapterResult<bool>;
+    /// The following four calls are only instrumented by recorders that know about them, so each
+    /// returns `None` when the recording holds no dedicated record for it. Callers must then
+    /// compute the value themselves: consuming an unrelated record instead would shift every
+    /// following record for the node.
+    fn replay_is_uniform(&self, state: &State) -> AdapterResult<Option<bool>>;
 
     fn replay_has_dbr_capability(
         &self,
         state: &State,
         capability_name: &str,
-    ) -> AdapterResult<bool>;
+    ) -> AdapterResult<Option<bool>>;
 
-    fn replay_is_cluster(&self, state: &State) -> AdapterResult<bool>;
+    fn replay_is_cluster(&self, state: &State) -> AdapterResult<Option<bool>>;
 
     /// Returns the recorded `get_relation_config` payload (`{"config": {...}}`).
     /// The engine method reconstructs a `RelationConfig` from it.
-    fn replay_get_relation_config(&self, state: &State) -> AdapterResult<serde_json::Value>;
+    fn replay_get_relation_config(&self, state: &State)
+    -> AdapterResult<Option<serde_json::Value>>;
 }
 
 #[cfg(test)]

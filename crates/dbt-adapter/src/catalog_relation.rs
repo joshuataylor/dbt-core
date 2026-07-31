@@ -88,6 +88,10 @@ const LEGACY_CONFIG_ICEBERG_ATTRIBUTE_ERR: &str = "The external_volume and base_
 const DEFAULT_TABLE_FORMAT: &str = "DEFAULT";
 const ICEBERG_TABLE_FORMAT: &str = "ICEBERG";
 
+// A reserved external_volume value, BASE_LOCATION is invalid alongside it
+// https://docs.snowflake.com/en/user-guide/tables-iceberg-internal-storage
+const SNOWFLAKE_MANAGED_EXTERNAL_VOLUME: &str = "SNOWFLAKE_MANAGED";
+
 const ALLOWED_TABLE_FORMATS_SNOWFLAKE: [&str; 2] = [DEFAULT_TABLE_FORMAT, ICEBERG_TABLE_FORMAT];
 const ALLOWED_TABLE_FORMATS_DISPLAY_SNOWFLAKE: &str = "DEFAULT|ICEBERG";
 
@@ -930,12 +934,20 @@ impl CatalogRelation {
                     Self::get_model_config_value(model, "identifier", AdapterType::Snowflake)
                 });
 
-                let base_location = Self::build_base_location(
-                    &base_location_root,
-                    &base_location_subpath,
-                    &schema,
-                    &identifier,
-                );
+                let base_location = external_volume
+                    .as_ref()
+                    .filter(|v| {
+                        !v.trim()
+                            .eq_ignore_ascii_case(SNOWFLAKE_MANAGED_EXTERNAL_VOLUME)
+                    })
+                    .map(|_| {
+                        Self::build_base_location(
+                            &base_location_root,
+                            &base_location_subpath,
+                            &schema,
+                            &identifier,
+                        )
+                    });
 
                 let mut adapter_properties = BTreeMap::new();
                 if let Some(v) =
@@ -952,7 +964,7 @@ impl CatalogRelation {
                     catalog_type: ICEBERG_BUILT_IN_CATALOG.to_string(),
                     external_volume,
                     catalog_database: None,
-                    base_location: Some(base_location),
+                    base_location,
                     adapter_properties,
                     is_transient: Some(false), // always FALSE for ICEBERG
                     file_format: None,
@@ -1965,6 +1977,58 @@ mod tests {
             assert_eq!(r.table_format, TableFormat::Iceberg);
             assert_eq!(r.external_volume.as_deref(), Some("EV"));
             assert_eq!(r.base_location.as_deref(), Some("_root/SCH/ID/sub"));
+        }
+    }
+
+    #[test]
+    fn legacy_iceberg_managed_storage_omits_base_location() {
+        let conf = json!({
+            "table_format": "ICEBERG",
+            "schema": "SCH",
+            "identifier": "ID"
+        });
+        let ms = [
+            model(AdapterType::Snowflake, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+        for m in ms {
+            let r = CatalogRelation::build_without_catalogs_yml(&m).unwrap();
+            assert_eq!(r.catalog_type, ICEBERG_BUILT_IN_CATALOG);
+            assert_eq!(r.table_format, TableFormat::Iceberg);
+            assert!(r.external_volume.is_none());
+            assert!(r.base_location.is_none());
+        }
+    }
+
+    #[test]
+    fn legacy_iceberg_explicit_snowflake_managed_external_volume_omits_base_location() {
+        for ev in [
+            "SNOWFLAKE_MANAGED",
+            "snowflake_managed",
+            "  Snowflake_Managed  ",
+        ] {
+            let conf = json!({
+                "table_format": "ICEBERG",
+                "external_volume": ev,
+                "base_location_root": "_root",
+                "base_location_subpath": "sub",
+                "schema": "SCH",
+                "identifier": "ID"
+            });
+            let ms = [
+                model(AdapterType::Snowflake, conf.clone()),
+                model_deprecated_config(conf),
+            ];
+            for m in ms {
+                let r = CatalogRelation::build_without_catalogs_yml(&m).unwrap();
+                assert_eq!(r.catalog_type, ICEBERG_BUILT_IN_CATALOG);
+                assert_eq!(r.table_format, TableFormat::Iceberg);
+                assert_eq!(r.external_volume.as_deref(), Some(ev));
+                assert!(
+                    r.base_location.is_none(),
+                    "base_location must be omitted for external_volume={ev:?}"
+                );
+            }
         }
     }
 

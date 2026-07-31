@@ -407,8 +407,7 @@ fn generate_database_and_schema(
             base_ctx,
             components.database.clone(),
             Some(node),
-        )
-        .unwrap_or_else(|_| default_database.to_owned())
+        )?
     };
 
     // Generate schema name
@@ -423,8 +422,7 @@ fn generate_database_and_schema(
             base_ctx,
             components.schema.clone(),
             Some(node),
-        )
-        .unwrap_or_else(|_| default_schema.to_owned())
+        )?
     };
 
     // Normalize quoting for database and schema (use empty alias for now, will be updated later)
@@ -449,8 +447,6 @@ fn generate_alias_and_relation_name(
     schema: &str,
     quoting: ResolvedQuoting,
 ) -> FsResult<(String, String)> {
-    let default_alias = node.base().alias.clone();
-
     // Generate alias - node.schema is now set to the computed schema
     let alias = generate_component_name(
         env,
@@ -460,14 +456,7 @@ fn generate_alias_and_relation_name(
         base_ctx,
         components.alias.clone(),
         Some(node),
-    )
-    .unwrap_or_else(|_| {
-        if default_alias.is_empty() {
-            node.common().name.clone()
-        } else {
-            default_alias.to_owned()
-        }
-    });
+    )?;
 
     // Ensure alias is never empty
     let alias = if alias.is_empty() {

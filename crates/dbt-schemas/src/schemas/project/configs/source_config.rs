@@ -20,7 +20,8 @@ use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
     IndexesConfig, PartitionsConfig, PrimaryKeyConfig, StringOrArrayOfStrings, StringOrInteger,
-    bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string, u64_or_string_u64,
+    bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string_omissible,
+    u64_or_string_u64,
 };
 use dbt_proc_macros::DefaultTo;
 
@@ -52,9 +53,9 @@ pub struct ProjectSourceConfig {
     #[serde(
         default,
         rename = "+hours_to_expiration",
-        deserialize_with = "hours_to_expiration_or_string"
+        deserialize_with = "hours_to_expiration_or_string_omissible"
     )]
-    pub hours_to_expiration: Option<StringOrInteger>,
+    pub hours_to_expiration: Omissible<Option<StringOrInteger>>,
     #[serde(
         default,
         rename = "+job_execution_timeout_seconds",

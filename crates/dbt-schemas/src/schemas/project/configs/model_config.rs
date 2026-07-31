@@ -42,7 +42,7 @@ use crate::schemas::properties::{ModelFreshness, ModelState};
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool, default_type,
-    f64_or_string_f64, hours_to_expiration_or_string, string_or_number_to_string,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, string_or_number_to_string,
     u64_or_string_u64,
 };
 use dbt_proc_macros::{DefaultTo, Resolvable};
@@ -238,9 +238,9 @@ pub struct ProjectModelConfig {
     #[serde(
         default,
         rename = "+hours_to_expiration",
-        deserialize_with = "hours_to_expiration_or_string"
+        deserialize_with = "hours_to_expiration_or_string_omissible"
     )]
-    pub hours_to_expiration: Option<StringOrInteger>,
+    pub hours_to_expiration: Omissible<Option<StringOrInteger>>,
     #[serde(
         default,
         rename = "+job_execution_timeout_seconds",

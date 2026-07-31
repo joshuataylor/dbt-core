@@ -5547,7 +5547,7 @@ impl AdapterAttr {
                     file_format: config.file_format.clone(),
                     partition_by: config.partition_by.clone(),
                     cluster_by: config.cluster_by.clone(),
-                    hours_to_expiration: config.hours_to_expiration.clone(),
+                    hours_to_expiration: config.hours_to_expiration.clone().into_inner().flatten(),
                     job_execution_timeout_seconds: config.job_execution_timeout_seconds,
                     reservation: config.reservation.clone(),
                     labels: config.labels.clone(),
@@ -5650,7 +5650,11 @@ impl AdapterAttr {
                         file_format: config.file_format.clone(),
                         partition_by: config.partition_by.clone(),
                         cluster_by: config.cluster_by.clone(),
-                        hours_to_expiration: config.hours_to_expiration.clone(),
+                        hours_to_expiration: config
+                            .hours_to_expiration
+                            .clone()
+                            .into_inner()
+                            .flatten(),
                         job_execution_timeout_seconds: config.job_execution_timeout_seconds,
                         reservation: config.reservation.clone(),
                         labels: config.labels.clone(),

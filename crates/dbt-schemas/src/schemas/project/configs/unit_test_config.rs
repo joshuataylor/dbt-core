@@ -1,5 +1,6 @@
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
+use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::Resolvable;
 use dbt_yaml::{DbtSchema, ShouldBe, Spanned};
 use indexmap::IndexMap;
@@ -20,8 +21,8 @@ use crate::schemas::{
     },
     serde::{
         IndexesConfig, PartitionsConfig, PrimaryKeyConfig, QueryTag, StringOrArrayOfStrings,
-        StringOrInteger, bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string,
-        u64_or_string_u64,
+        StringOrInteger, bool_or_string_bool, f64_or_string_f64,
+        hours_to_expiration_or_string_omissible, u64_or_string_u64,
     },
 };
 use dbt_proc_macros::DefaultTo;
@@ -108,9 +109,9 @@ pub struct ProjectUnitTestConfig {
     #[serde(
         default,
         rename = "+hours_to_expiration",
-        deserialize_with = "hours_to_expiration_or_string"
+        deserialize_with = "hours_to_expiration_or_string_omissible"
     )]
-    pub hours_to_expiration: Option<StringOrInteger>,
+    pub hours_to_expiration: Omissible<Option<StringOrInteger>>,
     #[serde(
         default,
         rename = "+job_execution_timeout_seconds",

@@ -694,6 +694,7 @@ fn model_config_clone_table_properties(config: &ModelConfig) -> Option<TableProp
             .__warehouse_specific_config__
             .hours_to_expiration
             .as_ref()
+            .and_then(|inner| inner.as_ref())
             .and_then(|v| v.to_string().parse::<u64>().ok()),
         config
             .__warehouse_specific_config__
@@ -709,6 +710,7 @@ fn snapshot_config_clone_table_properties(config: &SnapshotConfig) -> Option<Tab
             .__warehouse_specific_config__
             .hours_to_expiration
             .as_ref()
+            .and_then(|inner| inner.as_ref())
             .and_then(|v| v.to_string().parse::<u64>().ok()),
         config
             .__warehouse_specific_config__
@@ -724,6 +726,7 @@ fn seed_config_clone_table_properties(config: &SeedConfig) -> Option<TableProper
             .__warehouse_specific_config__
             .hours_to_expiration
             .as_ref()
+            .and_then(|inner| inner.as_ref())
             .and_then(|v| v.to_string().parse::<u64>().ok()),
         config
             .__warehouse_specific_config__

@@ -237,30 +237,37 @@ where
         .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok())))
 }
 
-/// Deserialize `hours_to_expiration`, preserving a present-but-non-numeric value
-/// (e.g. the string "null") instead of collapsing it to `None`.
+/// Deserialize `hours_to_expiration`, distinguishing an omitted key (`Omitted`,
+/// inherits) from an explicit `null` (`Present(None)`, which clears a value
+/// inherited from a higher level of the `models:` hierarchy). Relies on
+/// `#[serde(default)]` to produce `Omitted` for absent keys. See dbt-core#15473.
 ///
-/// dbt-core (`BigQueryAdapter.get_common_options`) includes the
-/// `expiration_timestamp` option whenever this config is present and not Python
-/// `None`, interpolating `str(value)` — so a value that renders to "null" yields
-/// `INTERVAL null hour`. Fusion must keep the rendered value to match; typing it
-/// as `Option<u64>` dropped it. See dbt-labs/fs#11681.
-pub fn hours_to_expiration_or_string<'de, D>(
+/// A present-but-non-numeric value (e.g. the rendered string "null") is kept as a
+/// value rather than collapsed: dbt-core's `BigQueryAdapter.get_common_options`
+/// emits `expiration_timestamp` whenever the config is present and not Python
+/// `None`, interpolating `str(value)`, so "null" must survive to match. See
+/// dbt-labs/fs#11681.
+pub fn hours_to_expiration_or_string_omissible<'de, D>(
     deserializer: D,
-) -> Result<Option<StringOrInteger>, D::Error>
+) -> Result<Omissible<Option<StringOrInteger>>, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = dbt_yaml::Value::deserialize(deserializer)?;
-    if let Some(i) = value.as_i64() {
-        Ok(Some(StringOrInteger::Integer(i)))
-    } else if let Some(s) = value.as_str() {
-        // Numeric strings become `Integer`; everything else (incl. "null") is
-        // preserved verbatim so the rendered SQL matches dbt-core.
-        Ok(Some(StringOrInteger::from(s.to_string())))
-    } else {
-        // Absent / YAML null -> omit the option, matching dbt-core's `is not None`.
-        Ok(None)
+    match value {
+        dbt_yaml::Value::Null(_) => Ok(Omissible::Present(None)),
+        other => {
+            if let Some(i) = other.as_i64() {
+                Ok(Omissible::Present(Some(StringOrInteger::Integer(i))))
+            } else if let Some(s) = other.as_str() {
+                // Keeps the rendered "null" string as a value, distinct from null (#11681).
+                Ok(Omissible::Present(Some(StringOrInteger::from(
+                    s.to_string(),
+                ))))
+            } else {
+                Ok(Omissible::Present(None))
+            }
+        }
     }
 }
 
@@ -1322,34 +1329,38 @@ mod tests {
         );
     }
 
-    // dbt-labs/fs#11681: a present-but-null `hours_to_expiration` must be
-    // preserved (not collapsed to None) so dbt-core parity is kept.
+    // dbt-core#15473: an omitted key must stay `Omitted` (inherit) while an
+    // explicit `null` becomes `Present(None)` (clear); the "null" string (#11681)
+    // stays a value.
     #[test]
-    fn hours_to_expiration_or_string_preserves_present_null() {
+    fn hours_to_expiration_or_string_omissible_distinguishes_null_from_omitted() {
+        use dbt_common::serde_utils::Omissible;
+
         #[derive(Deserialize)]
         struct W {
-            #[serde(default, deserialize_with = "hours_to_expiration_or_string")]
-            h: Option<StringOrInteger>,
+            #[serde(default, deserialize_with = "hours_to_expiration_or_string_omissible")]
+            h: Omissible<Option<StringOrInteger>>,
         }
 
-        // The reported case: env_var default renders to the string "null".
         assert_eq!(
-            serde_json::from_str::<W>(r#"{"h":"null"}"#).unwrap().h,
-            Some(StringOrInteger::String("null".to_string()))
+            serde_json::from_str::<W>(r#"{}"#).unwrap().h,
+            Omissible::Omitted
         );
-        // Integers stay integers.
+        assert_eq!(
+            serde_json::from_str::<W>(r#"{"h":null}"#).unwrap().h,
+            Omissible::Present(None)
+        );
         assert_eq!(
             serde_json::from_str::<W>(r#"{"h":12}"#).unwrap().h,
-            Some(StringOrInteger::Integer(12))
+            Omissible::Present(Some(StringOrInteger::Integer(12)))
         );
-        // Numeric strings normalize to integer (identical rendered SQL).
         assert_eq!(
             serde_json::from_str::<W>(r#"{"h":"12"}"#).unwrap().h,
-            Some(StringOrInteger::Integer(12))
+            Omissible::Present(Some(StringOrInteger::Integer(12)))
         );
-        // Actual null / absence -> None, so the option is omitted (matches
-        // dbt-core's `is not None`).
-        assert_eq!(serde_json::from_str::<W>(r#"{"h":null}"#).unwrap().h, None);
-        assert_eq!(serde_json::from_str::<W>(r#"{}"#).unwrap().h, None);
+        assert_eq!(
+            serde_json::from_str::<W>(r#"{"h":"null"}"#).unwrap().h,
+            Omissible::Present(Some(StringOrInteger::String("null".to_string())))
+        );
     }
 }

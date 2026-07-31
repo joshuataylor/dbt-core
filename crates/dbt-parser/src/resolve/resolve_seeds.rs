@@ -292,7 +292,11 @@ pub async fn resolve_seeds(
         let columns = process_columns(
             seed.columns.as_ref(),
             properties_config.meta.clone(),
-            properties_config.tags.clone().map(|tags| tags.into()),
+            properties_config
+                .tags
+                .inner()
+                .clone()
+                .map(|tags| tags.into()),
         )?;
 
         validate_delimiter(&properties_config.delimiter)?;
@@ -326,8 +330,9 @@ pub async fn resolve_seeds(
                 language: None,
                 tags: properties_config
                     .tags
+                    .inner()
                     .clone()
-                    .map(|tags| tags.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 classifiers: Default::default(),
                 meta: properties_config.meta.clone().unwrap_or_default(),

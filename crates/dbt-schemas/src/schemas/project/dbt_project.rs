@@ -365,18 +365,6 @@ pub trait ResolvableConfig<T>:
         Self: Sized;
 }
 
-// Improved macro for simple field defaulting with mutable references
-#[macro_export]
-macro_rules! default_to {
-    ($parent:ident, [$($field:ident),* $(,)?]) => {
-        $(
-            if $field.is_none() {
-                *$field = $parent.$field.clone();
-            }
-        )*
-    };
-}
-
 /// Yaml configs that can contain nested child configs of the same type.
 pub trait TypedRecursiveConfig: Clone {
     /// Returns the type name of the config, e.g., "model", "source", etc.

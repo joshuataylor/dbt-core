@@ -177,8 +177,9 @@ pub async fn resolve_exposures(
                     raw_code: None,
                     tags: exposure_properties_config
                         .tags
+                        .inner()
                         .clone()
-                        .map(|tags| tags.into())
+                        .map(Into::into)
                         .unwrap_or_default(),
                     classifiers: Default::default(),
                     meta: exposure_properties_config.meta.clone().unwrap_or_default(),

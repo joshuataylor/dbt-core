@@ -262,8 +262,9 @@ pub async fn resolve_saved_queries(
                     language: None,
                     tags: saved_query_config
                         .tags
+                        .inner()
                         .clone()
-                        .map(|tags| tags.into())
+                        .map(Into::into)
                         .unwrap_or_default(),
                     classifiers: Default::default(),
                     meta: saved_query_config.meta.clone().unwrap_or_default(),

@@ -512,7 +512,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             target_schema: config.target_schema,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             pre_hook: (*config.pre_hook)
                 .as_ref()
                 .map(|h| h.to_hook_config_array())
@@ -557,7 +557,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             target_schema: config.target_schema,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
-            tags: config.tags,
+            tags: crate::schemas::project::configs::config_merge::Tags(config.tags),
             pre_hook: Verbatim::from(if config.pre_hook.is_empty() {
                 None
             } else {
@@ -1061,7 +1061,7 @@ impl From<SeedConfig> for ManifestSeedConfig {
                 .map(|h| h.to_hook_config_array())
                 .unwrap_or_default(),
             static_analysis: config.static_analysis,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             quoting: config.quoting,
             materialized: config.materialized,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
@@ -1098,7 +1098,7 @@ impl From<ManifestSeedConfig> for SeedConfig {
                 Some(Hooks::HookConfigArray(config.pre_hook))
             }),
             static_analysis: config.static_analysis,
-            tags: config.tags,
+            tags: crate::schemas::project::configs::config_merge::Tags(config.tags),
             quoting: config.quoting,
             materialized: config.materialized,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
@@ -1114,8 +1114,8 @@ impl From<ModelConfig> for ManifestModelConfig {
             alias: config.alias,
             database: config.database,
             schema: config.schema,
-            tags: config.tags,
-            classifiers: config.classifiers,
+            tags: config.tags.into_inner(),
+            classifiers: config.classifiers.into_inner(),
             catalog_name: config.catalog_name,
             alt_compute: config.alt_compute,
             meta: config.meta,
@@ -1143,7 +1143,7 @@ impl From<ModelConfig> for ManifestModelConfig {
             on_configuration_change: config.on_configuration_change,
             on_error: config.on_error,
             grants: config.grants,
-            packages: config.packages,
+            packages: config.packages.into_inner(),
             python_version: config.python_version,
             imports: config.imports,
             secrets: config.secrets,
@@ -1186,8 +1186,10 @@ impl From<ManifestModelConfig> for ModelConfig {
             alias: config.alias,
             database: config.database,
             schema: config.schema,
-            tags: config.tags,
-            classifiers: config.classifiers,
+            tags: crate::schemas::project::configs::config_merge::Tags(config.tags),
+            classifiers: crate::schemas::project::configs::config_merge::Classifiers(
+                config.classifiers,
+            ),
             catalog_name: config.catalog_name,
             alt_compute: config.alt_compute,
             compute: config.compute,
@@ -1221,7 +1223,6 @@ impl From<ManifestModelConfig> for ModelConfig {
             on_configuration_change: config.on_configuration_change,
             on_error: config.on_error,
             grants: config.grants,
-            packages: config.packages,
             python_version: config.python_version,
             imports: config.imports,
             secrets: config.secrets,
@@ -1259,6 +1260,7 @@ impl From<ManifestModelConfig> for ModelConfig {
             config_keys_defaults: None,
             meta_keys_used: None,
             meta_keys_defaults: None,
+            packages: crate::schemas::project::configs::config_merge::Packages(config.packages),
         }
     }
 }
@@ -1765,7 +1767,7 @@ impl From<MetricConfig> for ManifestMetricConfig {
         Self {
             enabled: config.enabled.unwrap_or(true),
             meta: config.meta,
-            tags: match config.tags {
+            tags: match config.tags.into_inner() {
                 Some(StringOrArrayOfStrings::ArrayOfStrings(ref tags)) => tags.clone(),
                 Some(StringOrArrayOfStrings::String(ref tag)) => vec![tag.clone()],
                 None => vec![],

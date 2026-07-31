@@ -285,8 +285,9 @@ pub fn resolve_nested_model_metrics(
                         language: None,
                         tags: metric_config
                             .tags
+                            .inner()
                             .clone()
-                            .map(|tags| tags.into())
+                            .map(Into::into)
                             .unwrap_or_default(),
                         classifiers: Default::default(),
                         meta: metric_config.meta.clone().unwrap_or_default(),
@@ -565,8 +566,9 @@ pub fn resolve_top_level_metrics(
                 language: None,
                 tags: metric_metric_config
                     .tags
+                    .inner()
                     .clone()
-                    .map(|tags| tags.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 classifiers: Default::default(),
                 meta: metric_metric_config.meta.clone().unwrap_or_default(),

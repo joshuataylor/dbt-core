@@ -11,8 +11,6 @@ use dbt_common::tracing::emit::emit_trace_event;
 use dbt_telemetry::StateModifiedDiff;
 
 use crate::schemas::common::PartitionConfig;
-use crate::schemas::common::merge_tags;
-use crate::schemas::common::merge_vec;
 use crate::schemas::common::{ClusterConfig, DocsConfig, Schedule};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::model_config::DataLakeObjectCategory;
@@ -89,56 +87,6 @@ pub fn array_of_strings_eq(
 pub fn tags_eq_vec(a: &[String], b: &[String]) -> bool {
     use std::collections::BTreeSet;
     a.iter().cloned().collect::<BTreeSet<_>>() == b.iter().cloned().collect::<BTreeSet<_>>()
-}
-
-/// Helper function to handle default_to logic for tags.
-/// Parent (less specific) tags first, then child — matches dbt-core additive
-/// inheritance order. Do not alphabetically sort (dbt-labs/dbt-core#15590).
-pub fn default_tags(
-    child_tags: &mut Option<StringOrArrayOfStrings>,
-    parent_tags: &Option<StringOrArrayOfStrings>,
-) {
-    let child_vec = child_tags.take().map(|tags| tags.into());
-    let parent_vec = parent_tags.clone().map(|tags| tags.into());
-    *child_tags = merge_tags(parent_vec, child_vec).map(StringOrArrayOfStrings::ArrayOfStrings);
-}
-
-/// Helper function to handle default_to logic for classifiers.
-/// Merges child and parent classifiers into a deduped, sorted union.
-pub fn default_classifiers(
-    child_classifiers: &mut Option<StringOrArrayOfStrings>,
-    parent_classifiers: &Option<StringOrArrayOfStrings>,
-) {
-    let child_vec = child_classifiers.take().map(|c| c.into());
-    let parent_vec = parent_classifiers.clone().map(|c| c.into());
-    *child_classifiers =
-        merge_vec(child_vec, parent_vec).map(StringOrArrayOfStrings::ArrayOfStrings);
-}
-
-/// Helper function to handle default_to logic for packages
-/// Packages should append parent values to child values (parent first, then child)
-/// Note: Unlike tags (which order-preserving-dedupe), packages are NOT deduplicated,
-/// matching dbt-core behavior
-pub fn default_packages(
-    child_packages: &mut Option<StringOrArrayOfStrings>,
-    parent_packages: &Option<StringOrArrayOfStrings>,
-) {
-    // Convert to Vec<String> for merging
-    let child_vec: Option<Vec<String>> = child_packages.take().map(|packages| packages.into());
-    let parent_vec: Option<Vec<String>> = parent_packages.clone().map(|packages| packages.into());
-
-    // Simple append without deduplication or sorting (matches dbt-core)
-    let merged = match (parent_vec, child_vec) {
-        (None, None) => None,
-        (Some(mut parent), Some(child)) => {
-            parent.extend(child);
-            Some(parent)
-        }
-        (Some(parent), None) => Some(parent),
-        (None, Some(child)) => Some(child),
-    };
-
-    *child_packages = merged.map(StringOrArrayOfStrings::ArrayOfStrings);
 }
 
 /// This configuration is a superset of all warehouse specific configurations
@@ -1237,72 +1185,23 @@ mod tests {
     }
 
     #[test]
-    fn test_default_classifiers_merges_child_and_parent() {
-        let mut child = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-            "gdpr".to_string(),
-        ]));
-        let parent = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-            "pii".to_string(),
-        ]));
-        default_classifiers(&mut child, &parent);
-        assert_eq!(
-            child,
-            Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-                "gdpr".to_string(),
-                "pii".to_string(),
-            ]))
-        );
-    }
-
-    #[test]
-    fn test_default_classifiers_none_child_inherits_parent() {
-        let mut child: Option<StringOrArrayOfStrings> = None;
-        let parent = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-            "pii".to_string(),
-        ]));
-        default_classifiers(&mut child, &parent);
-        assert_eq!(
-            child,
-            Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-                "pii".to_string(),
-            ]))
-        );
-    }
-
-    #[test]
-    fn test_default_tags_parent_first_order() {
+    fn test_tags_default_to_parent_first_order() {
         // Nested dbt_project.yml +tags: parent folder INTERMEDIATE, child DAILY
         // must resolve to [INTERMEDIATE, DAILY] like dbt-core (issue #15590).
-        let mut child_tags = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+        use crate::schemas::project::configs::config_merge::{DefaultTo, Tags};
+
+        let mut child_tags = Tags(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
             "DAILY".to_string(),
-        ]));
-        let parent_tags = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+        ])));
+        let parent_tags = Tags(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
             "INTERMEDIATE".to_string(),
-        ]));
-        default_tags(&mut child_tags, &parent_tags);
+        ])));
+        child_tags.inherit_from(&parent_tags);
         assert_eq!(
-            child_tags,
+            child_tags.into_inner(),
             Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "INTERMEDIATE".to_string(),
                 "DAILY".to_string(),
-            ]))
-        );
-    }
-
-    #[test]
-    fn test_default_packages_append() {
-        let mut child = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-            "child_pkg".to_string(),
-        ]));
-        let parent = Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-            "parent_pkg".to_string(),
-        ]));
-        default_packages(&mut child, &parent);
-        assert_eq!(
-            child,
-            Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
-                "parent_pkg".to_string(),
-                "child_pkg".to_string(),
             ]))
         );
     }

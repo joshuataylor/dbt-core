@@ -1,10 +1,8 @@
-use crate::default_to;
 use crate::schemas::common::ConstraintType;
 use crate::schemas::common::DimensionValidityParams;
 use crate::schemas::common::ModelFreshnessRules;
 use crate::schemas::common::UpdatesOn;
 use crate::schemas::common::Versions;
-use crate::schemas::common::merge_meta;
 use crate::schemas::common::model_freshness_rules_or_duration;
 use crate::schemas::data_tests::DataTests;
 use crate::schemas::dbt_column::ColumnProperties;
@@ -14,7 +12,7 @@ use crate::schemas::dbt_column::Granularity;
 use crate::schemas::project::ModelConfig;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::SemanticModelConfig;
-use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::project::configs::config_merge::DefaultTo;
 use crate::schemas::project::configs::semantic_model_config::ResolvedSemanticModelConfig;
 use crate::schemas::properties::MetricsProperties;
 use crate::schemas::properties::properties::GetConfig;
@@ -105,17 +103,7 @@ impl ResolvableConfig<SemanticModelConfig> for ModelPropertiesSemanticModelConfi
     }
 
     fn default_to(&mut self, parent: &SemanticModelConfig) {
-        let enabled = &mut Some(self.enabled);
-        let group = &mut self.group;
-        let mut meta = self.config.clone().unwrap_or_default().meta;
-        let mut tags = None;
-
-        meta = merge_meta(parent.meta.clone(), meta.take());
-        let _ = meta;
-        default_tags(&mut tags, &parent.tags);
-        let _ = tags;
-
-        default_to!(parent, [enabled, group]);
+        DefaultTo::inherit_from(&mut self.group, &parent.group);
     }
 }
 

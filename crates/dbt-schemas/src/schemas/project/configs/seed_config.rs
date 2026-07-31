@@ -27,7 +27,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
@@ -338,12 +338,11 @@ pub struct SeedConfig {
     pub post_hook: Verbatim<Option<Hooks>>,
     #[serde(alias = "pre-hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     #[resolved(promote, expect = "quoting set by apply_package_defaults")]
     pub quoting: Option<DbtQuoting>,
     pub materialized: Option<DbtMaterialization>,
@@ -372,7 +371,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
             persist_docs: config.persist_docs,
             post_hook: config.post_hook,
             pre_hook: config.pre_hook,
-            tags: config.tags,
+            tags: Tags(config.tags),
             quoting: config.quoting,
             materialized: Some(DbtMaterialization::Seed),
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
@@ -499,7 +498,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             post_hook: config.post_hook,
             pre_hook: config.pre_hook,
             static_analysis: config.static_analysis,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             quoting: config.quoting,
             // Snowflake fields
             adapter_properties: config.__warehouse_specific_config__.adapter_properties,
@@ -629,7 +628,6 @@ impl ResolvableConfig<SeedConfig> for SeedConfig {
     }
 
     fn default_to(&mut self, parent: &SeedConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

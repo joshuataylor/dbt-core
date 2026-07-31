@@ -4519,21 +4519,20 @@ where
     }
 }
 
-/// Serialize Option<StringOrArrayOfStrings> as empty array when None, otherwise as an array.
-/// This ensures the field is always present as a list in serialized output, which is required for
-/// Jinja macros that call `obj.config.tags.extend(...)` or similar list operations.
+/// Serialize Option<StringOrArrayOfStrings> (or a newtype wrapping it, e.g. `Tags`/`Classifiers`)
+/// as empty array when None, otherwise as an array. This ensures the field is always present as a
+/// list in serialized output, which is required for Jinja macros that call
+/// `obj.config.tags.extend(...)` or similar list operations.
 /// See: https://github.com/dbt-labs/dbt-fusion/issues/1198
-pub fn serialize_none_as_empty_list<S>(
-    value: &Option<StringOrArrayOfStrings>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize_none_as_empty_list<S, T>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
+    T: super::serde::AsStringOrArrayOfStrings,
 {
     use super::serde::StringOrArrayOfStrings::{ArrayOfStrings, String as SingleString};
     use serde::ser::SerializeSeq;
 
-    match value {
+    match value.as_string_or_array_of_strings() {
         Some(ArrayOfStrings(vec)) => vec.serialize(serializer),
         Some(SingleString(s)) => {
             let mut seq = serializer.serialize_seq(Some(1))?;
@@ -7473,7 +7472,11 @@ mod seed_has_same_content_tests {
             ("group", Box::new(|c| c.group = Some("a_group".to_string()))),
             (
                 "tags",
-                Box::new(|c| c.tags = Some(StringOrArrayOfStrings::String("a_tag".to_string()))),
+                Box::new(|c| {
+                    c.tags = crate::schemas::project::configs::config_merge::Tags(Some(
+                        StringOrArrayOfStrings::String("a_tag".to_string()),
+                    ))
+                }),
             ),
             ("full_refresh", Box::new(|c| c.full_refresh = Some(true))),
             (

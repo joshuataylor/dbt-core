@@ -1753,8 +1753,9 @@ mod tests {
                 "tags",
                 ExcludeKind::Parity,
                 Box::new(|n| {
-                    n.deprecated_config.tags =
-                        Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                    n.deprecated_config.tags = crate::schemas::project::configs::config_merge::Tags(
+                        Some(StringOrArrayOfStrings::String("a_tag".to_string())),
+                    )
                 }),
             ),
             (
@@ -1904,8 +1905,9 @@ mod tests {
                 "tags",
                 ExcludeKind::Parity,
                 Box::new(|n| {
-                    n.deprecated_config.tags =
-                        Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                    n.deprecated_config.tags = crate::schemas::project::configs::config_merge::Tags(
+                        Some(StringOrArrayOfStrings::String("a_tag".to_string())),
+                    )
                 }),
             ),
             (
@@ -2030,7 +2032,9 @@ mod tests {
                 ExcludeKind::Relevant,
                 Box::new(|n| {
                     n.deprecated_config.packages =
-                        Some(StringOrArrayOfStrings::String("pkg1".to_string()))
+                        crate::schemas::project::configs::config_merge::Packages(Some(
+                            StringOrArrayOfStrings::String("pkg1".to_string()),
+                        ))
                 }),
             ),
             (
@@ -2047,8 +2051,9 @@ mod tests {
                 "tags",
                 ExcludeKind::Parity,
                 Box::new(|n| {
-                    n.deprecated_config.tags =
-                        Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                    n.deprecated_config.tags = crate::schemas::project::configs::config_merge::Tags(
+                        Some(StringOrArrayOfStrings::String("a_tag".to_string())),
+                    )
                 }),
             ),
             (
@@ -2271,8 +2276,9 @@ mod tests {
                 "tags",
                 ExcludeKind::Parity,
                 Box::new(|n| {
-                    n.deprecated_config.tags =
-                        Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                    n.deprecated_config.tags = crate::schemas::project::configs::config_merge::Tags(
+                        Some(StringOrArrayOfStrings::String("a_tag".to_string())),
+                    )
                 }),
             ),
             (
@@ -2462,7 +2468,9 @@ mod tests {
                 ExcludeKind::Relevant,
                 Box::new(|n| {
                     n.deprecated_config.packages =
-                        Some(StringOrArrayOfStrings::String("pkg1".to_string()))
+                        crate::schemas::project::configs::config_merge::Packages(Some(
+                            StringOrArrayOfStrings::String("pkg1".to_string()),
+                        ))
                 }),
             ),
             (
@@ -2569,8 +2577,9 @@ mod tests {
                 "tags",
                 ExcludeKind::Parity,
                 Box::new(|n| {
-                    n.deprecated_config.tags =
-                        Some(StringOrArrayOfStrings::String("a_tag".to_string()))
+                    n.deprecated_config.tags = crate::schemas::project::configs::config_merge::Tags(
+                        Some(StringOrArrayOfStrings::String("a_tag".to_string())),
+                    )
                 }),
             ),
             (

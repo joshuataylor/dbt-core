@@ -2,17 +2,21 @@
 //!
 //! Defines the [`DefaultTo`] trait and [`ReplaceIfNone`] marker, plus per-type
 //! [`DefaultTo`] impls that encode each field type's merge strategy (replace-if-none,
-//! union-merge, deep-merge, append, etc.).
+//! union-merge, deep-merge, append, etc.). Also houses the [`Tags`] and [`Packages`]
+//! newtypes that carry merge semantics for `StringOrArrayOfStrings` fields.
 
 use std::collections::BTreeMap;
 
 use dbt_common::serde_utils::Omissible;
 use dbt_yaml::{Spanned, Verbatim};
 use indexmap::IndexMap;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::schemas::common::{DbtQuoting, DocsConfig, Hooks, merge_meta};
+use crate::schemas::common::{DbtQuoting, DocsConfig, Hooks, merge_meta, merge_tags, merge_vec};
 use crate::schemas::serde::{
-    IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig, StringOrArrayOfStrings,
+    AsStringOrArrayOfStrings, IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig,
+    StringOrArrayOfStrings,
 };
 
 type YmlValue = dbt_yaml::Value;
@@ -119,6 +123,68 @@ impl DefaultTo for Option<IndexMap<String, YmlValue>> {
     }
 }
 
+/// Shared accessors + `AsStringOrArrayOfStrings` impl for newtypes wrapping
+/// `Option<StringOrArrayOfStrings>`. `DefaultTo::inherit_from` is written by hand
+/// per type since each has genuinely different merge semantics.
+macro_rules! string_or_array_newtype {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[serde(transparent)]
+        pub struct $name(pub Option<StringOrArrayOfStrings>);
+
+        impl $name {
+            pub fn is_some(&self) -> bool {
+                self.0.is_some()
+            }
+
+            pub fn inner(&self) -> &Option<StringOrArrayOfStrings> {
+                &self.0
+            }
+
+            pub fn into_inner(self) -> Option<StringOrArrayOfStrings> {
+                self.0
+            }
+        }
+
+        impl AsStringOrArrayOfStrings for $name {
+            fn as_string_or_array_of_strings(&self) -> &Option<StringOrArrayOfStrings> {
+                self.inner()
+            }
+        }
+    };
+}
+
+string_or_array_newtype!(
+    /// Tags: parent (less specific) values first, then child — matches dbt-core
+    /// additive inheritance order. Do not alphabetically sort (dbt-labs/dbt-core#15590).
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+    Tags
+);
+
+impl DefaultTo for Tags {
+    fn inherit_from(&mut self, parent: &Self) {
+        let child_vec: Option<Vec<String>> = self.0.take().map(|v| v.into());
+        let parent_vec: Option<Vec<String>> = parent.0.clone().map(|v| v.into());
+        self.0 = merge_tags(parent_vec, child_vec).map(StringOrArrayOfStrings::ArrayOfStrings);
+    }
+}
+
+string_or_array_newtype!(
+    /// Classifiers: unordered set-like config — union-merge, deduplicated and sorted.
+    /// Unlike [`Tags`], classifier order does not carry meaning, so `merge_vec` (sorted)
+    /// is used instead of `merge_tags` (parent-first, order-preserving).
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+    Classifiers
+);
+
+impl DefaultTo for Classifiers {
+    fn inherit_from(&mut self, parent: &Self) {
+        let child_vec: Option<Vec<String>> = self.0.take().map(|v| v.into());
+        let parent_vec: Option<Vec<String>> = parent.0.clone().map(|v| v.into());
+        self.0 = merge_vec(child_vec, parent_vec).map(StringOrArrayOfStrings::ArrayOfStrings);
+    }
+}
+
 impl ReplaceIfNone for StringOrArrayOfStrings {}
 
 /// Column types merge: parent keys fill in missing child keys.
@@ -135,6 +201,29 @@ impl DefaultTo for Option<BTreeMap<Spanned<String>, String>> {
             }
             (_, None) => {}
         }
+    }
+}
+
+string_or_array_newtype!(
+    /// Packages: append parent values before child values, no dedup.
+    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+    Packages
+);
+
+impl DefaultTo for Packages {
+    fn inherit_from(&mut self, parent: &Self) {
+        let child_vec: Option<Vec<String>> = self.0.take().map(|p| p.into());
+        let parent_vec: Option<Vec<String>> = parent.0.clone().map(|p| p.into());
+        let merged = match (parent_vec, child_vec) {
+            (None, None) => None,
+            (Some(mut p), Some(c)) => {
+                p.extend(c);
+                Some(p)
+            }
+            (Some(p), None) => Some(p),
+            (None, Some(c)) => Some(c),
+        };
+        self.0 = merged.map(StringOrArrayOfStrings::ArrayOfStrings);
     }
 }
 

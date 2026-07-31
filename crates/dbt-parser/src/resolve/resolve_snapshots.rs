@@ -394,7 +394,7 @@ pub async fn resolve_snapshots(
             let columns = process_columns(
                 properties.columns.as_ref(),
                 snapshot_config.meta.clone(),
-                snapshot_config.tags.clone().map(|tags| tags.into()),
+                snapshot_config.tags.inner().clone().map(|tags| tags.into()),
             )?;
 
             // dbt-core builds snapshot fqns differently for the two definition
@@ -524,8 +524,9 @@ pub async fn resolve_snapshots(
                     language: Some("sql".to_string()),
                     tags: snapshot_config
                         .tags
+                        .inner()
                         .clone()
-                        .map(|tags| tags.into())
+                        .map(Into::into)
                         .unwrap_or_default(),
                     classifiers: Default::default(),
                     meta: snapshot_config.meta.clone().unwrap_or_default(),

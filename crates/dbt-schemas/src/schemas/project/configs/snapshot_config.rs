@@ -30,7 +30,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::properties::ModelState;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
@@ -39,7 +39,8 @@ use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, f64_or_string_f64,
     hours_to_expiration_or_string, u64_or_string_u64,
 };
-use dbt_proc_macros::{DefaultTo, Resolvable};
+use dbt_proc_macros::DefaultTo;
+use dbt_proc_macros::Resolvable;
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -398,12 +399,11 @@ pub struct SnapshotConfig {
     pub enabled: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub full_refresh: Option<bool>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     #[serde(alias = "pre-hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
     #[serde(alias = "post-hook")]
@@ -566,7 +566,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             compute: config.compute,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
-            tags: config.tags,
+            tags: Tags(config.tags),
             pre_hook: config.pre_hook,
             post_hook: config.post_hook,
             persist_docs: config.persist_docs,
@@ -705,7 +705,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             compute: config.compute,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             pre_hook: config.pre_hook,
             post_hook: config.post_hook,
             persist_docs: config.persist_docs,
@@ -857,7 +857,6 @@ impl ResolvableConfig<SnapshotConfig> for SnapshotConfig {
     }
 
     fn default_to(&mut self, parent: &SnapshotConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

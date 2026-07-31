@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 type YmlValue = dbt_yaml::Value;
 
 use crate::schemas::common::DocsConfig;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{StringOrArrayOfStrings, bool_or_string_bool};
 use dbt_common::io_args::StaticAnalysisKind;
@@ -69,16 +70,12 @@ pub struct AnalysesConfig {
     // We don't want to do static analysis for analysis nodes unless they are explicitly enabled
     #[resolved(promote, default = StaticAnalysisKind::Off.into())]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
-    // NOTE: unlike other config structs, analysis meta/tags use simple replace-if-none
-    // semantics (matching legacy behavior), not the merge_meta/merge_tags helpers.
-    #[default_to(skip)]
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     pub description: Option<String>,
     pub docs: Option<DocsConfig>,
     pub group: Option<String>,
@@ -90,7 +87,7 @@ impl From<ProjectAnalysisConfig> for AnalysesConfig {
             enabled: config.enabled,
             static_analysis: config.static_analysis,
             meta: config.meta,
-            tags: config.tags,
+            tags: Tags(config.tags),
             description: None,
             docs: config.docs,
             group: config.group,
@@ -104,12 +101,6 @@ impl ResolvableConfig<AnalysesConfig> for AnalysesConfig {
     type ResolveDefaults = ();
 
     fn default_to(&mut self, other: &AnalysesConfig) {
-        if self.meta.is_none() {
-            self.meta = other.meta.clone();
-        }
-        if self.tags.is_none() {
-            self.tags = other.tags.clone();
-        }
         self.default_to_fields(other);
     }
 

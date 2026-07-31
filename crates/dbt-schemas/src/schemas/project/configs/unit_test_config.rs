@@ -9,15 +9,13 @@ type YmlValue = dbt_yaml::Value;
 use serde_with::skip_serializing_none;
 use std::collections::{BTreeMap, btree_map::Iter};
 
-use dbt_proc_macros::DefaultTo;
-
 use crate::schemas::{
     common::{ClusterConfig, PartitionConfig, Schedule},
     manifest::GrantAccessToTarget,
     project::{
         ResolvableConfig, TypedRecursiveConfig,
         configs::{
-            common::WarehouseSpecificNodeConfig, common::default_tags, config_keys::ConfigKeys,
+            common::WarehouseSpecificNodeConfig, config_keys::ConfigKeys, config_merge::Tags,
         },
     },
     serde::{
@@ -26,6 +24,7 @@ use crate::schemas::{
         u64_or_string_u64,
     },
 };
+use dbt_proc_macros::DefaultTo;
 
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -296,12 +295,11 @@ pub struct UnitTestConfig {
     #[resolved(promote, expect = "static_analysis set by apply_resolve_defaults")]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     // Adapter specific configs
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
@@ -313,7 +311,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
             compute: config.compute,
             static_analysis: config.static_analysis,
             meta: config.meta,
-            tags: config.tags,
+            tags: Tags(config.tags),
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 description: None, // Only for Bigquery Models
                 adapter_properties: config.adapter_properties,
@@ -425,7 +423,7 @@ impl From<UnitTestConfig> for ProjectUnitTestConfig {
             compute: config.compute,
             static_analysis: config.static_analysis,
             meta: config.meta,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             // Snowflake fields
             adapter_properties: config.__warehouse_specific_config__.adapter_properties,
             external_volume: config.__warehouse_specific_config__.external_volume,
@@ -551,7 +549,6 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
     }
 
     fn default_to(&mut self, parent: &UnitTestConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

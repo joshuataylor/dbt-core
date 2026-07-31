@@ -8,13 +8,14 @@ use serde_with::skip_serializing_none;
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
-use dbt_proc_macros::{DefaultTo, Resolvable};
+use dbt_proc_macros::Resolvable;
 
-use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::{
     project::{ResolvableConfig, TypedRecursiveConfig},
     serde::{StringOrArrayOfStrings, bool_or_string_bool},
 };
+use dbt_proc_macros::DefaultTo;
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -57,12 +58,11 @@ pub struct SavedQueryConfig {
     pub schema: Option<String>,
     pub group: Option<String>,
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
 }
 
 #[skip_serializing_none]
@@ -92,7 +92,7 @@ impl Default for SavedQueryConfig {
             schema: None,
             group: None,
             meta: Some(IndexMap::new()),
-            tags: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
+            tags: Tags(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![]))),
         }
     }
 }
@@ -106,7 +106,7 @@ impl From<ProjectSavedQueryConfig> for SavedQueryConfig {
             schema: config.schema,
             group: config.group,
             meta: config.meta,
-            tags: config.tags,
+            tags: Tags(config.tags),
         }
     }
 }
@@ -120,7 +120,7 @@ impl From<SavedQueryConfig> for ProjectSavedQueryConfig {
             schema: config.schema,
             group: config.group,
             meta: config.meta,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             __additional_properties__: BTreeMap::new(),
         }
     }
@@ -146,7 +146,6 @@ impl ResolvableConfig<SavedQueryConfig> for SavedQueryConfig {
     }
 
     fn default_to(&mut self, parent: &SavedQueryConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

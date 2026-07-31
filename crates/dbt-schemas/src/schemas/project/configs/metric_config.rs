@@ -1,4 +1,4 @@
-use dbt_proc_macros::{DefaultTo, Resolvable};
+use dbt_proc_macros::Resolvable;
 use dbt_yaml::{DbtSchema, ShouldBe};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -8,11 +8,12 @@ use std::collections::{BTreeMap, btree_map::Iter};
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
-use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::{
     project::{ResolvableConfig, TypedRecursiveConfig},
     serde::{StringOrArrayOfStrings, bool_or_string_bool},
 };
+use dbt_proc_macros::DefaultTo;
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
@@ -45,12 +46,11 @@ pub struct MetricConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     pub group: Option<String>,
 }
 
@@ -59,7 +59,7 @@ impl Default for MetricConfig {
         Self {
             enabled: Some(true),
             meta: Some(IndexMap::new()),
-            tags: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![])),
+            tags: Tags(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![]))),
             group: None,
         }
     }
@@ -70,7 +70,7 @@ impl From<ProjectMetricConfigs> for MetricConfig {
         Self {
             enabled: config.enabled,
             meta: config.meta,
-            tags: config.tags,
+            tags: Tags(config.tags),
             group: config.group,
         }
     }
@@ -81,7 +81,7 @@ impl From<MetricConfig> for ProjectMetricConfigs {
         Self {
             enabled: config.enabled,
             meta: config.meta,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             group: config.group,
             __additional_properties__: BTreeMap::new(),
         }
@@ -108,7 +108,6 @@ impl ResolvableConfig<MetricConfig> for MetricConfig {
     }
 
     fn default_to(&mut self, parent: &MetricConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

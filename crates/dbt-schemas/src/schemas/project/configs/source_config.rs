@@ -16,7 +16,7 @@ use crate::schemas::common::{
 };
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::default_tags;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
     IndexesConfig, PartitionsConfig, PrimaryKeyConfig, StringOrArrayOfStrings, StringOrInteger,
@@ -251,12 +251,11 @@ pub struct SourceConfig {
     pub meta: Option<IndexMap<String, YmlValue>>,
     #[serde(default)]
     pub freshness: Omissible<Option<FreshnessDefinition>>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     pub loaded_at_field: Option<String>,
     pub loaded_at_query: Verbatim<Option<String>>,
     #[resolved(promote, expect = "static_analysis set by apply_resolve_defaults")]
@@ -283,7 +282,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
             event_time: config.event_time,
             meta: config.meta,
             freshness: config.freshness,
-            tags: config.tags,
+            tags: Tags(config.tags),
             loaded_at_field: config.loaded_at_field,
             loaded_at_query: config.loaded_at_query,
             static_analysis: config.static_analysis,
@@ -403,7 +402,7 @@ impl From<SourceConfig> for ProjectSourceConfig {
             event_time: config.event_time,
             meta: config.meta,
             freshness: config.freshness,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             loaded_at_field: config.loaded_at_field,
             loaded_at_query: config.loaded_at_query,
             static_analysis: config.static_analysis,
@@ -519,7 +518,6 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
     }
 
     fn default_to(&mut self, parent: &SourceConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

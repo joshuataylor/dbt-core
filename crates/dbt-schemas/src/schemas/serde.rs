@@ -616,6 +616,19 @@ impl From<StringOrArrayOfStrings> for Vec<String> {
     }
 }
 
+/// Types that can be viewed as `&Option<StringOrArrayOfStrings>`, e.g. the type itself or a
+/// newtype wrapping it (like `Tags`/`Classifiers`). A local trait, since `AsRef` can't be
+/// implemented for the foreign `Option<StringOrArrayOfStrings>` type (orphan rule).
+pub trait AsStringOrArrayOfStrings {
+    fn as_string_or_array_of_strings(&self) -> &Option<StringOrArrayOfStrings>;
+}
+
+impl AsStringOrArrayOfStrings for Option<StringOrArrayOfStrings> {
+    fn as_string_or_array_of_strings(&self) -> &Option<StringOrArrayOfStrings> {
+        self
+    }
+}
+
 pub fn string_or_number_or_array_to_string_array<'de, D>(
     deserializer: D,
 ) -> Result<Option<StringOrArrayOfStrings>, D::Error>

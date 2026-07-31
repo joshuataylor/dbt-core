@@ -363,8 +363,9 @@ pub async fn resolve_functions(
                 },
                 tags: model_config
                     .tags
+                    .inner()
                     .clone()
-                    .map(|tags| tags.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 classifiers: Default::default(),
                 meta: model_config.meta.clone().unwrap_or_default(),

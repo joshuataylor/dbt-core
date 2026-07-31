@@ -15,9 +15,11 @@ use crate::schemas::common::{
     ClusterConfig, DbtMaterialization, DbtQuoting, Schedule, Severity, StoreFailuresAs,
 };
 use crate::schemas::manifest::GrantAccessToTarget;
-use crate::schemas::project::configs::common::{WarehouseSpecificNodeConfig, default_tags};
+use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::properties::DataTestState;
-use dbt_proc_macros::{DefaultTo, Resolvable};
+use dbt_proc_macros::DefaultTo;
+use dbt_proc_macros::Resolvable;
 
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
@@ -359,12 +361,11 @@ pub struct DataTestConfig {
     pub store_failures: Option<bool>,
     pub store_failures_as: Option<StoreFailuresAs>,
     pub sql_header: Option<String>,
-    #[default_to(skip)]
     #[serde(
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     #[resolved(promote, default = DEFAULT_DATA_TEST_WARN_IF.to_string())]
     pub warn_if: Option<String>,
     #[resolved(promote, expect = "quoting set by apply_package_defaults")]
@@ -402,7 +403,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
             store_failures: config.store_failures,
             store_failures_as: config.store_failures_as,
             sql_header: config.sql_header,
-            tags: config.tags,
+            tags: Tags(config.tags),
             warn_if: config.warn_if,
             quoting: config.quoting,
             where_: config.where_,
@@ -533,7 +534,7 @@ impl From<DataTestConfig> for ProjectDataTestConfig {
             store_failures: config.store_failures,
             store_failures_as: config.store_failures_as,
             sql_header: config.sql_header,
-            tags: config.tags,
+            tags: config.tags.into_inner(),
             warn_if: config.warn_if,
             quoting: config.quoting,
             where_: config.where_,
@@ -690,7 +691,6 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
     }
 
     fn default_to(&mut self, parent: &DataTestConfig) {
-        default_tags(&mut self.tags, &parent.tags);
         self.default_to_fields(parent);
     }
 }

@@ -179,7 +179,7 @@ pub async fn resolve_analyses(
         let columns = process_columns(
             properties.columns.as_ref(),
             analysis_config.meta.clone(),
-            analysis_config.tags.clone().map(|tags| tags.into()),
+            analysis_config.tags.inner().clone().map(|tags| tags.into()),
         )?;
 
         let is_enabled = matches!(status, ModelStatus::Enabled);
@@ -206,6 +206,7 @@ pub async fn resolve_analyses(
                 raw_code: Some(raw_code),
                 tags: analysis_config
                     .tags
+                    .inner()
                     .clone()
                     .map(|tags| tags.into())
                     .unwrap_or_default(),

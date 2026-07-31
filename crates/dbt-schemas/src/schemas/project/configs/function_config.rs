@@ -25,12 +25,11 @@ use super::common::{
     same_warehouse_config,
 };
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::common::{default_packages, default_tags};
+use crate::schemas::project::configs::config_merge::{Packages, Tags};
 use crate::schemas::project::dbt_project::{
     ResolvableConfig, ResolvedConfig, TypedRecursiveConfig,
 };
 use crate::schemas::properties::{FunctionKind, Volatility};
-use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{bool_or_string_bool, default_type};
 
 fn default_function_kind() -> Option<FunctionKind> {
@@ -76,9 +75,8 @@ pub struct ProjectFunctionConfig {
     pub schema: Omissible<Option<String>>,
     #[serde(rename = "+static_analysis")]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
-    #[default_to(skip)]
     #[serde(rename = "+tags")]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     #[serde(rename = "+type")]
     pub function_kind: Option<FunctionKind>,
     #[serde(rename = "+volatility")]
@@ -87,9 +85,8 @@ pub struct ProjectFunctionConfig {
     pub runtime_version: Option<String>,
     #[serde(rename = "+entry_point")]
     pub entry_point: Option<String>,
-    #[default_to(skip)]
     #[serde(rename = "+packages")]
-    pub packages: Option<StringOrArrayOfStrings>,
+    pub packages: Packages,
     #[serde(rename = "+snowflake")]
     pub snowflake: Option<FunctionSnowflakeConfig>,
 
@@ -114,12 +111,12 @@ impl Default for ProjectFunctionConfig {
             quoting: None,
             schema: Omissible::Omitted,
             static_analysis: None,
-            tags: None,
+            tags: Tags::default(),
             function_kind: None,
             volatility: None,
             runtime_version: None,
             entry_point: None,
-            packages: None,
+            packages: Packages::default(),
             snowflake: None,
             __additional_properties__: BTreeMap::new(),
         }
@@ -150,8 +147,6 @@ impl ResolvableConfig<ProjectFunctionConfig> for ProjectFunctionConfig {
     }
 
     fn default_to(&mut self, parent: &ProjectFunctionConfig) {
-        default_tags(&mut self.tags, &parent.tags);
-        default_packages(&mut self.packages, &parent.packages);
         self.default_to_fields(parent);
     }
 }
@@ -183,7 +178,7 @@ pub struct FunctionConfig {
         default,
         serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
     )]
-    pub tags: Option<StringOrArrayOfStrings>,
+    pub tags: Tags,
     // need default to ensure None if field is not set
     #[serde(default, deserialize_with = "default_type")]
     pub meta: Option<IndexMap<String, YmlValue>>,
@@ -200,8 +195,7 @@ pub struct FunctionConfig {
     pub volatility: Option<Volatility>,
     pub runtime_version: Option<String>,
     pub entry_point: Option<String>,
-    #[default_to(skip)]
-    pub packages: Option<StringOrArrayOfStrings>,
+    pub packages: Packages,
     pub snowflake: Option<FunctionSnowflakeConfig>,
 
     // Warehouse-specific configurations
@@ -238,7 +232,6 @@ impl ResolvableConfig<FunctionConfig> for FunctionConfig {
     }
 
     fn default_to(&mut self, parent: &FunctionConfig) {
-        default_packages(&mut self.packages, &parent.packages);
         self.default_to_fields(parent);
     }
 }
@@ -291,7 +284,7 @@ impl FunctionConfig {
         let function_kind_eq = self.function_kind == other.function_kind;
         let volatility_eq = self.volatility == other.volatility;
         let access_eq_result = access_eq(&self.access, &other.access); // Custom comparison for access
-        let packages_eq = array_of_strings_eq(&self.packages, &other.packages);
+        let packages_eq = array_of_strings_eq(self.packages.inner(), other.packages.inner());
         let snowflake_eq = self.snowflake == other.snowflake;
         let warehouse_config_eq = same_warehouse_config(
             &self.__warehouse_specific_config__,
@@ -429,23 +422,24 @@ impl ConfigKeys for FunctionConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schemas::project::configs::config_merge::Packages;
     use crate::schemas::project::dbt_project::ResolvableConfig;
     use crate::schemas::serde::StringOrArrayOfStrings;
 
     #[test]
     fn test_function_config_packages_append() {
         let parent = FunctionConfig {
-            packages: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            packages: Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "numpy".to_string(),
                 "pandas".to_string(),
-            ])),
+            ]))),
             ..Default::default()
         };
 
         let mut child = FunctionConfig {
-            packages: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            packages: Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "matplotlib".to_string(),
-            ])),
+            ]))),
             ..Default::default()
         };
 
@@ -453,25 +447,25 @@ mod tests {
 
         assert_eq!(
             child.packages,
-            Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "numpy".to_string(),
                 "pandas".to_string(),
                 "matplotlib".to_string(),
-            ]))
+            ])))
         );
     }
 
     #[test]
     fn test_function_config_packages_none_child_inherits_parent() {
         let parent = FunctionConfig {
-            packages: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            packages: Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "numpy".to_string(),
-            ])),
+            ]))),
             ..Default::default()
         };
 
         let mut child = FunctionConfig {
-            packages: None,
+            packages: Packages::default(),
             ..Default::default()
         };
 
@@ -479,34 +473,34 @@ mod tests {
 
         assert_eq!(
             child.packages,
-            Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "numpy".to_string(),
-            ]))
+            ])))
         );
     }
 
     #[test]
     fn test_function_config_packages_same_config() {
         let a = FunctionConfig {
-            packages: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            packages: Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "numpy".to_string(),
-            ])),
+            ]))),
             ..Default::default()
         };
 
         let b = FunctionConfig {
-            packages: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            packages: Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "numpy".to_string(),
-            ])),
+            ]))),
             ..Default::default()
         };
 
         assert!(a.same_config(&b));
 
         let c = FunctionConfig {
-            packages: Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
+            packages: Packages(Some(StringOrArrayOfStrings::ArrayOfStrings(vec![
                 "pandas".to_string(),
-            ])),
+            ]))),
             ..Default::default()
         };
 

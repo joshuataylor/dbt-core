@@ -21,6 +21,7 @@ use dbt_schemas::schemas::manifest::semantic_model::{
     SemanticModelDefaults,
 };
 use dbt_schemas::schemas::project::SemanticModelConfig;
+use dbt_schemas::schemas::project::Tags;
 use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::properties::metrics_properties::{AggregationType, PercentileType};
 use dbt_schemas::schemas::ref_and_source::DbtRef;
@@ -46,7 +47,7 @@ fn semantic_model_properties_config(model_props: &ModelProperties) -> Option<Sem
             enabled: Some(smc.enabled),
             group: smc.group.clone(),
             meta: smc.config.as_ref().and_then(|c| c.meta.clone()),
-            tags: None,
+            tags: Tags::default(),
         })
 }
 
@@ -277,8 +278,9 @@ pub async fn resolve_semantic_models(
                 language: None,
                 tags: semantic_model_config
                     .tags
+                    .inner()
                     .clone()
-                    .map(|tags| tags.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 classifiers: Default::default(),
                 meta: semantic_model_config.meta.clone().unwrap_or_default(),

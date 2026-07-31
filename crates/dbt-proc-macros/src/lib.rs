@@ -350,11 +350,7 @@ impl FieldCollector {
                 let other_attrs: Vec<_> = field
                     .attrs
                     .iter()
-                    .filter(|a| {
-                        !a.path().is_ident("serde")
-                            && !a.path().is_ident("schemars")
-                            && !a.path().is_ident("default_to")
-                    })
+                    .filter(|a| !a.path().is_ident("serde") && !a.path().is_ident("schemars"))
                     .collect();
 
                 if let Some(inner_ty) = extract_generic_inner(field_ty, "Omissible") {
@@ -388,11 +384,7 @@ impl FieldCollector {
         let other_attrs: Vec<_> = field
             .attrs
             .iter()
-            .filter(|a| {
-                !a.path().is_ident("serde")
-                    && !a.path().is_ident("schemars")
-                    && !a.path().is_ident("default_to")
-            })
+            .filter(|a| !a.path().is_ident("serde") && !a.path().is_ident("schemars"))
             .collect();
         self.resolved_field_defs
             .push(quote! { #(#other_attrs)* #vis #field_name: #field_ty });

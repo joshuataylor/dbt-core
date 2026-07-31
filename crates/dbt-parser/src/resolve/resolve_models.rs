@@ -493,7 +493,7 @@ pub async fn resolve_models(
         let mut columns = process_columns(
             properties.columns.as_ref(),
             model_config.meta.clone(),
-            model_config.tags.clone().map(|tags| tags.into()),
+            model_config.tags.inner().clone().map(|tags| tags.into()),
         )?;
         let materialized = model_config.materialized.clone();
 
@@ -655,13 +655,15 @@ pub async fn resolve_models(
                 },
                 tags: model_config
                     .tags
+                    .inner()
                     .clone()
-                    .map(|tags| tags.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 classifiers: model_config
                     .classifiers
+                    .inner()
                     .clone()
-                    .map(|c| c.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 meta: model_config.meta.clone().unwrap_or_default(),
             },
@@ -1107,7 +1109,7 @@ fn process_versioned_columns(
             let mut versioned_columns = process_columns(
                 Some(&column_map),
                 model_config.meta.clone(),
-                model_config.tags.clone().map(|tags| tags.into()),
+                model_config.tags.inner().clone().map(|tags| tags.into()),
             )?;
 
             if let Some(rules) = ColumnInheritanceRules::from_version_columns(column_props) {

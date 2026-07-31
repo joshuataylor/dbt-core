@@ -19,7 +19,7 @@ use dbt_schemas::schemas::common::{
     NodeDependsOn, normalize_quoting,
 };
 use dbt_schemas::schemas::dbt_column::process_columns;
-use dbt_schemas::schemas::project::{ResolvableConfig, SourceConfig};
+use dbt_schemas::schemas::project::{ResolvableConfig, SourceConfig, Tags};
 use dbt_schemas::schemas::properties::{SourceProperties, Tables, TablesConfig};
 use dbt_schemas::schemas::relations::default_dbt_quoting_for;
 use dbt_schemas::schemas::{CommonAttributes, DbtSource, DbtSourceAttr, NodeBaseAttributes};
@@ -385,7 +385,7 @@ pub async fn resolve_sources(
             process_columns(
                 Some(cols),
                 source_config.meta.clone(),
-                source_config.tags.clone().map(|tags| tags.into()),
+                source_config.tags.inner().clone().map(|tags| tags.into()),
             )?
         } else {
             vec![]
@@ -462,8 +462,9 @@ pub async fn resolve_sources(
                 meta: source_config.meta.clone().unwrap_or_default(),
                 tags: source_config
                     .tags
+                    .inner()
                     .clone()
-                    .map(|t| t.into())
+                    .map(Into::into)
                     .unwrap_or_default(),
                 classifiers: Default::default(),
                 raw_code: None,
@@ -582,7 +583,7 @@ fn merge_table_into_schema_config(
         event_time: table_config.event_time.clone(),
         meta: table_config.meta.clone(),
         freshness: table_config.freshness.clone(),
-        tags: table_config.tags.clone(),
+        tags: Tags(table_config.tags.clone()),
         loaded_at_field: table_config.loaded_at_field.clone(),
         loaded_at_query: table_config.loaded_at_query.clone(),
         schema_origin: table_config.schema_origin,

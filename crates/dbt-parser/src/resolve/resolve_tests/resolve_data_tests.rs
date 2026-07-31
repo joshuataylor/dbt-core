@@ -480,7 +480,7 @@ pub async fn resolve_data_tests(
 
         // Merge column test tags into the top-level config.
         // Reference: https://github.com/dbt-labs/dbt-core/blob/b783c97eff9cf72e6fc43ef93523b8ec7b029583/core/dbt/parser/schema_generic_tests.py#L368
-        let test_tags = test_config.tags.clone().map(|tags| tags.into());
+        let test_tags = test_config.tags.inner().clone().map(|tags| tags.into());
         let column_tags = test_path_to_test_asset
             .get(&dbt_asset.path)
             .map(|asset| asset.column_tags.clone());

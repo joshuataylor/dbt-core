@@ -58,10 +58,7 @@ pub struct SavedQueryConfig {
     pub schema: Option<String>,
     pub group: Option<String>,
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
-    )]
+    #[serde(default)]
     pub tags: Tags,
 }
 

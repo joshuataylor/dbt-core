@@ -48,10 +48,7 @@ pub struct ExposureConfig {
     pub enabled: Option<bool>,
     #[serde(serialize_with = "crate::schemas::serde::serialize_option_as_empty_map")]
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
-    )]
+    #[serde(default)]
     pub tags: Tags,
 }
 

@@ -2,6 +2,7 @@ use crate::schemas::common::DocsConfig;
 use crate::schemas::manifest::postgres::PostgresIndex;
 use dbt_common::serde_utils::Omissible;
 use dbt_common::{CodeLocationWithFile, ErrorCode, FsError, FsResult, stdfs};
+use dbt_proc_macros::StringOrArrayNewtype;
 use dbt_yaml::{DbtSchema, Spanned, UntaggedEnumDeserialize};
 use indexmap::IndexMap;
 use minijinja::value::ValueKind;
@@ -682,7 +683,7 @@ pub struct DuckDbExtensionObject {
 }
 
 /// Wrapper that serializes `StringOrArrayOfStrings` as an array without allocation.
-struct AsArray<'a>(&'a StringOrArrayOfStrings);
+pub(crate) struct AsArray<'a>(pub(crate) &'a StringOrArrayOfStrings);
 
 impl Serialize for AsArray<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -891,8 +892,9 @@ impl Eq for StringOrArrayOfStrings {}
 /// // Input: ["id", "tenant_id"]
 /// // Serializes as: ["id", "tenant_id"]
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq, DbtSchema)]
-pub struct PrimaryKeyConfig(Option<StringOrArrayOfStrings>);
+#[derive(Debug, Clone, Default, PartialEq, Eq, DbtSchema, StringOrArrayNewtype)]
+#[string_or_array(none_as_empty_list = false)]
+pub struct PrimaryKeyConfig(pub Option<StringOrArrayOfStrings>);
 
 impl PrimaryKeyConfig {
     /// Creates a new empty PrimaryKeyConfig
@@ -905,67 +907,14 @@ impl PrimaryKeyConfig {
         Self(Some(value))
     }
 
-    /// Consumes self and returns the inner value
-    pub fn into_inner(self) -> Option<StringOrArrayOfStrings> {
-        self.0
-    }
-
     /// Returns true if the primary key is empty or unset
     pub fn is_none(&self) -> bool {
         self.0.is_none()
     }
 
-    /// Returns true if the primary key is set
-    pub fn is_some(&self) -> bool {
-        self.0.is_some()
-    }
-
     /// Gets the primary key values as a Vec<String>
     pub fn to_strings(&self) -> Option<Vec<String>> {
         self.0.as_ref().map(|v| v.to_strings())
-    }
-}
-
-impl AsRef<Option<StringOrArrayOfStrings>> for PrimaryKeyConfig {
-    fn as_ref(&self) -> &Option<StringOrArrayOfStrings> {
-        &self.0
-    }
-}
-
-impl Serialize for PrimaryKeyConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match &self.0 {
-            Some(value) => {
-                // Always serialize as array (the "listify" behavior)
-                AsArray(value).serialize(serializer)
-            }
-            None => serializer.serialize_none(),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for PrimaryKeyConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Option::<StringOrArrayOfStrings>::deserialize(deserializer)?;
-        Ok(PrimaryKeyConfig(value))
-    }
-}
-
-impl From<Option<StringOrArrayOfStrings>> for PrimaryKeyConfig {
-    fn from(value: Option<StringOrArrayOfStrings>) -> Self {
-        PrimaryKeyConfig(value)
-    }
-}
-
-impl From<PrimaryKeyConfig> for Option<StringOrArrayOfStrings> {
-    fn from(config: PrimaryKeyConfig) -> Self {
-        config.0
     }
 }
 

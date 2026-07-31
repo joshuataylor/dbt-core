@@ -361,10 +361,7 @@ pub struct DataTestConfig {
     pub store_failures: Option<bool>,
     pub store_failures_as: Option<StoreFailuresAs>,
     pub sql_header: Option<String>,
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
-    )]
+    #[serde(default)]
     pub tags: Tags,
     #[resolved(promote, default = DEFAULT_DATA_TEST_WARN_IF.to_string())]
     pub warn_if: Option<String>,

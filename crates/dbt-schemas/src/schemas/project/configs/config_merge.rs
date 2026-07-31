@@ -8,15 +8,14 @@
 use std::collections::BTreeMap;
 
 use dbt_common::serde_utils::Omissible;
+use dbt_proc_macros::StringOrArrayNewtype;
 use dbt_yaml::{Spanned, Verbatim};
 use indexmap::IndexMap;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 use crate::schemas::common::{DbtQuoting, DocsConfig, Hooks, merge_meta, merge_tags, merge_vec};
 use crate::schemas::serde::{
-    AsStringOrArrayOfStrings, IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig,
-    StringOrArrayOfStrings,
+    IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig, StringOrArrayOfStrings,
 };
 
 type YmlValue = dbt_yaml::Value;
@@ -123,43 +122,18 @@ impl DefaultTo for Option<IndexMap<String, YmlValue>> {
     }
 }
 
-/// Shared accessors + `AsStringOrArrayOfStrings` impl for newtypes wrapping
-/// `Option<StringOrArrayOfStrings>`. `DefaultTo::inherit_from` is written by hand
-/// per type since each has genuinely different merge semantics.
-macro_rules! string_or_array_newtype {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        #[serde(transparent)]
-        pub struct $name(pub Option<StringOrArrayOfStrings>);
+// `#[derive(StringOrArrayNewtype)]` (defined in `dbt-proc-macros`) generates the
+// `AsStringOrArrayOfStrings` impl and shared accessors for newtypes wrapping
+// `Option<StringOrArrayOfStrings>`, plus `Serialize`/`Deserialize` impls that always
+// normalize `Some` to an array. `DefaultTo::inherit_from` is written by hand per type
+// since each has genuinely different merge semantics.
 
-        impl $name {
-            pub fn is_some(&self) -> bool {
-                self.0.is_some()
-            }
-
-            pub fn inner(&self) -> &Option<StringOrArrayOfStrings> {
-                &self.0
-            }
-
-            pub fn into_inner(self) -> Option<StringOrArrayOfStrings> {
-                self.0
-            }
-        }
-
-        impl AsStringOrArrayOfStrings for $name {
-            fn as_string_or_array_of_strings(&self) -> &Option<StringOrArrayOfStrings> {
-                self.inner()
-            }
-        }
-    };
-}
-
-string_or_array_newtype!(
-    /// Tags: parent (less specific) values first, then child — matches dbt-core
-    /// additive inheritance order. Do not alphabetically sort (dbt-labs/dbt-core#15590).
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-    Tags
-);
+/// Tags: parent (less specific) values first, then child — matches dbt-core
+/// additive inheritance order. Do not alphabetically sort (dbt-labs/dbt-core#15590).
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsonSchema, StringOrArrayNewtype)]
+#[serde(transparent)]
+#[string_or_array(none_as_empty_list = true)]
+pub struct Tags(pub Option<StringOrArrayOfStrings>);
 
 impl DefaultTo for Tags {
     fn inherit_from(&mut self, parent: &Self) {
@@ -169,13 +143,13 @@ impl DefaultTo for Tags {
     }
 }
 
-string_or_array_newtype!(
-    /// Classifiers: unordered set-like config — union-merge, deduplicated and sorted.
-    /// Unlike [`Tags`], classifier order does not carry meaning, so `merge_vec` (sorted)
-    /// is used instead of `merge_tags` (parent-first, order-preserving).
-    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-    Classifiers
-);
+/// Classifiers: unordered set-like config — union-merge, deduplicated and sorted.
+/// Unlike [`Tags`], classifier order does not carry meaning, so `merge_vec` (sorted)
+/// is used instead of `merge_tags` (parent-first, order-preserving).
+#[derive(Debug, Clone, Default, PartialEq, Eq, JsonSchema, StringOrArrayNewtype)]
+#[serde(transparent)]
+#[string_or_array(none_as_empty_list = true)]
+pub struct Classifiers(pub Option<StringOrArrayOfStrings>);
 
 impl DefaultTo for Classifiers {
     fn inherit_from(&mut self, parent: &Self) {
@@ -204,11 +178,11 @@ impl DefaultTo for Option<BTreeMap<Spanned<String>, String>> {
     }
 }
 
-string_or_array_newtype!(
-    /// Packages: append parent values before child values, no dedup.
-    #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-    Packages
-);
+/// Packages: append parent values before child values, no dedup.
+#[derive(Debug, Clone, Default, PartialEq, JsonSchema, StringOrArrayNewtype)]
+#[serde(transparent)]
+#[string_or_array(none_as_empty_list = true)]
+pub struct Packages(pub Option<StringOrArrayOfStrings>);
 
 impl DefaultTo for Packages {
     fn inherit_from(&mut self, parent: &Self) {

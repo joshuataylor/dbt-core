@@ -554,18 +554,9 @@ pub struct ModelConfig {
     pub database: Omissible<Option<String>>,
     #[serde(alias = "dataset")]
     pub schema: Omissible<Option<String>>,
-    // serialize_with ensures tags is always present as [] when None for Jinja macros
-    // that call obj.config.tags.extend(...) or similar list operations.
-    // See: https://github.com/dbt-labs/dbt-fusion/issues/1198
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
-    )]
+    #[serde(default)]
     pub tags: Tags,
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
-    )]
+    #[serde(default)]
     pub classifiers: Classifiers,
     pub catalog_name: Option<String>,
     // Internal placement hint; kept out of serialized config/telemetry output.

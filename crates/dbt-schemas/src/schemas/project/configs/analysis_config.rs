@@ -71,10 +71,7 @@ pub struct AnalysesConfig {
     #[resolved(promote, default = StaticAnalysisKind::Off.into())]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
     pub meta: Option<IndexMap<String, YmlValue>>,
-    #[serde(
-        default,
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_list"
-    )]
+    #[serde(default)]
     pub tags: Tags,
     pub description: Option<String>,
     pub docs: Option<DocsConfig>,

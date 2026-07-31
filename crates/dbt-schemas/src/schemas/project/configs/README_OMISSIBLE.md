@@ -64,8 +64,10 @@ this marker.
 
 `StringOrArrayOfStrings` has two different merge semantics depending on the field:
 
-- **`Tags`** (wraps `Option<StringOrArrayOfStrings>`): union-merge with dedup+sort.
-  Used for `tags` and `classifiers` fields.
+- **`Tags`** (wraps `Option<StringOrArrayOfStrings>`): parent-first append merge, order
+  preserved, no dedup/sort. Used for the `tags` field.
+- **`Classifiers`** (wraps `Option<StringOrArrayOfStrings>`): union-merge with dedup+sort.
+  Used for the `classifiers` field.
 - **`Packages`** (wraps `Option<StringOrArrayOfStrings>`): append parent before child,
   no dedup. Used for `packages` field.
 - **Bare `Option<StringOrArrayOfStrings>`**: replace-if-none (via `ReplaceIfNone`

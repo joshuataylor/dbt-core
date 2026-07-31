@@ -45,6 +45,12 @@ use crate::context::TaskRunnerCtx;
 const MICROBATCH_EVENT_TIME_START_KEY: &str = "__microbatch_event_time_start";
 const MICROBATCH_EVENT_TIME_END_KEY: &str = "__microbatch_event_time_end";
 
+/// Semantic-extras key used to fold the hash of a node's persisted documentation (relation
+/// and/or column descriptions, when persist_docs is enabled) into the cache key. This ensures
+/// that a docs-only change triggers an execution so the new descriptions are written to the
+/// target table, even when the query result is otherwise unchanged.
+const PERSISTED_DOCS_HASH_KEY: &str = "__persisted_docs_hash";
+
 #[derive(Clone, Debug)]
 pub struct DbtProjectInfo {
     active_profile_name: String,
@@ -154,6 +160,7 @@ pub fn build_model_sql_request<'a>(
 
     let node_state = build_node_state(model, &context.dbt_project_info, macro_resolver)
         .map_err(request_build_error)?;
+    semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     Ok(
         build_sql_request_input(model, context, execution_type, semantic_extras, node_state)?
@@ -228,7 +235,7 @@ pub fn build_snapshot_sql_request<'a>(
     ))
     .map_err(request_build_error)?;
 
-    let semantic_extras = sql_semantic_extras(
+    let mut semantic_extras = sql_semantic_extras(
         &snapshot_config_sql_semantic_extra_config(&snapshot.deprecated_config)
             .map_err(request_build_error)?,
     )
@@ -236,6 +243,7 @@ pub fn build_snapshot_sql_request<'a>(
 
     let node_state = build_node_state(snapshot, &context.dbt_project_info, macro_resolver)
         .map_err(request_build_error)?;
+    semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     Ok(build_sql_request_input(
         snapshot,
@@ -255,7 +263,7 @@ pub fn build_test_sql_request<'a>(
     let execution_type =
         execution_type_from_input(&test_execution_type_input()).map_err(request_build_error)?;
 
-    let semantic_extras = sql_semantic_extras(
+    let mut semantic_extras = sql_semantic_extras(
         &test_config_sql_semantic_extra_config(&test.deprecated_config)
             .map_err(request_build_error)?,
     )
@@ -263,6 +271,7 @@ pub fn build_test_sql_request<'a>(
 
     let node_state = build_node_state(test, &context.dbt_project_info, macro_resolver)
         .map_err(request_build_error)?;
+    semantic_extras.extend(node_state_semantic_extras(&node_state));
 
     // Mirrors dbt-core's `_build_submit_enriched_sql_request` (run_cache.py
     // L992-996): data tests submit with `target_table=None` so the service's
@@ -283,12 +292,13 @@ pub fn build_seed_values_request<'a>(
     context: SeedRunCacheRequestContext,
     macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
 ) -> FsResult<SubmitValuesRequest> {
-    let semantic_extras =
+    let mut semantic_extras =
         seed_semantic_extras(&seed_semantic_extra_config(seed).map_err(request_build_error)?)
             .map_err(request_build_error)?;
 
     let node_state = build_node_state(seed, &context.dbt_project_info, macro_resolver)
         .map_err(request_build_error)?;
+    semantic_extras.extend(node_state_semantic_extras(&node_state));
     let values_hash = node_state.node_hash.clone();
 
     Ok(SubmitValuesRequestInput {
@@ -421,6 +431,19 @@ pub fn seed_semantic_extra_config(
     seed: &DbtSeed,
 ) -> Result<SemanticExtraConfig, RequestBuildError> {
     seed_config_semantic_extra_config(&seed.deprecated_config)
+}
+
+fn node_state_semantic_extras(node_state: &DbtNodeState) -> SemanticExtras {
+    let mut extras = SemanticExtras::new();
+
+    if let Some(persisted_docs_hash) = &node_state.node_persisted_descriptions_hash {
+        extras.insert(
+            PERSISTED_DOCS_HASH_KEY.to_owned(),
+            persisted_docs_hash.to_owned(),
+        );
+    }
+
+    extras
 }
 
 pub fn model_clone_table_properties(model: &DbtModel) -> Option<TableProperties> {
@@ -757,7 +780,7 @@ mod tests {
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::{
         Access, DbtIncrementalStrategy, DbtMaterialization, DbtUniqueKey, OnSchemaChange,
-        ResolvedQuoting, Severity, StoreFailuresAs,
+        PersistDocsConfig, ResolvedQuoting, Severity, StoreFailuresAs,
     };
     use dbt_schemas::schemas::macros::DbtMacro;
     use dbt_schemas::schemas::nodes::AdapterAttr;
@@ -981,6 +1004,35 @@ mod tests {
             "[\"status\",\"updated_at\"]"
         );
         assert_eq!(request.semantic_extras.get("unique_key").unwrap(), "\"id\"");
+    }
+
+    #[test]
+    fn model_request_includes_persisted_docs_hash_when_persist_docs_is_enabled() {
+        for (columns, relation, has_persisted_docs_hash) in [
+            (None, None, false),
+            (Some(true), None, true),
+            (None, Some(true), true),
+            (Some(true), Some(true), true),
+        ] {
+            let mut model = make_model(DbtMaterialization::Table);
+            model.__base_attr__.persist_docs = Some(PersistDocsConfig { columns, relation });
+
+            let request = build_model_sql_request(
+                &model,
+                sql_context(false),
+                &test_materialization_resolver(),
+                |_| None,
+            )
+            .unwrap();
+
+            assert_eq!(
+                request
+                    .semantic_extras
+                    .contains_key(PERSISTED_DOCS_HASH_KEY),
+                has_persisted_docs_hash,
+                "persist_docs.columns={columns:?}, persist_docs.relation={relation:?}"
+            );
+        }
     }
 
     #[test]
@@ -1209,6 +1261,30 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_request_includes_persisted_docs_hash_when_persist_docs_is_enabled() {
+        for (columns, relation, has_persisted_docs_hash) in [
+            (None, None, false),
+            (Some(true), None, true),
+            (None, Some(true), true),
+            (Some(true), Some(true), true),
+        ] {
+            let mut snapshot = make_snapshot();
+            snapshot.__base_attr__.persist_docs = Some(PersistDocsConfig { columns, relation });
+
+            let request =
+                build_snapshot_sql_request(&snapshot, sql_context(false), |_| None).unwrap();
+
+            assert_eq!(
+                request
+                    .semantic_extras
+                    .contains_key(PERSISTED_DOCS_HASH_KEY),
+                has_persisted_docs_hash,
+                "persist_docs.columns={columns:?}, persist_docs.relation={relation:?}"
+            );
+        }
+    }
+
+    #[test]
     fn data_test_request_keeps_default_schema_without_target_table() {
         let mut test = make_test();
         test.__base_attr__.schema = "ANALYTICS".to_string();
@@ -1282,6 +1358,51 @@ mod tests {
         assert_eq!(request.semantic_extras.get("delimiter").unwrap(), "\"|\"");
         assert_eq!(request.labels.get("dbt_node_name").unwrap(), "cities");
         assert_eq!(request.clone_chain_depth_limit, Some(1))
+    }
+
+    #[test]
+    fn seed_request_includes_persisted_docs_hash_when_persist_docs_is_enabled() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let project_root: DbtPath = tempdir.path().into();
+        let seeds_dir = project_root.join("seeds");
+
+        std::fs::create_dir(&seeds_dir).unwrap();
+        std::fs::write(seeds_dir.join("cities.csv"), b"id|city\n1|Chicago\n").unwrap();
+
+        for (columns, relation, has_persisted_docs_hash) in [
+            (None, None, false),
+            (Some(true), None, true),
+            (None, Some(true), true),
+            (Some(true), Some(true), true),
+        ] {
+            let mut seed = make_seed();
+            seed.__base_attr__.persist_docs = Some(PersistDocsConfig { columns, relation });
+
+            let mut project_info = make_project_info();
+            project_info.project_root = project_root.clone();
+            let request = build_seed_values_request(
+                &seed,
+                SeedRunCacheRequestContext {
+                    adapter_type: AdapterType::Snowflake,
+                    dialect: "snowflake".to_string(),
+                    last_modified_epoch: None,
+                    clone_time_travel_limit: None,
+                    clone_table_properties: None,
+                    clone_chain_depth_limit: None,
+                    dbt_project_info: project_info,
+                },
+                |_| None,
+            )
+            .unwrap();
+
+            assert_eq!(
+                request
+                    .semantic_extras
+                    .contains_key(PERSISTED_DOCS_HASH_KEY),
+                has_persisted_docs_hash,
+                "persist_docs.columns={columns:?}, persist_docs.relation={relation:?}"
+            );
+        }
     }
 
     #[test]

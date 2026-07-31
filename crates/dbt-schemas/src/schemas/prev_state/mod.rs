@@ -80,6 +80,10 @@ impl fmt::Display for StateArtifacts {
     }
 }
 
+pub fn config_excluded_keys(node_type: NodeType) -> &'static [&'static str] {
+    UnrenderedKeyRelevance::base_config_excluded_keys(node_type)
+}
+
 fn normalize_line_endings(s: &str) -> String {
     s.replace("\r\n", "\n")
 }
@@ -1013,7 +1017,11 @@ impl UnrenderedKeyRelevance {
             // whose set of non-modification keys is exactly the `CompareBehavior.Exclude` fields of
             // `NodeAndTestConfig` — the five below (core/dbt/artifacts/resources/v1/config.py @
             // v1.10.0).
-            NodeType::Model | NodeType::Seed | NodeType::Snapshot | NodeType::Function => {
+            NodeType::Model
+            | NodeType::Seed
+            | NodeType::Snapshot
+            | NodeType::Function
+            | NodeType::Test => {
                 &[
                     "tags",
                     "group",           // parity-excludes

@@ -36,6 +36,7 @@ use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::{DbtMaterialization, ModelFreshnessRules, ResolvedQuoting};
+use dbt_schemas::schemas::macros::DbtMacro;
 use dbt_schemas::schemas::profiles::DbConfig;
 use dbt_schemas::schemas::properties::ModelState;
 use dbt_schemas::schemas::relations::base::BaseRelation;
@@ -58,7 +59,7 @@ use dbt_state::service_client::RunCacheServiceError;
 use dbt_telemetry::NodeType;
 
 use crate::run_cache::run_cache_request::{
-    SeedRunCacheRequestContext, SqlRunCacheRequestContext, build_model_sql_request,
+    DbtProjectInfo, SeedRunCacheRequestContext, SqlRunCacheRequestContext, build_model_sql_request,
     build_seed_values_request, build_snapshot_sql_request, build_test_sql_request,
     is_microbatch_model, node_identity,
 };
@@ -1946,7 +1947,14 @@ async fn submit_model(
         full_refresh,
         microbatch_window,
         client,
-        |context| build_model_sql_request(model, context, &ctx.inner.materialization_resolver),
+        |context| {
+            build_model_sql_request(
+                model,
+                context,
+                &ctx.inner.materialization_resolver,
+                create_macro_resolver(ctx),
+            )
+        },
     )
     .await
 }
@@ -2239,7 +2247,12 @@ async fn prepare_write_only_execution_record(
         context.request.microbatch_window = microbatch_window;
         remove_cache_decision_fields(&mut context.request);
         Ok(Some(RunCachePendingExecutionRecord::sql(
-            build_model_sql_request(model, context.request, &ctx.inner.materialization_resolver)?,
+            build_model_sql_request(
+                model,
+                context.request,
+                &ctx.inner.materialization_resolver,
+                create_macro_resolver(ctx),
+            )?,
         )))
     } else if let Some(snapshot) = node.as_any().downcast_ref::<DbtSnapshot>() {
         let mut context = build_sql_context(
@@ -2260,7 +2273,7 @@ async fn prepare_write_only_execution_record(
         }
         remove_cache_decision_fields(&mut context.request);
         Ok(Some(RunCachePendingExecutionRecord::sql(
-            build_snapshot_sql_request(snapshot, context.request)?,
+            build_snapshot_sql_request(snapshot, context.request, create_macro_resolver(ctx))?,
         )))
     } else if let Some(seed) = node.as_any().downcast_ref::<DbtSeed>() {
         let request = build_seed_values_request(
@@ -2268,11 +2281,13 @@ async fn prepare_write_only_execution_record(
             SeedRunCacheRequestContext {
                 adapter_type: ctx.adapter_type(),
                 dialect: run_cache_dialect(ctx),
-                project_root: ctx.inner.arg.io.in_dir.as_path(),
                 last_modified_epoch: None,
                 clone_time_travel_limit: None,
                 clone_table_properties: None,
+                clone_chain_depth_limit: None,
+                dbt_project_info: DbtProjectInfo::from(ctx),
             },
+            create_macro_resolver(ctx),
         )?;
         Ok(Some(RunCachePendingExecutionRecord::values(request)))
     } else {
@@ -2299,7 +2314,7 @@ async fn submit_snapshot(
         full_refresh,
         None,
         client,
-        |context| build_snapshot_sql_request(snapshot, context),
+        |context| build_snapshot_sql_request(snapshot, context, create_macro_resolver(ctx)),
     )
     .await
 }
@@ -2339,11 +2354,13 @@ async fn submit_seed(
         SeedRunCacheRequestContext {
             adapter_type: ctx.adapter_type(),
             dialect: run_cache_dialect(ctx),
-            project_root: ctx.inner.arg.io.in_dir.as_path(),
             last_modified_epoch,
             clone_time_travel_limit,
             clone_table_properties: None,
+            clone_chain_depth_limit: None,
+            dbt_project_info: DbtProjectInfo::from(ctx),
         },
+        create_macro_resolver(ctx),
     )?;
 
     let response = client.submit_values(request).await.map_err(|e| {
@@ -2376,7 +2393,7 @@ async fn submit_test(
         false, // full_refresh is meaningless for tests
         None,
         client,
-        |context| build_test_sql_request(test, context),
+        |context| build_test_sql_request(test, context, create_macro_resolver(ctx)),
     )
     .await
 }
@@ -2452,6 +2469,7 @@ async fn build_sql_context(
             // Populated by the model submit paths for microbatch models; other
             // node types never carry a window.
             microbatch_window: None,
+            dbt_project_info: DbtProjectInfo::from(ctx),
         },
         metadata_complete,
     })
@@ -2692,6 +2710,10 @@ fn build_lenient_dependencies(
         .filter(|fqn| request_dependencies.contains(fqn.as_str()))
         .cloned()
         .collect()
+}
+
+fn create_macro_resolver<'a>(ctx: &'a TaskRunnerCtx) -> impl Fn(&str) -> Option<&'a DbtMacro> {
+    |macro_id| ctx.resolver_state().macros.macros.get(macro_id)
 }
 
 struct CollectedTableModifiedInfos {
@@ -5315,7 +5337,12 @@ mod tests {
         // invokes the closure a second time; `mark_done` is idempotent.
         let build = |context| {
             ctx.inner.run_cache_ctx.prefetch.mark_done();
-            build_model_sql_request(model.as_ref(), context, &ctx.inner.materialization_resolver)
+            build_model_sql_request(
+                model.as_ref(),
+                context,
+                &ctx.inner.materialization_resolver,
+                |_| None,
+            )
         };
 
         let result = submit_sql_with_speculation(

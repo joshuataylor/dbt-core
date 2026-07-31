@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use dbt_adapter::load_catalogs;
-use dbt_cloud_config::resolve_cloud_config;
+use dbt_cloud_config::{
+    DbtCloudConfig, ResolvedCloudConfig, detect_unlinked_project, resolve_cloud_config,
+};
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{
     DBT_CATALOGS_YML, DBT_DEPENDENCIES_YML, DBT_PACKAGES_LOCK_FILE, DBT_PACKAGES_YML, DBT_VARS_YML,
@@ -11,7 +13,9 @@ use dbt_common::io_utils::StatusReporter;
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::DbtPath;
 use dbt_common::tracing::TracingConfigProvider;
-use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_error_log_message, emit_warn_log_from_fs_error, emit_warn_log_message,
+};
 use dbt_common::tracing::span_info::SpanStatusRecorder;
 use dbt_common::warn_error_options::{
     WarnErrorOptions, project_flags_get_value, resolve_warn_error_options,
@@ -51,7 +55,7 @@ use dbt_common::stdfs::last_modified;
 use dbt_common::{ErrorCode, create_debug_span, ectx, err, tokiofs};
 use dbt_common::{FsResult, fs_err};
 use dbt_jinja_vars::DbtVars;
-use dbt_schemas::schemas::project::{self, DbtProjectSimplified};
+use dbt_schemas::schemas::project::{self, DbtProjectSimplified, ProjectDbtCloudConfig};
 use dbt_schemas::state::{DbtAsset, DbtPackage, DbtState, ResourcePathKind};
 
 use crate::args::{IoArgs, LoadArgs};
@@ -68,6 +72,33 @@ use dbt_jinja_utils::phases::load::secret_renderer::secret_context_env_var;
 use dbt_jinja_utils::serde::{into_typed_with_jinja, value_from_file};
 
 use dbt_common::tracing::event_info::store_event_attributes;
+
+fn warn_on_unlinked_cloud_project(
+    dbt_cloud_yml: Option<&DbtCloudConfig>,
+    project_dbt_cloud: Option<&ProjectDbtCloudConfig>,
+    cloud_config: Option<&ResolvedCloudConfig>,
+    io: &IoArgs,
+) {
+    if cloud_config.is_some_and(|c| c.credentials.is_some()) {
+        return;
+    }
+    let Some(project_dbt_cloud) = project_dbt_cloud else {
+        return;
+    };
+    let Some(project_id) = detect_unlinked_project(dbt_cloud_yml, Some(project_dbt_cloud)) else {
+        return;
+    };
+
+    let err = fs_err!(
+        code => ErrorCode::InvalidConfig,
+        loc => project_dbt_cloud.project_id.span().clone(),
+        "Project '{}' not found in ~/.dbt/dbt_cloud.yml. Run `dbt login` for this project, or \
+         download a new dbt_cloud.yml from the dbt platform UI and merge it into your existing \
+         one. Features that need dbt platform credentials will not work.",
+        project_id
+    );
+    emit_warn_log_from_fs_error(&err, io.status_reporter.as_ref());
+}
 
 fn resolve_and_set_threads(
     dbt_profile: &mut DbtProfile,
@@ -220,6 +251,13 @@ pub async fn load(
     let cloud_config = resolve_cloud_config(
         dbt_cloud_yml.as_ref(),
         simplified_dbt_project.dbt_cloud.as_ref(),
+    );
+
+    warn_on_unlinked_cloud_project(
+        dbt_cloud_yml.as_ref(),
+        simplified_dbt_project.dbt_cloud.as_ref(),
+        cloud_config.as_ref(),
+        &arg.io,
     );
 
     // Check if .gitignore exists and add dbt_internal_packages/ to it if not present

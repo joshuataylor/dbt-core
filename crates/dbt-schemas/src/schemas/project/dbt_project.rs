@@ -38,7 +38,7 @@ use super::ProjectUnitTestConfig;
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ProjectDbtCloudConfig {
     #[serde(rename = "project-id")]
-    pub project_id: Option<StringOrInteger>,
+    pub project_id: Spanned<Option<StringOrInteger>>,
     #[serde(rename = "defer-env-id")]
     pub defer_env_id: Option<StringOrInteger>,
     #[serde(rename = "state-org-id")]
@@ -56,6 +56,12 @@ pub struct ProjectDbtCloudConfig {
     pub application: Option<StringOrInteger>,
     pub environment: Option<StringOrInteger>,
     pub tenant_hostname: Option<String>,
+}
+
+impl ProjectDbtCloudConfig {
+    pub fn project_id_str(&self) -> Option<String> {
+        self.project_id.as_ref().as_ref().map(|v| v.to_string())
+    }
 }
 
 #[skip_serializing_none]
@@ -441,6 +447,38 @@ dbt-cloud:
 
         let dbt_cloud = project.dbt_cloud.expect("dbt-cloud config");
         assert_eq!(dbt_cloud.state_org_id, Some(StringOrInteger::Integer(789)));
+    }
+
+    #[test]
+    fn project_id_span_points_at_the_project_id_line() {
+        let project: DbtProject = dbt_yaml::from_str(
+            r#"
+name: test
+dbt-cloud:
+  project-id: 123
+  defer-env-id: 456
+"#,
+        )
+        .unwrap();
+
+        let dbt_cloud = project.dbt_cloud.expect("dbt-cloud config");
+        assert_eq!(dbt_cloud.project_id_str().as_deref(), Some("123"));
+        assert_eq!(dbt_cloud.project_id.span().start.line, 4);
+    }
+
+    #[test]
+    fn project_dbt_cloud_config_without_project_id() {
+        let project: DbtProject = dbt_yaml::from_str(
+            r#"
+name: test
+dbt-cloud:
+  defer-env-id: 456
+"#,
+        )
+        .unwrap();
+
+        let dbt_cloud = project.dbt_cloud.expect("dbt-cloud config");
+        assert!(dbt_cloud.project_id_str().is_none());
     }
 
     #[test]

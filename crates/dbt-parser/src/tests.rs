@@ -1207,4 +1207,74 @@ mod tests {
 
         assert_eq!(doc_names, vec!["3_months_prior_date".to_string()]);
     }
+
+    /// A doc block whose name is not an identifier is skipped, but the other
+    /// blocks in the same file must still be registered. Dropping them made
+    /// every `doc()` reference in the project render as a missing-doc
+    /// placeholder, which then reached the warehouse as a column COMMENT.
+    #[test]
+    fn test_process_markdown_invalid_doc_name_skips_only_that_block() {
+        let sql = r#"
+        {% docs cloud_plan %}
+        The plan name representing the pricing and features for a given Cloud account.
+        {% enddocs %}
+
+        {% docs *** end of list, for new entries insert rows above this line *** %}
+        *** END OF LIST ***
+        {% enddocs %}
+
+        {% docs database_source %}
+        The source Postgres database the Cloud account information comes from.
+        {% enddocs %}
+        "#;
+
+        let docs = parse_macro_statements(sql, Path::new("test.md"), &["docs"]).unwrap();
+        let doc_names: Vec<String> = docs
+            .iter()
+            .filter_map(|x| {
+                if let SqlResource::Doc(name, _) = x {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            doc_names,
+            vec!["cloud_plan".to_string(), "database_source".to_string()]
+        );
+    }
+
+    /// dbt-core matches end tags on the block type alone, so `{% enddocs name %}`
+    /// closes the block. Rejecting the extra name discarded every doc in the file.
+    #[test]
+    fn test_process_markdown_named_enddocs() {
+        let sql = r#"
+        {% docs cloud_plan %}
+        The plan name representing the pricing and features for a given Cloud account.
+        {% enddocs cloud_plan %}
+
+        {% docs database_source %}
+        The source Postgres database the Cloud account information comes from.
+        {% enddocs %}
+        "#;
+
+        let docs = parse_macro_statements(sql, Path::new("test.md"), &["docs"]).unwrap();
+        let doc_names: Vec<String> = docs
+            .iter()
+            .filter_map(|x| {
+                if let SqlResource::Doc(name, _) = x {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            doc_names,
+            vec!["cloud_plan".to_string(), "database_source".to_string()]
+        );
+    }
 }

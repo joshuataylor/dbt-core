@@ -29,6 +29,7 @@ dbt-common = { workspace = true }
 dbt-compilation = { workspace = true }
 dbt-dag = { workspace = true }
 dbt-defer = { workspace = true }
+dbt-dist = { workspace = true }
 dbt-docs-server = { workspace = true }
 dbt-error = { workspace = true }
 dbt-features = { workspace = true }

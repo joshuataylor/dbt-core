@@ -366,7 +366,7 @@ got {:?}, expected an instance of {}",
     pub fn is_project_command(&self) -> bool {
         use CoreCommand::*;
         match &self.command {
-            Command::Core(Man(_) | Init(_) | Docs(_) | Login(_) | Completions(_)) => {
+            Command::Core(Man(_) | Init(_) | Docs(_) | Login(_) | Completions(_) | Internal(_)) => {
                 // These commands do not require a project directory
                 false
             }
@@ -418,6 +418,7 @@ got {:?}, expected an instance of {}",
                 Docs(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Login(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Completions(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+                Internal(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
             },
             Command::Extension(ext_cmd) => ext_cmd.to_eval_args(&common_args, system_arg)?,
         };
@@ -478,6 +479,7 @@ got {:?}, expected an instance of {}",
                 Docs(_args) => unreachable!("Docs command does not need a phase"),
                 Login(_args) => unreachable!("Login command does not need a phase"),
                 Completions(_args) => unreachable!("Completions command does not need a phase"),
+                Internal(_args) => unreachable!("Internal command does not need a phase"),
             },
             Command::Extension(ext_cmd) => ext_cmd.stage(),
         }
@@ -1402,6 +1404,48 @@ impl LoginArgs {
 pub enum LoginSubcommand {
     /// Show current authentication status
     Status,
+}
+
+/// Undocumented plumbing commands, not intended for direct end-user use.
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+pub struct InternalArgs {
+    #[command(subcommand)]
+    pub command: InternalCommand,
+}
+
+impl InternalArgs {
+    pub fn common_args(&self) -> &CommonArgs {
+        match &self.command {
+            InternalCommand::GetDistributionInfo(args) => &args.common_args,
+        }
+    }
+
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        self.common_args().to_eval_args(arg, in_dir, out_dir)
+    }
+}
+
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+#[command()]
+pub enum InternalCommand {
+    /// Resolve release-channel and distribution info for a dbt installation
+    GetDistributionInfo(GetDistributionInfoArgs),
+}
+
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct GetDistributionInfoArgs {
+    /// Path to a dbt executable to inspect. Defaults to the currently running
+    /// process. Mutually exclusive with `--all`.
+    #[arg(value_name = "PATH", conflicts_with = "all")]
+    pub path: Option<PathBuf>,
+
+    /// Print distribution info for every dbt executable found on PATH.
+    /// Mutually exclusive with the PATH argument.
+    #[arg(short = 'a', long, conflicts_with = "path")]
+    pub all: bool,
+
+    #[clap(flatten)]
+    pub common_args: CommonArgs,
 }
 
 impl ManArgs {
@@ -3286,6 +3330,9 @@ mod tests {
                 shell: Shell::Bash,
                 common_args: CommonArgs::default(),
             }),
+            Internal(InternalArgs {
+                command: InternalCommand::GetDistributionInfo(GetDistributionInfoArgs::default()),
+            }),
         ];
         for command in non_project {
             let name = command.name();
@@ -3446,5 +3493,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = CommonArgs::default();
         assert!(args.get_send_anonymous_usage_stats_for_project(dir.path()));
+    }
+
+    fn parse_internal_args(args: &[&str]) -> Result<InternalArgs, clap::Error> {
+        InternalArgs::try_parse_from(std::iter::once("internal").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn get_distribution_info_defaults_to_no_path_and_not_all() {
+        let parsed = parse_internal_args(&["get-distribution-info"]).unwrap();
+        let InternalCommand::GetDistributionInfo(args) = parsed.command;
+        assert_eq!(args.path, None);
+        assert!(!args.all);
+    }
+
+    #[test]
+    fn get_distribution_info_accepts_a_path() {
+        let parsed = parse_internal_args(&["get-distribution-info", "/some/dbt"]).unwrap();
+        let InternalCommand::GetDistributionInfo(args) = parsed.command;
+        assert_eq!(args.path, Some(PathBuf::from("/some/dbt")));
+        assert!(!args.all);
+    }
+
+    #[test]
+    fn get_distribution_info_accepts_all_flag() {
+        let parsed = parse_internal_args(&["get-distribution-info", "--all"]).unwrap();
+        let InternalCommand::GetDistributionInfo(args) = parsed.command;
+        assert_eq!(args.path, None);
+        assert!(args.all);
+
+        let parsed = parse_internal_args(&["get-distribution-info", "-a"]).unwrap();
+        let InternalCommand::GetDistributionInfo(args) = parsed.command;
+        assert!(args.all);
+    }
+
+    #[test]
+    fn get_distribution_info_path_and_all_are_mutually_exclusive() {
+        let result = parse_internal_args(&["get-distribution-info", "--all", "/some/dbt"]);
+        assert!(result.is_err());
     }
 }

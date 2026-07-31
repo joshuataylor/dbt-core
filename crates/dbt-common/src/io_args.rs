@@ -180,6 +180,8 @@ pub enum FsCommand {
     Retry,
     Docs,
     Completions,
+    /// Undocumented plumbing commands (e.g. `dbt internal get-distribution-info`)
+    Internal,
     /// All other commands provided by private cli's
     Extension(&'static str),
 }
@@ -210,6 +212,7 @@ impl FsCommand {
             FsCommand::Retry => "retry",
             FsCommand::Docs => "docs",
             FsCommand::Completions => "completions",
+            FsCommand::Internal => "internal",
             FsCommand::Extension(s) => s,
         }
     }

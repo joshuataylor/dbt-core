@@ -8,7 +8,7 @@ use strum_macros::Display;
 
 use crate::{
     BuildArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs, DebugArgs, DepsArgs,
-    DocsArgs, InitArgs, ListArgs, LoginArgs, ManArgs, ParseArgs, RetryArgs, RunArgs,
+    DocsArgs, InitArgs, InternalArgs, ListArgs, LoginArgs, ManArgs, ParseArgs, RetryArgs, RunArgs,
     RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, TestArgs,
 };
 
@@ -59,6 +59,9 @@ pub enum CoreCommand {
     /// Generate shell completion scripts
     #[clap(hide = true)]
     Completions(CompletionsArgs),
+    /// Undocumented plumbing commands
+    #[clap(hide = true)]
+    Internal(InternalArgs),
 }
 
 impl CoreCommand {
@@ -87,6 +90,7 @@ impl CoreCommand {
             Docs(..) => FsCommand::Docs,
             Login(..) => FsCommand::Login,
             Completions(..) => FsCommand::Completions,
+            Internal(..) => FsCommand::Internal,
         }
     }
 
@@ -119,6 +123,7 @@ impl CoreCommand {
             Docs(args) => &args.common_args,
             Login(args) => &args.common_args,
             Completions(args) => &args.common_args,
+            Internal(args) => args.common_args(),
         }
     }
 
@@ -147,6 +152,7 @@ impl CoreCommand {
             Docs(_) => None,
             Login(_) => None,
             Completions(_) => None,
+            Internal(_) => None,
         }
     }
 

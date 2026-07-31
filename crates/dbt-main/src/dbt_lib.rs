@@ -10,7 +10,7 @@ use dbt_adapter::{
 };
 use dbt_clap_core::{
     Cli, Command, CompileArgs, CoreCommand, DocsServeArgs as ClapDocsServeArgs, DocsSubcommand,
-    LoginSubcommand, ProjectTemplate, ShowArgs,
+    InternalCommand, LoginSubcommand, ProjectTemplate, ShowArgs,
 };
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_utils::StatusReporter;
@@ -44,6 +44,7 @@ use dbt_common::{
 };
 use dbt_common::{FsError, io_args::FsCommand};
 use dbt_dag::schedule::Schedule;
+use dbt_dist::command::execute_get_distribution_info;
 use dbt_docs_server::providers::Backend;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_features::index::write_metadata_parquet;
@@ -260,6 +261,14 @@ async fn do_execute_fs(
 
     if let Command::Core(Man(_)) = &cli.command {
         return execute_man_command(eval_arg).await;
+    } else if let Command::Core(Internal(internal_args)) = &cli.command {
+        return match &internal_args.command {
+            InternalCommand::GetDistributionInfo(args) => execute_get_distribution_info(
+                args.path.as_deref(),
+                args.all,
+                feature_stack.cli.command_name,
+            ),
+        };
     } else if let Command::Core(Login(login_args)) = &cli.command {
         return match login_args.subcommand {
             Some(LoginSubcommand::Status) => execute_login_status().await,

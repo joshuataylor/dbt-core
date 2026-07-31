@@ -724,9 +724,12 @@ impl<T: ResolvableConfig<T>> Object for ParseConfig<T> {
         let mut mapping = dbt_yaml::Mapping::with_capacity(kwargs.len());
         for (key, value) in kwargs.into_iter() {
             if value.is_undefined() {
+                // dbt Core names the key too: `at path ['alias']: Undefined is not valid`
                 return Err(minijinja::Error::new(
                     minijinja::ErrorKind::InvalidOperation,
-                    "config requires all arguments to be defined",
+                    format!(
+                        "config requires all arguments to be defined, but '{key}' is undefined"
+                    ),
                 ));
             }
 

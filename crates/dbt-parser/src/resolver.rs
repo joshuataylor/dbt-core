@@ -17,7 +17,9 @@ use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::{
     NodeResolver, check_for_model_deprecations, resolve_dependencies,
 };
-use dbt_jinja_utils::phases::parse::build_resolve_context;
+use dbt_jinja_utils::phases::parse::{
+    build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
+};
 use dbt_jinja_utils::serde::{into_typed_with_error, into_typed_with_jinja};
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
@@ -261,33 +263,30 @@ pub async fn resolve(
         .map(|v| v.is_true())
         .unwrap_or(true);
 
-    // Apply macro patches from YAML schema files
+    // Macro properties render in the restricted documentation context, so a project macro
+    // cannot execute from a `description:`. From dbt-labs/dbt-core#14494.
+    let docs_jinja_env = build_docs_jinja_environment(&jinja_env);
     for (package_name, macro_properties) in all_macro_properties {
-        // Get the jinja env and base context for this package
+        // Get the base context for this package
         let package = dbt_state
             .packages
             .iter()
             .find(|p| p.dbt_project.name == package_name);
         if let Some(package) = package {
-            let namespace_keys: Vec<String> = jinja_env
-                .env
-                .get_macro_namespace_registry()
-                .map(|r| r.keys().map(|k| k.to_string()).collect())
-                .unwrap_or_default();
-            let base_ctx = build_resolve_context(
+            let docs_ctx = build_docs_resolve_context(
                 root_project_name,
                 package.dbt_project.name.as_str(),
                 &macros.docs_macros,
-                DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
-                namespace_keys,
-            );
+                &jinja_env,
+            )?;
             apply_macro_patches(
                 &arg.io,
                 &mut macros.macros,
                 &macro_properties,
                 &package_name,
-                &jinja_env,
-                &base_ctx,
+                &docs_jinja_env,
+                &docs_ctx,
+                (package_name != root_project_name).then_some(package_name.as_str()),
                 validate_macro_args,
             )?;
         }

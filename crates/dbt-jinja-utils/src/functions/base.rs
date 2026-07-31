@@ -148,8 +148,10 @@ pub fn silence_base_context(base_ctx: &mut BTreeMap<String, Value>) {
 /// A struct that represents a reusable doc object to be used in configuration contexts
 #[derive(Debug)]
 pub struct DocMacro {
-    /// The name of the current package being rendered
-    package_name: String,
+    /// Package precedence for unqualified doc references.
+    package_search_order: Vec<String>,
+    /// Core-compatible argument and missing-target checking.
+    strict: bool,
     /// The actual doc strings stored once to avoid duplication
     docs_content: Vec<String>,
     /// Maps (package_name, doc_name) to index in docs_content
@@ -161,6 +163,23 @@ pub struct DocMacro {
 impl DocMacro {
     /// Initializes the doc macro
     pub fn new(package_name: String, docs: BTreeMap<(String, String), String>) -> Self {
+        Self::new_internal(vec![package_name], docs, false)
+    }
+
+    /// Core's `DocsRuntimeContext` `doc()`: one or two positional strings, and a
+    /// missing target aborts rendering.
+    pub fn new_strict_with_search_order(
+        package_search_order: Vec<String>,
+        docs: BTreeMap<(String, String), String>,
+    ) -> Self {
+        Self::new_internal(package_search_order, docs, true)
+    }
+
+    fn new_internal(
+        package_search_order: Vec<String>,
+        docs: BTreeMap<(String, String), String>,
+        strict: bool,
+    ) -> Self {
         let mut docs_content = Vec::new();
         let mut package_doc_map = HashMap::new();
         let mut doc_name_map: HashMap<String, Vec<(String, usize)>> = HashMap::new();
@@ -179,7 +198,8 @@ impl DocMacro {
         }
 
         Self {
-            package_name,
+            package_search_order,
+            strict,
             docs_content,
             package_doc_map,
             doc_name_map,
@@ -213,39 +233,65 @@ impl Object for DocMacro {
         _listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, Error> {
         let mut args = ArgParser::new(args, None);
-        let arg1 = args.get::<String>("");
-        let arg2 = args.get_optional::<String>("");
-
-        let (doc, target_package, doc_name) = match (&arg1, &arg2) {
-            // Two arguments: explicit package and doc name
-            (Ok(package_name), Some(doc_name)) => (
-                self.lookup_doc(package_name, doc_name),
-                package_name.clone(),
-                doc_name.clone(),
-            ),
-            // One argument: search in current package first, then others
-            (Ok(doc_name), None) => {
-                if let Some(doc) = self.lookup_doc(&self.package_name, doc_name) {
-                    (Some(doc), self.package_name.clone(), doc_name.clone())
-                } else {
-                    (
-                        self.lookup_doc_in_packages(doc_name),
-                        self.package_name.clone(),
-                        doc_name.clone(),
-                    )
-                }
-            }
-
-            _ => {
-                return Err(Error::new(
+        // Core's `doc(self, *args: str)`. Lenient mode keeps the historical tolerance,
+        // because model/source/column descriptions still render through it.
+        if self.strict && (args.kwargs_len() != 0 || !(1..=2).contains(&args.positional_len())) {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "doc() takes one or two positional string arguments",
+            ));
+        }
+        let (arg1, arg2) = if self.strict {
+            // Both args are annotated `str`, so no coercion either.
+            let package_or_name = args.get::<Arc<str>>("")?.to_string();
+            let name = if args.positional_len() == 0 {
+                None
+            } else {
+                Some(args.get::<Arc<str>>("")?.to_string())
+            };
+            (package_or_name, name)
+        } else {
+            let arg1 = args.get::<String>("").map_err(|_| {
+                Error::new(
                     ErrorKind::InvalidOperation,
                     "Invalid arguments to doc macro",
-                ));
+                )
+            })?;
+            (arg1, args.get_optional::<String>(""))
+        };
+
+        let (doc, target_package, doc_name) = match &arg2 {
+            // Two arguments: explicit package and doc name
+            Some(doc_name) => (
+                self.lookup_doc(&arg1, doc_name),
+                arg1.clone(),
+                doc_name.clone(),
+            ),
+            // One argument: search the configured package precedence, then any package
+            None => {
+                let doc = self
+                    .package_search_order
+                    .iter()
+                    .find_map(|package_name| self.lookup_doc(package_name, &arg1))
+                    .or_else(|| self.lookup_doc_in_packages(&arg1));
+                (
+                    doc,
+                    self.package_search_order
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                    arg1,
+                )
             }
         };
 
         match doc {
             Some(content) => Ok(Value::from_serialize(content)),
+            // `DocTargetNotFoundError`
+            None if self.strict => Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("Documentation depends on doc '{doc_name}' which was not found"),
+            )),
             None => {
                 let status_reporter = get_status_reporter(state.env());
                 let current_span = state.current_span_of_context();
@@ -1691,6 +1737,26 @@ mod tests {
             output.contains("<missing doc('unknown', package='pkg')>"),
             "expected placeholder, got {output}"
         );
+
+        // Only the documentation context is strict; model descriptions still tolerate these.
+        for (source, expected) in [
+            ("{{ doc(1) }}", "<missing doc('1', package='pkg')>"),
+            (
+                "{{ doc('a', 'b', 'extra') }}",
+                "<missing doc('b', package='a')>",
+            ),
+            (
+                "{{ doc('unknown', ignored='x') }}",
+                "<missing doc('unknown', package='pkg')>",
+            ),
+        ] {
+            let output = env
+                .template_from_str(source)
+                .unwrap()
+                .render(Value::UNDEFINED, &[])
+                .unwrap();
+            assert!(output.contains(expected), "{source} rendered {output}");
+        }
     }
 
     #[test]

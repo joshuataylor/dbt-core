@@ -10,7 +10,6 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
-use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::macros::DbtDocsMacro;
 use dbt_schemas::schemas::macros::DbtMacro;
 use dbt_schemas::schemas::macros::MacroArgument;
@@ -377,6 +376,9 @@ pub fn is_valid_macro_arg_type(s: &str) -> bool {
 /// Apply macro patches from YAML schema files to the resolved macros.
 /// This updates description and patch_path fields based on YAML macro definitions.
 ///
+/// `dependency_package_name` is `Some` when `package_name` is not the root project, which
+/// downgrades strict-parse diagnostics from the render.
+///
 /// When `validate_macro_args` is true (from dbt_project.yml flags), this function also:
 /// - Warns when YAML argument names don't match the actual Jinja macro parameters
 /// - Warns when YAML argument `type` values use unsupported or malformed type syntax
@@ -388,6 +390,7 @@ pub fn apply_macro_patches(
     package_name: &str,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
+    dependency_package_name: Option<&str>,
     validate_macro_args: bool,
 ) -> FsResult<()> {
     for (macro_name, props_entry) in macro_properties {
@@ -404,7 +407,7 @@ pub fn apply_macro_patches(
                 jinja_env,
                 base_ctx,
                 &[],
-                dependency_package_name_from_ctx(jinja_env, base_ctx),
+                dependency_package_name,
                 true,
             )?;
 
@@ -904,6 +907,7 @@ select 1 as id, current_timestamp as updated_at
             "test_pkg",
             &jinja_env,
             &base_ctx,
+            None,
             false,
         )?;
 

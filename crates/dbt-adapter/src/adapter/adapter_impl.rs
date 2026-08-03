@@ -1015,13 +1015,15 @@ impl AdapterImpl {
         let splitter = engine.splitter();
         let adapter_type = self.adapter_type();
         let all_stmts = match adapter_type {
-            // BigQuery and DuckDB support multi-statement execution.
+            // BigQuery, DuckDB, and Alt support multi-statement execution.
             //
             // BigQuery: https://cloud.google.com/bigquery/docs/reference/standard-sql/procedural-language
             //
             // DuckDB: temp tables are connection-scoped; batching CREATE TEMP + DML in one
             // execute() call avoids the need for cross-call connection caching.
-            Bigquery | DuckDB => vec![sql.to_string()],
+            //
+            // Alt: also supports batching
+            Bigquery | DuckDB | Alt => vec![sql.to_string()],
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.

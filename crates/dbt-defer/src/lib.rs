@@ -811,13 +811,27 @@ fn build_deferred_semantic_manifest(
         }
     }
 
+    // A semantic model's `node_relation` is just a copy of its underlying
+    // ref'd model's relation (see `resolve_semantic_models.rs`), so whether to
+    // defer it must be keyed off that underlying model's modified status, not
+    // the semantic model's own unique_id (which changes whenever the YAML
+    // itself is edited, even if the model it points at is unmodified). This
+    // mirrors dbt-mantle's `_get_unmodified_models`, which restricts the
+    // modified set to `NodeType.Model` nodes.
+    let modified_models: BTreeSet<String> = modified_nodes
+        .iter()
+        .filter(|id| current_nodes.models.contains_key(*id))
+        .cloned()
+        .collect();
+
     // Semantic manifests are emitted before warehouse introspection, so unlike
     // normal model deferral we cannot ask whether the target relation exists.
     // `favor_state` therefore acts as the explicit opt-in to always prefer the
-    // deferred semantic relation; otherwise only unmodified semantic models are
-    // rewritten to state/prod.
+    // deferred semantic relation; otherwise only semantic models whose
+    // underlying model is unmodified are rewritten to state/prod.
     for (unique_id, current_node) in nodes.semantic_models.iter_mut() {
-        if !favor_state && modified_nodes.contains(unique_id) {
+        let underlying_model_id = current_node.__base_attr__.depends_on.nodes.first();
+        if !favor_state && underlying_model_id.is_none_or(|id| modified_models.contains(id)) {
             continue;
         }
 
@@ -1001,11 +1015,12 @@ mod tests {
         }
     }
 
-    fn make_semantic_model(
+    fn make_semantic_model_with_depends_on(
         unique_id: &str,
         name: &str,
         schema: &str,
         alias: &str,
+        depends_on_nodes: &[&str],
     ) -> Arc<DbtSemanticModel> {
         Arc::new(DbtSemanticModel {
             __common_attr__: CommonAttributes {
@@ -1021,6 +1036,10 @@ mod tests {
                 database: "dbt".to_string(),
                 schema: schema.to_string(),
                 alias: alias.to_string(),
+                depends_on: dbt_schemas::schemas::common::NodeDependsOn {
+                    nodes: depends_on_nodes.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             __semantic_model_attr__: DbtSemanticModelAttr {
@@ -1031,6 +1050,24 @@ mod tests {
                     relation_name: Some(format!("dbt.{schema}.{alias}")),
                 }),
                 ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    /// Minimal underlying `.sql` model that a semantic model's
+    /// `depends_on.nodes` points at, for exercising the
+    /// underlying-model-modified-status keying in
+    /// `build_deferred_semantic_manifest`.
+    fn make_underlying_model(unique_id: &str, name: &str, schema: &str) -> Arc<DbtModel> {
+        Arc::new(DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: unique_id.to_string(),
+                ..create_common_attr(name)
+            },
+            __base_attr__: NodeBaseAttributes {
+                schema: schema.to_string(),
+                ..create_base_attr(name)
             },
             ..Default::default()
         })
@@ -1077,18 +1114,29 @@ mod tests {
         })
     }
 
+    /// Unique ID of the underlying `.sql` model that the `orders` semantic
+    /// model in [`make_semantic_manifest_nodes`] depends on, matching a
+    /// realistic manifest where a semantic model's `depends_on.nodes` always
+    /// points at the model it wraps.
+    const ORDERS_UNDERLYING_MODEL_ID: &str = "model.test.fct_orders";
+
     fn make_semantic_manifest_nodes(semantic_schema: &str, export_schema: &str) -> Nodes {
         let mut nodes = Nodes {
             project_name: Some("test".to_string()),
             ..Default::default()
         };
+        nodes.models.insert(
+            ORDERS_UNDERLYING_MODEL_ID.to_string(),
+            make_underlying_model(ORDERS_UNDERLYING_MODEL_ID, "fct_orders", semantic_schema),
+        );
         nodes.semantic_models.insert(
             "semantic_model.test.orders".to_string(),
-            make_semantic_model(
+            make_semantic_model_with_depends_on(
                 "semantic_model.test.orders",
                 "orders",
                 semantic_schema,
                 "fct_orders",
+                &[ORDERS_UNDERLYING_MODEL_ID],
             ),
         );
         nodes.saved_queries.insert(
@@ -1139,8 +1187,11 @@ mod tests {
      {
         let current_nodes = make_semantic_manifest_nodes("dev_schema", "dev_schema");
         let defer_nodes = make_semantic_manifest_nodes("prod_schema", "prod_schema");
+        // The semantic model defers to its *underlying model's* modified
+        // status (see `ORDERS_UNDERLYING_MODEL_ID`), not its own unique_id;
+        // the saved query still keys off its own unique_id.
         let modified_nodes = BTreeSet::from([
-            "semantic_model.test.orders".to_string(),
+            ORDERS_UNDERLYING_MODEL_ID.to_string(),
             "saved_query.test.orders_export".to_string(),
         ]);
 
@@ -1173,6 +1224,87 @@ mod tests {
 
         assert_eq!(semantic_schema, "prod_schema");
         assert_eq!(export_schema, "prod_schema");
+    }
+
+    /// Regression test for dbt-core#15640: a semantic model's `node_relation`
+    /// is just a copy of its underlying ref'd `.sql` model's relation. If a
+    /// PR only edits the semantic model's YAML (e.g. adds a dimension) the
+    /// semantic model's own `unique_id` shows up in `state:modified+`, but
+    /// the underlying model it depends on may be completely unmodified (and
+    /// therefore never rebuilt locally when defer is enabled in CI). In that
+    /// case the deferred semantic manifest must still point at the
+    /// state/prod relation for the semantic model, not the local target
+    /// relation, since the local target was never created.
+    ///
+    /// Before the fix, deferral was keyed off the semantic model's own
+    /// unique_id being in `modified_nodes`, so this case incorrectly kept
+    /// the semantic model pinned to its local (never-built) relation.
+    #[test]
+    fn test_deferred_semantic_manifest_defers_semantic_model_when_only_yaml_modified() {
+        let underlying_model_id = "model.test.fct_orders";
+
+        let mut current_nodes = Nodes {
+            project_name: Some("test".to_string()),
+            ..Default::default()
+        };
+        current_nodes.models.insert(
+            underlying_model_id.to_string(),
+            make_underlying_model(underlying_model_id, "fct_orders", "dev_schema"),
+        );
+        current_nodes.semantic_models.insert(
+            "semantic_model.test.orders".to_string(),
+            make_semantic_model_with_depends_on(
+                "semantic_model.test.orders",
+                "orders",
+                "dev_schema",
+                "fct_orders",
+                &[underlying_model_id],
+            ),
+        );
+
+        let mut defer_nodes = Nodes {
+            project_name: Some("test".to_string()),
+            ..Default::default()
+        };
+        defer_nodes.models.insert(
+            underlying_model_id.to_string(),
+            make_underlying_model(underlying_model_id, "fct_orders", "prod_schema"),
+        );
+        defer_nodes.semantic_models.insert(
+            "semantic_model.test.orders".to_string(),
+            make_semantic_model_with_depends_on(
+                "semantic_model.test.orders",
+                "orders",
+                "prod_schema",
+                "fct_orders",
+                &[underlying_model_id],
+            ),
+        );
+
+        // Only the semantic model's own unique_id is "modified" (YAML-only
+        // change, e.g. a new dimension). The underlying `.sql` model it
+        // depends on is unmodified.
+        let modified_nodes = BTreeSet::from(["semantic_model.test.orders".to_string()]);
+
+        let manifest = build_deferred_semantic_manifest(
+            &current_nodes,
+            &defer_nodes,
+            /* favor_state */ false,
+            &modified_nodes,
+        );
+
+        let semantic_schema = manifest.semantic_models[0]
+            .node_relation
+            .as_ref()
+            .expect("semantic model should have a node relation")
+            .schema_name
+            .clone();
+
+        assert_eq!(
+            semantic_schema, "prod_schema",
+            "semantic model relation should defer to state/prod when only its own YAML \
+             (not the underlying ref'd model) was modified"
+        );
     }
 
     #[test]

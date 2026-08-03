@@ -1478,7 +1478,7 @@ impl AdapterImpl {
                 None,
                 None,
             )
-            .map_err(|e| AdapterError::new(AdapterErrorKind::Driver, e.to_string()))?;
+            .map_err(adbc_error_to_adapter_error)?;
 
         let schema = reader.schema();
         let batches = reader
@@ -2206,7 +2206,7 @@ impl AdapterImpl {
                     )
                 })?,
             )
-            .map_err(|e| AdapterError::new(AdapterErrorKind::Driver, e.to_string()))?;
+            .map_err(adbc_error_to_adapter_error)?;
         // NOTE: it's okay to skip conversion to an SDF-frontend since
         // `schema_to_columns()` will first try to parse the type from the
         // `PLATFORM:type` metadata key returned by the driver.

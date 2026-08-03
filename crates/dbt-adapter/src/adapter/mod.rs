@@ -315,8 +315,11 @@ impl Adapter {
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
         match &self.inner {
             Typed { adapter, .. } => {
+                let t_borrow = std::time::Instant::now();
                 let mut conn = adapter.borrow_tlocal_connection(None, None)?;
-                adapter.execute(
+                tracing::debug!("borrow_tlocal_connection() took {:?}", t_borrow.elapsed());
+                let t_execute = std::time::Instant::now();
+                let result = adapter.execute(
                     None,
                     conn.as_mut(),
                     ctx,
@@ -326,7 +329,12 @@ impl Adapter {
                     None,
                     options,
                     self.cancellation_token.clone(),
-                )
+                );
+                tracing::debug!(
+                    "adapter.execute() (full call, incl. adbc_execute_with_options) took {:?}",
+                    t_execute.elapsed()
+                );
+                result
             }
             Parse(_) => Ok((AdapterResponse::default(), AgateTable::default())),
         }

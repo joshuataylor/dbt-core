@@ -224,6 +224,11 @@ pub trait AdapterEngine: Send + Sync {
     }
 }
 
+/// Logs a perf-debugging step duration at DEBUG level (`RUST_LOG=debug`).
+fn log_step_duration(label: &str, elapsed: std::time::Duration) {
+    tracing::debug!("{label} took {elapsed:?}");
+}
+
 /// Default ADBC-based execute_with_options implementation.
 ///
 /// Used by engines whose connections implement the full ADBC protocol
@@ -348,8 +353,33 @@ pub(crate) fn adbc_execute_with_options(
             return Ok((Arc::new(Schema::empty()), Vec::new()));
         }
 
+        // Alt compute: every statement compute_platform.rs sends is DDL/DML
+        // whose result is never read (it always passes fetch=false -- models
+        // only ever create/drop/write, they don't read query results back).
+        // `stmt.execute()` below calls `reader.schema()` unconditionally, which
+        // for this driver forces a real export round trip (download_credentials
+        // + list_files, ~2-3s) even though nothing will ever consume that
+        // export. `execute_update()` skips export setup server-side entirely
+        // and never touches the schema. This is only safe because dbt-compute
+        // doesn't execute tests today (see AltCompute routing in
+        // dbt-tasks-sa/src/task.rs, keyed off the models table) -- a test
+        // needs its result rows, so a future test-execution path over Alt must
+        // pass fetch=true and must not hit this branch.
+        if adapter_type == AdapterType::Alt && !fetch {
+            stmt.execute_update()?;
+            token.check_cancellation()?;
+            return Ok((Arc::new(Schema::empty()), Vec::new()));
+        }
+
+        let t_exec = std::time::Instant::now();
         let reader = stmt.execute()?;
+        log_step_duration(
+            "stmt.execute() (submit+wait_for_completion, returns reader)",
+            t_exec.elapsed(),
+        );
+        let t_schema = std::time::Instant::now();
         let schema = reader.schema();
+        log_step_duration("reader.schema()", t_schema.elapsed());
         let mut batches = Vec::with_capacity(1);
 
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
@@ -361,6 +391,7 @@ pub(crate) fn adbc_execute_with_options(
 
         // This loop has been discovered to inexplicably hang in some circumstances
         // See PR https://github.com/dbt-labs/fs/pull/7755
+        let t_loop = std::time::Instant::now();
         for res in reader {
             let batch = res.map_err(adbc_core::error::Error::from)?;
             batches.push(batch);
@@ -368,12 +399,14 @@ pub(crate) fn adbc_execute_with_options(
             // or concatenating the batches produced so far.
             token.check_cancellation()?;
         }
+        log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
         Ok((schema, batches))
     };
     let _span = span!("SqlEngine::execute");
 
     let sql_hash = code_hash(sql.as_ref());
-    let _query_span_guard = create_debug_span(QueryExecuted::start(
+    let t_span_create = std::time::Instant::now();
+    let query_span_guard = create_debug_span(QueryExecuted::start(
         sql.to_string(),
         sql_hash,
         adapter_type.as_ref().to_owned(),
@@ -381,7 +414,9 @@ pub(crate) fn adbc_execute_with_options(
         ctx.desc().cloned(),
     ))
     .entered();
+    log_step_duration("create_debug_span(...).entered()", t_span_create.elapsed());
 
+    let t_do_execute = std::time::Instant::now();
     let (schema, batches) = match do_execute(conn) {
         Ok(res) => res,
         Err(err @ (Cancellable::Cancelled | Cancellable::Error(_))) => {
@@ -424,9 +459,19 @@ pub(crate) fn adbc_execute_with_options(
             return Err(adapter_error);
         }
     };
+    log_step_duration(
+        "do_execute(conn) (closure: stmt.execute + schema + batch loop)",
+        t_do_execute.elapsed(),
+    );
+    let t_post = std::time::Instant::now();
     let total_batch = concat_batches(&schema, &batches).map_err(arrow_error_to_adapter_error)?;
     let total_batch = normalize_result_column_names(adapter_type, sql.as_ref(), total_batch);
+    log_step_duration(
+        "concat_batches + normalize_result_column_names",
+        t_post.elapsed(),
+    );
 
+    let t_status = std::time::Instant::now();
     record_current_span_status_from_attrs(|attrs| {
         if let Some(attrs) = attrs.downcast_mut::<QueryExecuted>() {
             attrs.dbt_core_event_code = "E017".to_string();
@@ -434,6 +479,14 @@ pub(crate) fn adbc_execute_with_options(
             attrs.query_id = total_batch.query_id(adapter_type)
         }
     });
+    log_step_duration("record_current_span_status_from_attrs", t_status.elapsed());
+
+    let t_guard_drop = std::time::Instant::now();
+    drop(query_span_guard);
+    log_step_duration(
+        "drop(query_span_guard) (span exit/export)",
+        t_guard_drop.elapsed(),
+    );
 
     Ok(total_batch)
 }

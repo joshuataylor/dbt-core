@@ -563,27 +563,37 @@ pub fn typecheck_macros(
 ) -> FsResult<()> {
     let factory = Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
     let noqa = HashMap::new();
+
+    // Some macro bodies (especially third-party/vendored ones) can hit panics
+    // deep inside the type-inference VM. Fault-isolate each macro so a single
+    // bad macro can't crash the whole parse/run, and suppress the default
+    // panic hook's backtrace since these are expected/handled failures.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
     for (unique_id, dbt_macro) in macros.iter() {
         if unique_id.starts_with("snapshot.") {
             continue;
         }
         let file_path = dbt_macro.original_file_path.as_path().to_path_buf();
-        let _ = dbt_jinja_utils::typecheck::typecheck(
-            io,
-            jinja_env.clone(),
-            &noqa,
-            factory.clone(),
-            None,
-            root_package_name,
-            dbt_and_adapters_namespace.clone(),
-            &file_path,
-            &dbt_macro.macro_sql,
-            &dbt_common::CodeLocationWithFile::new(1, 1, 0, file_path.clone()),
-            unique_id,
-            adapter_type,
-            true,
-        );
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = dbt_jinja_utils::typecheck::typecheck(
+                io,
+                jinja_env.clone(),
+                &noqa,
+                factory.clone(),
+                None,
+                root_package_name,
+                dbt_and_adapters_namespace.clone(),
+                &file_path,
+                &dbt_macro.macro_sql,
+                &dbt_common::CodeLocationWithFile::new(1, 1, 0, file_path.clone()),
+                unique_id,
+                adapter_type,
+                true,
+            );
+        }));
     }
+    std::panic::set_hook(prev_hook);
 
     let all_depends_on = factory.depends_on();
     for (unique_id, dbt_macro) in macros.iter_mut() {
@@ -925,6 +935,109 @@ select 1 as id, current_timestamp as updated_at
         assert!(
             !patched.config.docs.show,
             "config.docs.show should be false"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn typecheck_macros_isolates_panic_and_still_populates_other_macros() -> FsResult<()> {
+        use minijinja::compiler::typecheck::FunctionRegistry;
+        use minijinja::machinery::Span as MinijinjaSpan;
+        use minijinja::{Argument, DynTypeObject, Environment, Type, UserDefinedFunctionType};
+
+        fn make_macro(unique_id: &str, sql: &str) -> DbtMacro {
+            let path = DbtPath::from(PathBuf::from(format!("macros/{unique_id}.sql")));
+            DbtMacro {
+                name: unique_id.rsplit('.').next().unwrap().to_string(),
+                package_name: "pkg".to_string(),
+                path: path.clone(),
+                original_file_path: path,
+                absolute_path: DbtPath::from(PathBuf::new()),
+                span: None,
+                unique_id: unique_id.to_string(),
+                macro_sql: sql.to_string(),
+                depends_on: MacroDependsOn { macros: vec![] },
+                description: String::new(),
+                meta: BTreeMap::new(),
+                docs: None,
+                config: MacroConfig::default(),
+                patch_path: None,
+                funcsign: None,
+                args: vec![],
+                arguments: vec![],
+                macro_name_span: None,
+                __other__: BTreeMap::new(),
+            }
+        }
+
+        // Register a "helper" macro directly in the function registry so calls to
+        // it are resolved without going through the (deliberately broken, see
+        // below) macro-namespace resolver.
+        let mut function_registry: FunctionRegistry = FunctionRegistry::new();
+        function_registry.insert(
+            "helper".to_string(),
+            DynTypeObject::new(Arc::new(UserDefinedFunctionType::new(
+                "helper",
+                Vec::<Argument>::new(),
+                Type::Any { hard: false },
+                Path::new("macros/helper.sql"),
+                &MinijinjaSpan::default(),
+                "macro.pkg.helper",
+            ))),
+        );
+
+        let mut jinja_env = JinjaEnv::new(Environment::new());
+        jinja_env.jinja_function_registry = Arc::new(function_registry);
+        let jinja_env = Arc::new(jinja_env);
+
+        // Alphabetically, the panicking macro sorts between the other two so we
+        // exercise both "processed before" and "processed after" ordering.
+        let mut macros = BTreeMap::new();
+        macros.insert(
+            "macro.pkg.a_before".to_string(),
+            make_macro("macro.pkg.a_before", "{{ helper() }}"),
+        );
+        macros.insert(
+            "macro.pkg.m_panicking".to_string(),
+            // Calls a name that isn't in the function registry, forcing a fall
+            // through to the macro-namespace resolver below.
+            make_macro("macro.pkg.m_panicking", "{{ some_unregistered_macro() }}"),
+        );
+        macros.insert(
+            "macro.pkg.z_after".to_string(),
+            make_macro("macro.pkg.z_after", "{{ helper() }}"),
+        );
+
+        let io = IoArgs::default();
+        // Deliberately malformed: `macro_namespace_template_resolver` expects
+        // this value to be a `ValueMap` object and unwraps it unconditionally,
+        // which panics for any other value (e.g. this plain string) once a
+        // macro body calls an unresolved macro name.
+        let bad_dbt_and_adapters_namespace = MinijinjaValue::from("not-a-valuemap");
+
+        typecheck_macros(
+            &io,
+            &mut macros,
+            jinja_env,
+            AdapterType::Postgres,
+            "pkg",
+            bad_dbt_and_adapters_namespace,
+        )?;
+
+        assert!(
+            macros["macro.pkg.m_panicking"].depends_on.macros.is_empty(),
+            "panicking macro should keep empty depends_on.macros instead of crashing the run"
+        );
+        assert_eq!(
+            macros["macro.pkg.a_before"].depends_on.macros,
+            vec!["macro.pkg.helper".to_string()],
+            "macro processed before the panicking one should still be typechecked correctly"
+        );
+        assert_eq!(
+            macros["macro.pkg.z_after"].depends_on.macros,
+            vec!["macro.pkg.helper".to_string()],
+            "macro processed after the panicking one should still be typechecked correctly"
         );
 
         Ok(())

@@ -10,6 +10,7 @@ use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::{AdapterEngine, AdapterResult};
 
+use arrow_array::cast::AsArray;
 use arrow_array::*;
 use arrow_schema::*;
 use dbt_adapter_core::AdapterType;
@@ -18,6 +19,7 @@ use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::common::normalize_quote;
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
@@ -45,18 +47,7 @@ pub const BIGQUERY_PSEUDOCOLUMNS: [&str; 7] = [
     "_CHANGE_SEQUENCE_NUMBER",
 ];
 
-// TODO: When the schema is a hidden dataset, this will throw an error.
-//
-// The intuitive solution is to implement `list_relations_via_adbc` and delegate
-// to the driver via GetObjects. But GetObjects ignores hidden datasets, which
-// actually makes things worse.
-//
-// When `get_relation` sees a cache miss, it calls `list_relations` and uses
-// that as the cache result. Listing any relations in a hidden dataset will
-// return an empty result, leading to a false early return (see adapter/mod.rs:1476).
-//
-// `list_relations` throwing an error over hidden datasets at least bypasses
-// the early return from the cache.
+#[allow(dead_code)]
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
@@ -99,6 +90,131 @@ FROM
             .with_quoting(engine.quoting()),
         ) as Arc<dyn BaseRelation>);
     }
+    Ok(result)
+}
+
+pub fn list_relations_via_adbc(
+    engine: &dyn AdapterEngine,
+    conn: &'_ mut dyn Connection,
+    db_schema: &CatalogAndSchema,
+) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+    // The driver expects unquoted values, so regardless of the adapter's config
+    // we need to strip quotes.
+    let (catalog, _) = normalize_quote(false, AdapterType::Bigquery, &db_schema.rendered_catalog);
+    let (schema, _) = normalize_quote(false, AdapterType::Bigquery, &db_schema.rendered_schema);
+
+    let reader = conn
+        .get_objects(
+            adbc_core::options::ObjectDepth::Tables,
+            Some(&catalog),
+            Some(&schema),
+            None,
+            None,
+            None,
+        )
+        .map_err(adbc_error_to_adapter_error)?;
+
+    let arrow_schema = reader.schema();
+    let batches = reader
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| AdapterError::new(AdapterErrorKind::Driver, e.to_string()))?;
+    let batch = arrow::compute::concat_batches(&arrow_schema, &batches)
+        .map_err(|e| AdapterError::new(AdapterErrorKind::Driver, e.to_string()))?;
+
+    // The schema names are nested in the result of the get object call.
+    // The batch has the following shape at the top level:
+    // - catalog_name: utf8
+    // - catalog_db_schemas: list[struct]
+    //
+    // Each row of the column `catalog_db_schemas` is a list of elements
+    // with the shape:
+    //   - db_schema_name: utf8
+    //   - db_schema_tables: list
+    let catalog_db_schemas = batch
+        .column_by_name("catalog_db_schemas")
+        .and_then(|c| c.as_any().downcast_ref::<ListArray>())
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Missing or invalid 'catalog_db_schemas' column",
+            )
+        })?;
+
+    let schemas_struct = catalog_db_schemas
+        .values()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Missing or invalid 'catalog_db_schemas' values",
+            )
+        })?;
+
+    // Each row of the column `db_schema_tables` is a list of elements
+    // with the shape:
+    //   - table_name: utf8
+    //   - table_type: utf8
+    //   - table_columns: list
+    //   - table_constraints: list
+    let db_schema_tables = schemas_struct
+        .column_by_name("db_schema_tables")
+        .and_then(|c| c.as_any().downcast_ref::<ListArray>())
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Missing or invalid 'db_schema_tables' column",
+            )
+        })?;
+
+    let tables_struct = db_schema_tables
+        .values()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Missing or invalid 'db_schema_tables' values",
+            )
+        })?;
+
+    let table_names = tables_struct
+        .column_by_name("table_name")
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Missing or invalid 'table_name' column",
+            )
+        })?;
+    let table_types = tables_struct
+        .column_by_name("table_type")
+        .and_then(|c| c.as_string_opt::<i32>())
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::UnexpectedResult,
+                "Missing or invalid 'table_type' column",
+            )
+        })?;
+
+    let mut result = Vec::with_capacity(tables_struct.len());
+    for j in 0..tables_struct.len() {
+        let identifier = table_names.value(j);
+        let relation_type =
+            RelationType::from_adapter_type(AdapterType::Bigquery, table_types.value(j));
+
+        result.push(Arc::new(
+            Relation::new(
+                AdapterType::Bigquery,
+                catalog.clone(),
+                schema.clone(),
+                identifier.to_string(),
+            )
+            .with_relation_type(relation_type)
+            .with_quoting(engine.quoting()),
+        ) as Arc<dyn BaseRelation>);
+    }
+
     Ok(result)
 }
 

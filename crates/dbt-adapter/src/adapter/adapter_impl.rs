@@ -1517,13 +1517,19 @@ impl AdapterImpl {
                     AdapterErrorKind::UnexpectedResult,
                     "Missing or invalid 'db_schema_name' column",
                 )
-            })?;
-
-        Ok(db_schema_names
+            })?
             .iter()
-            .flatten()
+            .flatten();
+
+        // In Core, `list_datasets` is called without the `include_all` parameter,
+        // which filters out hidden datasets.
+        // Reference: https://github.com/dbt-labs/dbt-adapters/blob/860da89225e2ecf1bf47038f5ac40d4eaa4019a2/dbt-bigquery/src/dbt/adapters/bigquery/connections.py#L619
+        let db_schema_names = db_schema_names
+            .filter(|s| !s.starts_with('_'))
             .map(|s| s.to_string())
-            .collect())
+            .collect();
+
+        Ok(db_schema_names)
     }
 
     pub fn list_schemas_inner(&self, result_set: Arc<RecordBatch>) -> AdapterResult<Vec<String>> {
@@ -4213,7 +4219,7 @@ impl AdapterImpl {
                 snowflake::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Bigquery, engine) => {
-                bigquery::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+                bigquery::list_relations_via_adbc(engine.as_ref(), conn, db_schema)
             }
             Impl(Databricks | Spark, engine) => {
                 databricks::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)

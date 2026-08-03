@@ -198,7 +198,7 @@ impl JinjaEnvBuilder {
         #[allow(unused_mut)]
         let mut internal_packages = get_internal_packages(adapter.adapter_type().as_ref());
         // Initialize all registries
-        let mut macro_namespace_registry = ValueMap::new(); // package_name → [macro_names]
+        let mut macro_namespace_registry = ValueMap::new(); // package_name → {macro_name → true}
         let mut macro_template_registry = ValueMap::new(); // template_name → macro_info
 
         let mut non_internal_packages: ValueMap = ValueMap::new(); // package_name → [macro_names]
@@ -208,15 +208,20 @@ impl JinjaEnvBuilder {
 
         // Process all macros
         for (package_name, macro_units) in macros.macros.clone() {
-            // Add package to namespace registry
+            // Add package to namespace registry.
+            //
+            // Stored as a map keyed by macro name rather than a sequence: the hot
+            // consumer is `DbtNamespace::get_property`, which membership-tests this on
+            // every `pkg.macro_name` access. A map makes that a hash lookup instead of a
+            // scan over the whole package. Iterating a minijinja map yields its keys, so
+            // consumers that walk this for macro names are unaffected.
+            let macro_names: ValueMap = macro_units
+                .iter()
+                .map(|m| (Value::from(m.info.name.clone()), Value::from(true)))
+                .collect();
             macro_namespace_registry.insert(
                 Value::from(package_name.clone()),
-                Value::from_serialize(
-                    macro_units
-                        .iter()
-                        .map(|m| m.info.name.clone())
-                        .collect::<Vec<_>>(),
-                ),
+                Value::from_object(macro_names),
             );
         }
         self.env.add_global(

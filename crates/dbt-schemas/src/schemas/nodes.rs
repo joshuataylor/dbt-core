@@ -3028,9 +3028,12 @@ impl InternalDbtNode for DbtSemanticModel {
     // dbt-core does in SemanticModel.same_contents(). See:
     // https://github.com/dbt-labs/dbt-core/blob/906e07c1f2161aaf8873f17ba323221a3cf48c9f/core/dbt/contracts/graph/nodes.py#L1585-L1602
     // TODO: group is not compared while it is in dbt-core. SemanticModel group is not implemented in dbt-fusion.
-    fn has_same_content(&self, other: &dyn InternalDbtNode, adapter_type: AdapterType) -> bool {
+    fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
         if let Some(other_semantic_model) = other.as_any().downcast_ref::<DbtSemanticModel>() {
-            let same_config_result = self.has_same_config(other, adapter_type);
+            // NOTE: config is owned by `check_configs_modified` (a sibling sub-check OR'd into
+            // `is_modified`), so it must not be re-checked here. The wholesale
+            // `same_deprecated_config` comparison below still lives in content pending the
+            // follow-up that moves it into `has_same_config` (see the plan's deferrals).
             let same_model_result = self.__semantic_model_attr__.model
                 == other_semantic_model.__semantic_model_attr__.model;
             let same_description_result = self.__common_attr__.description
@@ -3046,8 +3049,7 @@ impl InternalDbtNode for DbtSemanticModel {
             let same_primary_entity_result = self.__semantic_model_attr__.primary_entity
                 == other_semantic_model.__semantic_model_attr__.primary_entity;
 
-            let result = same_config_result
-                && same_model_result
+            let result = same_model_result
                 && same_description_result
                 && same_entities_result
                 && same_dimensions_result
@@ -3060,7 +3062,6 @@ impl InternalDbtNode for DbtSemanticModel {
                     &self.__common_attr__.unique_id,
                     "semantic_model",
                     [
-                        ("same_config", same_config_result, None),
                         (
                             "same_model",
                             same_model_result,
@@ -3231,60 +3232,40 @@ impl InternalDbtNode for DbtMetric {
             false
         }
     }
-    // This function only compares a subset of the DbMetric node, similar to what
-    // dbt-core does in Metric.same_contents(). See:
-    // https://github.com/dbt-labs/dbt-core/blob/906e07c1f2161aaf8873f17ba323221a3cf48c9f/core/dbt/contracts/graph/nodes.py#L1496-L1511
-    fn has_same_content(&self, other: &dyn InternalDbtNode, adapter_type: AdapterType) -> bool {
+    // This function only compares a subset of the DbMetric node, mirroring dbt-core's
+    // `Metric.same_contents` (`type`, `description`, `label`, `config`). See:
+    // https://github.com/dbt-labs/dbt-mantle/blob/0153865/core/dbt/contracts/graph/nodes.py#L1672-L1725
+    //
+    // dbt-core intentionally does NOT compare `filter`, `metadata`, or `type_params`
+    // (its `same_filter`/`same_metadata`/`same_type_params` all `return True` as TODOs), so we
+    // drop them here to match — comparing them over-selects on manifest round-trip noise
+    // (dbt-core#15513). `fqn` is not part of `same_contents` either (renames are caught by node
+    // presence). Revisit the dropped fields if dbt-core implements them.
+    fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
         if let Some(other_metric) = other.as_any().downcast_ref::<DbtMetric>() {
-            let same_config_result = self.has_same_config(other, adapter_type);
-            let same_filter_result =
-                self.__metric_attr__.filter == other_metric.__metric_attr__.filter;
-            let same_metadata_result =
-                self.__metric_attr__.metadata == other_metric.__metric_attr__.metadata;
-            let same_type_params_result =
-                self.__metric_attr__.type_params == other_metric.__metric_attr__.type_params;
+            // NOTE: config is owned by `check_configs_modified` (a sibling sub-check OR'd into
+            // `is_modified`, which for metrics compares `!has_same_config`), so it is not
+            // re-checked here — avoiding the double-count.
+            let same_type_result =
+                self.__metric_attr__.metric_type == other_metric.__metric_attr__.metric_type;
             let same_description_result =
                 self.__common_attr__.description == other_metric.__common_attr__.description;
-            let same_fqn_result = self.__common_attr__.fqn == other_metric.__common_attr__.fqn;
             let same_label_result =
                 self.__metric_attr__.label == other_metric.__metric_attr__.label;
 
-            let result = same_config_result
-                && same_filter_result
-                && same_metadata_result
-                && same_type_params_result
-                && same_description_result
-                && same_fqn_result
-                && same_label_result;
+            let result = same_type_result && same_description_result && same_label_result;
 
             if !result {
                 log_state_mod_diff(
                     &self.__common_attr__.unique_id,
                     "metric",
                     [
-                        ("same_config", same_config_result, None),
                         (
-                            "same_filter",
-                            same_filter_result,
+                            "same_type",
+                            same_type_result,
                             Some((
-                                format!("{:?}", &self.__metric_attr__.filter),
-                                format!("{:?}", &other_metric.__metric_attr__.filter),
-                            )),
-                        ),
-                        (
-                            "same_metadata",
-                            same_metadata_result,
-                            Some((
-                                format!("{:?}", &self.__metric_attr__.metadata),
-                                format!("{:?}", &other_metric.__metric_attr__.metadata),
-                            )),
-                        ),
-                        (
-                            "same_type_params",
-                            same_type_params_result,
-                            Some((
-                                format!("{:?}", &self.__metric_attr__.type_params),
-                                format!("{:?}", &other_metric.__metric_attr__.type_params),
+                                format!("{:?}", &self.__metric_attr__.metric_type),
+                                format!("{:?}", &other_metric.__metric_attr__.metric_type),
                             )),
                         ),
                         (
@@ -3293,14 +3274,6 @@ impl InternalDbtNode for DbtMetric {
                             Some((
                                 format!("{:?}", &self.__common_attr__.description),
                                 format!("{:?}", &other_metric.__common_attr__.description),
-                            )),
-                        ),
-                        (
-                            "same_fqn",
-                            same_fqn_result,
-                            Some((
-                                format!("{:?}", &self.__common_attr__.fqn),
-                                format!("{:?}", &other_metric.__common_attr__.fqn),
                             )),
                         ),
                         (
@@ -4496,26 +4469,6 @@ where
     match value {
         Some(s) => serializer.serialize_str(s),
         None => serializer.serialize_str(""),
-    }
-}
-
-/// Serialize Option<IndexMap<String, YmlValue>> as empty map when None, otherwise as the map value.
-/// This ensures the field is always present in serialized output, which is required for
-/// Jinja macros that access `node.config.meta.get(...)`.
-pub fn serialize_none_as_empty_map<S>(
-    value: &Option<IndexMap<String, YmlValue>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeMap;
-    match value {
-        Some(map) => map.serialize(serializer),
-        None => {
-            let empty_map = serializer.serialize_map(Some(0))?;
-            empty_map.end()
-        }
     }
 }
 

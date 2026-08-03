@@ -94,10 +94,7 @@ pub fn yaml_to_fs_error(err: dbt_yaml::Error, filename: Option<&Path>) -> Box<Fs
 }
 
 /// Serialize an `Option<T>` as an empty map `{}` when `None`.
-pub fn serialize_option_as_empty_map<S, T>(
-    val: &Option<T>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize_none_as_empty_map<S, T>(val: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     T: Serialize,
@@ -112,7 +109,7 @@ where
 /// Serialize an `Option<T>` as `T::default()` when `None`. Use for fields where
 /// dbt-core always emits a default value (e.g. `{}`, `[]`, default enum variant)
 /// instead of omitting/null.
-pub fn serialize_option_as_default<S, T>(val: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize_none_as_default<S, T>(val: &Option<T>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
     T: Default + Serialize,
@@ -121,6 +118,43 @@ where
         Some(v) => v.serialize(serializer),
         None => T::default().serialize(serializer),
     }
+}
+
+/// Deserialize inverse of [`serialize_none_as_default`]: deserialize a `T` and
+/// collapse it back to `None` when it equals `T::default()`.
+///
+/// Pair this with `serialize_none_as_default` on `Option<T>` fields so the value
+/// round-trips (`None -> default -> None`). Without it, a field serialized as its
+/// default (e.g. `""`, `{}`) reads back as `Some(default)` instead of `None`,
+/// which breaks typed `state:modified` comparisons. See dbt-core#15513.
+///
+/// Deserializes via `Option<T>` so an explicit `null` (produced by dbt-core and older
+/// Fusion manifests) also collapses to `None` rather than erroring.
+pub fn deserialize_default_as_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + PartialEq + Deserialize<'de>,
+{
+    let value = Option::<T>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(v) if v == T::default() => None,
+        other => other,
+    })
+}
+
+/// Deserialize inverse of [`serialize_none_as_empty_map`] for `Option<IndexMap>`:
+/// collapse an empty map `{}` back to `None`.
+pub fn deserialize_empty_map_as_none<'de, D>(
+    deserializer: D,
+) -> Result<Option<IndexMap<String, YmlValue>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let map = Option::<IndexMap<String, YmlValue>>::deserialize(deserializer)?;
+    Ok(match map {
+        Some(m) if m.is_empty() => None,
+        other => other,
+    })
 }
 
 /// Serialize a `DocsConfig` always including `node_color` as an explicit null when absent.
@@ -150,7 +184,7 @@ where
 }
 
 /// Serialize an `Option<Vec<T>>` as an empty array `[]` when `None`.
-pub fn serialize_option_as_empty_vec<S, T>(
+pub fn serialize_none_as_empty_vec<S, T>(
     val: &Option<Vec<T>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>

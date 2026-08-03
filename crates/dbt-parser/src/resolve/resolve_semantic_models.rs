@@ -160,8 +160,16 @@ pub async fn resolve_semantic_models(
 
         // Get combined config from project config and semantic_model config
         let properties_config = semantic_model_properties_config(model_props);
-        let semantic_model_config = config_resolver
+        let mut semantic_model_config = config_resolver
             .resolve_with_properties(&semantic_model_fqn, properties_config.as_ref());
+        // Same round-trip canonicalization as `canonicalize_semantic_entity`
+        if semantic_model_config
+            .meta
+            .as_ref()
+            .is_some_and(|m| m.is_empty())
+        {
+            semantic_model_config.meta = None;
+        }
         let is_enabled = semantic_model_config.enabled;
 
         let measures: Vec<SemanticMeasure> = model_props
@@ -348,6 +356,15 @@ pub async fn resolve_semantic_models(
     Ok((semantic_models, disabled_semantic_models))
 }
 
+/// Canonicalize authored-empty entity fields to `None`.
+fn canonicalize_semantic_entity(mut entity: SemanticEntity) -> SemanticEntity {
+    entity.description = entity.description.filter(|d| !d.is_empty());
+    entity.config = entity
+        .config
+        .filter(|c| *c != SemanticLayerElementConfig::default());
+    entity
+}
+
 pub fn model_props_to_semantic_entities(model_props: ModelProperties) -> Vec<SemanticEntity> {
     let mut entities: Vec<SemanticEntity> = vec![];
 
@@ -381,7 +398,7 @@ pub fn model_props_to_semantic_entities(model_props: ModelProperties) -> Vec<Sem
                 role: None,
                 metadata: None,
             };
-            entities.push(semantic_entity);
+            entities.push(canonicalize_semantic_entity(semantic_entity));
         }
     }
 
@@ -402,7 +419,7 @@ pub fn model_props_to_semantic_entities(model_props: ModelProperties) -> Vec<Sem
             role: None,
             metadata: None,
         };
-        entities.push(semantic_entity);
+        entities.push(canonicalize_semantic_entity(semantic_entity));
     }
 
     entities

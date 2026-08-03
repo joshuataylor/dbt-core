@@ -40,7 +40,7 @@ pub struct ModelConstraint {
     #[serde(
         default,
         deserialize_with = "string_or_array",
-        serialize_with = "crate::schemas::serde::serialize_option_as_empty_vec"
+        serialize_with = "crate::schemas::serde::serialize_none_as_empty_vec"
     )]
     pub to_columns: Option<Vec<String>>,
     #[serde(default, deserialize_with = "string_or_array")]

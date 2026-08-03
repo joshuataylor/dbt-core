@@ -568,7 +568,7 @@ pub struct ModelConfig {
     #[serde(
         default,
         deserialize_with = "default_type",
-        serialize_with = "crate::schemas::nodes::serialize_none_as_empty_map"
+        serialize_with = "crate::schemas::serde::serialize_none_as_empty_map"
     )]
     pub meta: Option<IndexMap<String, YmlValue>>,
     pub group: Option<String>,

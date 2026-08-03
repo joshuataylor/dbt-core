@@ -353,7 +353,7 @@ pub struct DataTestConfig {
     pub full_refresh: Option<bool>,
     pub group: Option<String>,
     pub limit: Option<i32>,
-    #[serde(serialize_with = "crate::schemas::serde::serialize_option_as_empty_map")]
+    #[serde(serialize_with = "crate::schemas::serde::serialize_none_as_empty_map")]
     pub meta: Option<IndexMap<String, YmlValue>>,
     #[resolved(promote, default = DEFAULT_DATA_TEST_SEVERITY.clone())]
     pub severity: Option<Severity>,

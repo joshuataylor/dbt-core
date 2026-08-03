@@ -1734,8 +1734,11 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
             .semantic_models
             .insert(unique_id, Arc::new(semantic_model.into()));
     }
-    for (_unique_id, _metric) in manifest.metrics {
-        // TODO: insert DbtMetric into node.metrics
+    for (unique_id, metric) in manifest.metrics {
+        // Load previous-state metrics so `state:modified` can compare them. Without this,
+        // `previous_node_for` never finds a metric and every metric is unconditionally
+        // reported as modified (dbt-core#15513).
+        nodes.metrics.insert(unique_id, Arc::new(metric.into()));
     }
     for (unique_id, saved_query) in manifest.saved_queries {
         nodes.saved_queries.insert(

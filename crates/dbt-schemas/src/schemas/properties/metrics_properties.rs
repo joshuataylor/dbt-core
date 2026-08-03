@@ -46,7 +46,7 @@ pub fn default_hidden() -> Option<bool> {
     Some(false)
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default, DbtSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, DbtSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MetricType {
     #[default]

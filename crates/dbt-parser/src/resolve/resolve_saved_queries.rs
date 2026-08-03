@@ -154,6 +154,7 @@ pub async fn resolve_saved_queries(
                 group_by: props_query_params.group_by.clone().unwrap_or_default(),
                 where_: props_query_params
                     .where_
+                    .0
                     .clone()
                     .map(|where_clause| where_clause.into()),
                 order_by: vec![],

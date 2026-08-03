@@ -20,7 +20,7 @@ use dbt_jinja_utils::node_resolver::{
 use dbt_jinja_utils::phases::parse::{
     build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
 };
-use dbt_jinja_utils::serde::{into_typed_with_error, into_typed_with_jinja};
+use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::ComputePlatform;
@@ -28,7 +28,7 @@ use dbt_schemas::schemas::common::{Access, DbtIncrementalStrategy};
 use dbt_schemas::schemas::macros::{DbtDocsMacro, build_macro_units};
 use dbt_schemas::schemas::properties::{
     FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL, FunctionKind,
-    MetricsProperties, ModelProperties,
+    ModelProperties,
 };
 use dbt_schemas::schemas::{DbtModel, InternalDbtNode, Nodes};
 
@@ -76,7 +76,6 @@ use crate::resolve::resolve_selectors::{
     resolve_final_selectors, resolve_manifest_selectors, resolve_selectors_from_yaml,
 };
 use crate::unused_config_paths::check_unused_resource_config_paths;
-use dbt_yaml::Value as YmlValue;
 
 use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
 
@@ -746,17 +745,14 @@ pub async fn resolve_inner(
             base_ctx
         };
 
-        // Extract metrics to be parsed separately, without full Jinja rendering.
-        // Metric fields like `filter` and `expr` contain MetricFlow DSL
-        // (e.g. `{{ Dimension('...') }}`) that must not be evaluated at parse time.
-        // The `description` field is rendered selectively in resolve_metrics.
-        let mut maybe_model_metrics_yml: Option<YmlValue> = None;
+        // Legacy semantic layer projects use a different `metrics` spec, so drop the key
+        // rather than deserializing it against the current schema.
         let mut model_yml = minimal_model_props.clone().schema_value;
-        if let Some(m) = model_yml.as_mapping_mut() {
-            maybe_model_metrics_yml = m.remove("metrics");
+        if semantic_layer_spec_is_legacy && let Some(m) = model_yml.as_mapping_mut() {
+            m.remove("metrics");
         }
 
-        let mut typed_model_props: ModelProperties = into_typed_with_jinja(
+        let typed_model_props: ModelProperties = into_typed_with_jinja(
             &arg.io,
             model_yml,
             false,
@@ -768,21 +764,6 @@ pub async fn resolve_inner(
             // do not show_errors_or_warnings because that will be done by resolve_models
             false,
         )?;
-
-        if !semantic_layer_spec_is_legacy {
-            // The caveat to parsing model.metrics separately is that any yaml errors will be reported with root path
-            // as `models.[$].metrics` meaning if there's an unexpected key such as `models.[$].metrics.[$].non_existent_key`
-            // it will report unexpected key at `.[$].non_existent_key`, when it should be `.metrics.[$].non_existent_key`
-            //
-            // This will be inconsistent with unexpected keys in `models.[$]` where for example an unexpected
-            // key in `models.[$].derived_semantics.made_up_key` will report unexpected key at
-            // `derived_semantics.[$].non_existent_key`
-            if let Some(model_metrics_yml) = maybe_model_metrics_yml {
-                let typed_model_metrics_props: Option<Vec<MetricsProperties>> =
-                    into_typed_with_error(&arg.io, model_metrics_yml, true, None, None)?;
-                typed_model_props.metrics = typed_model_metrics_props;
-            }
-        }
 
         typed_models_properties.insert(model_name.clone(), typed_model_props);
     }

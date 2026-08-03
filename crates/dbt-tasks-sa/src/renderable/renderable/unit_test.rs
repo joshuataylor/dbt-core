@@ -53,8 +53,10 @@ use minijinja::listener::RenderingEventListener;
 use minijinja::value::Object;
 use minijinja::{CodeLocation, State, Value, Value as MinijinjaValue};
 use regex::Regex;
+use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 use super::common::handle_render_result;
+use crate::sql::dialect::sqlparser_dialect_for;
 
 type YmlValue = dbt_yaml::Value;
 
@@ -1382,7 +1384,7 @@ fn render_unit_test(
     // ... iterate over all subqueries
     let mut subqueries_vec = vec![];
     for (fqn, values) in &subqueries {
-        let query = format!("\t{fqn} as ({values})");
+        let query = format_unit_test_subquery(adapter_type, fqn, values);
         subqueries_vec.push(query);
     }
 
@@ -1498,6 +1500,21 @@ WITH
         },
         config_map,
     ))
+}
+
+fn format_unit_test_subquery(adapter_type: AdapterType, fqn: &str, values: &str) -> String {
+    let needs_newline = Tokenizer::new(sqlparser_dialect_for(adapter_type), values)
+        .tokenize()
+        .is_ok_and(|tokens| {
+            matches!(
+                tokens.last(),
+                Some(Token::Whitespace(Whitespace::SingleLineComment { comment, .. }))
+                    if !comment.ends_with('\n') && !comment.ends_with('\r')
+            )
+        });
+    let newline = if needs_newline { "\n" } else { "" };
+
+    format!("\t{fqn} as ({values}{newline})")
 }
 
 fn format_fqn(type_ops: &dyn TypeOps, catalog: &str, schema: &str, table: &str) -> String {
@@ -2293,6 +2310,42 @@ mod tests {
         let result =
             create_cte_name_from_fqn(adapter_type, &DefaultTypeOps::new(adapter_type), fqn);
         assert_eq!(result, "\"database_schema_table\"");
+    }
+
+    #[test]
+    fn test_unit_test_subquery_closes_after_trailing_line_comment() {
+        let result = format_unit_test_subquery(
+            AdapterType::Snowflake,
+            "\"database_schema_model_actual\"",
+            "SELECT 1\n-- trailing comment",
+        );
+
+        assert_eq!(
+            result,
+            "\t\"database_schema_model_actual\" as (SELECT 1\n-- trailing comment\n)"
+        );
+
+        let sql = format!("WITH {result} SELECT * FROM \"database_schema_model_actual\"");
+        sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::SnowflakeDialect {}, &sql)
+            .expect("unit test CTE should remain valid after a trailing line comment");
+    }
+
+    #[test]
+    fn test_unit_test_subquery_preserves_existing_formatting() {
+        for values in [
+            "SELECT 1",
+            "SELECT '-- not a comment'",
+            "SELECT 1\n-- terminated comment\n",
+        ] {
+            assert_eq!(
+                format_unit_test_subquery(
+                    AdapterType::Snowflake,
+                    "\"database_schema_model_actual\"",
+                    values,
+                ),
+                format!("\t\"database_schema_model_actual\" as ({values})")
+            );
+        }
     }
 
     #[test]

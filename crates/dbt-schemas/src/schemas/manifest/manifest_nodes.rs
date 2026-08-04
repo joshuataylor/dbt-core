@@ -744,6 +744,7 @@ pub struct ManifestMacro {
     #[serde(default)]
     pub config: MacroConfig,
     pub patch_path: Option<PathBuf>,
+    pub supported_languages: Option<Vec<String>>,
     #[serde(default)]
     pub arguments: Vec<MacroArgument>,
     pub __other__: BTreeMap<String, YmlValue>,
@@ -766,6 +767,7 @@ impl From<DbtMacro> for ManifestMacro {
             docs: macro_.docs,
             config: macro_.config,
             patch_path: macro_.patch_path,
+            supported_languages: macro_.supported_languages,
             arguments: macro_.arguments,
             __other__: macro_.__other__,
         }
@@ -790,6 +792,7 @@ impl From<ManifestMacro> for DbtMacro {
             config: macro_.config,
             patch_path: macro_.patch_path,
             funcsign: None,
+            supported_languages: macro_.supported_languages,
             args: vec![],
             arguments: macro_.arguments,
             macro_name_span: None,

@@ -1015,12 +1015,12 @@ impl<'a> Parser<'a> {
             }
             #[cfg(feature = "macros")]
             "materialization" => {
-                let (macro_, adapter) = ok!(self.parse_materialization());
-                ast::Stmt::Macro((
-                    respan!(macro_),
-                    MacroKind::Materialization,
-                    BTreeMap::from([("adapter".to_string(), Value::from(adapter))]),
-                ))
+                let (macro_, adapter, supported_languages) = ok!(self.parse_materialization());
+                let mut meta = BTreeMap::from([("adapter".to_string(), Value::from(adapter))]);
+                if let Some(supported_languages) = supported_languages {
+                    meta.insert("supported_languages".to_string(), supported_languages);
+                }
+                ast::Stmt::Macro((respan!(macro_), MacroKind::Materialization, meta))
             }
             #[cfg(feature = "macros")]
             "call" => ast::Stmt::CallBlock(respan!(ok!(self.parse_call_block()))),
@@ -1904,15 +1904,20 @@ impl<'a> Parser<'a> {
     }
 
     #[cfg(feature = "macros")]
-    fn parse_materialization(&mut self) -> Result<(ast::Macro<'a>, String), Error> {
+    fn parse_materialization(&mut self) -> Result<(ast::Macro<'a>, String, Option<Value>), Error> {
         let (name, span) = expect_token!(self, Token::Ident(name) => name, "identifier");
         let mut supported_languages = None;
         let adapter = ok!(self.parse_materialization_adapter_languages(&mut supported_languages));
+        let supported_languages = supported_languages.and_then(|expr| match expr {
+            ast::Expr::List(list) => list.as_const(),
+            _ => None,
+        });
         // TODO: This can be cleaned up to add better error messages for miss-formatted materialization macros
         let macro_name = self.intern_string(&materialization_macro_name(name, &adapter));
         Ok((
             ok!(self.parse_materialization_or_call_block_body(Some(macro_name), span)),
             adapter,
+            supported_languages,
         ))
     }
 

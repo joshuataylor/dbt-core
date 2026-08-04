@@ -838,9 +838,17 @@ fn extract_sql_resources_from_ast<T: ResolvableConfig<T>>(
                 }
                 MacroKind::Materialization => {
                     let adapter_type = meta.get("adapter").expect("adapter is required");
+                    let supported_languages = meta.get("supported_languages").map(|value| {
+                        value
+                            .try_iter()
+                            .expect("supported_languages must be iterable")
+                            .filter_map(|language| language.as_str().map(ToString::to_string))
+                            .collect()
+                    });
                     sql_resources.push(SqlResource::Materialization(
                         macro_name.to_string(),
                         adapter_type.as_str().unwrap().to_string(),
+                        supported_languages,
                         span,
                         macro_node.name_span,
                     ));

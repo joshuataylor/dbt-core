@@ -333,6 +333,7 @@ mod tests {
         m.original_file_path = DbtPath::from(format!("macros/{package}/{name}.sql"));
         m.path = m.original_file_path.clone();
         m.description = String::new();
+        m.supported_languages = None;
         m
     }
 

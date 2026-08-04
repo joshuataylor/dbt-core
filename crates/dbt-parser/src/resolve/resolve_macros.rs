@@ -159,6 +159,7 @@ pub fn resolve_macros(
                             config: MacroConfig::default(),
                             patch_path: None,
                             funcsign: None,
+                            supported_languages: None,
                             args: args.clone(),
                             arguments: vec![],
                             macro_name_span: Some(macro_name_span),
@@ -189,6 +190,7 @@ pub fn resolve_macros(
                             config: MacroConfig::default(),
                             patch_path: None,
                             funcsign: func_sign.clone(),
+                            supported_languages: None,
                             args: args.clone(),
                             arguments: vec![],
                             macro_name_span: Some(macro_name_span),
@@ -197,7 +199,13 @@ pub fn resolve_macros(
 
                         nodes.insert(unique_id, dbt_macro);
                     }
-                    SqlResource::Materialization(name, _, span, macro_name_span) => {
+                    SqlResource::Materialization(
+                        name,
+                        _,
+                        supported_languages,
+                        span,
+                        macro_name_span,
+                    ) => {
                         let split_macro_sql =
                             &macro_sql[span.start_offset as usize..span.end_offset as usize];
                         // TODO: Return the adapter type with the SqlResource (for now, default always)
@@ -218,6 +226,7 @@ pub fn resolve_macros(
                             config: MacroConfig::default(),
                             patch_path: None,
                             funcsign: None,
+                            supported_languages,
                             args: vec![],
                             arguments: vec![],
                             macro_name_span: Some(macro_name_span),
@@ -248,6 +257,7 @@ pub fn resolve_macros(
                             config: MacroConfig::default(),
                             patch_path: None,
                             funcsign: None,
+                            supported_languages: None,
                             args: vec![],
                             arguments: vec![],
                             macro_name_span: Some(macro_name_span),
@@ -887,6 +897,7 @@ select 1 as id, current_timestamp as updated_at
                 config: MacroConfig::default(),
                 patch_path: None,
                 funcsign: None,
+                supported_languages: None,
                 args: vec![],
                 arguments: vec![],
                 macro_name_span: Some(dummy_span),
@@ -964,6 +975,7 @@ select 1 as id, current_timestamp as updated_at
                 config: MacroConfig::default(),
                 patch_path: None,
                 funcsign: None,
+                supported_languages: None,
                 args: vec![],
                 arguments: vec![],
                 macro_name_span: None,

@@ -973,6 +973,7 @@ mod tests {
             vec![SqlResource::Materialization(
                 "materialization_name_default".to_string(),
                 "default".to_string(),
+                None,
                 Span {
                     start_line: 2,
                     start_col: 13,
@@ -1005,6 +1006,7 @@ mod tests {
             vec![SqlResource::Materialization(
                 "materialization_name_redshift".to_string(),
                 "redshift".to_string(),
+                Some(vec!["sql".to_string(), "python".to_string()]),
                 Span {
                     start_line: 2,
                     start_col: 9,

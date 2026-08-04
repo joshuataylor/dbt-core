@@ -3,14 +3,15 @@
 use dbt_error::{FsError, FsResult};
 
 use super::{
-    config::FsTraceConfig,
     dbt_data_layer::{dbt_data_layer_config, dbt_process_span_attributes},
     tracing_feature_handles::TracingConfigProvider,
 };
 use dbt_tracing::{
     TelemetryAttributes,
     init::{BaseSubscriber, TelemetryHandle},
+    layer::{ConsumerLayer, MiddlewareLayer},
     layers::data_layer::TelemetryDataLayer,
+    shutdown::TelemetryShutdownItem,
 };
 #[cfg(test)]
 use tracing::Subscriber;
@@ -70,43 +71,30 @@ pub fn init_tracing_with_consumer_layer<D: Layer<BaseSubscriber> + Send + Sync +
     )
 }
 
-/// Initializes tracing with consumer layers defined by the provided configuration.
-///
-/// This function will set up a global tracing subscriber and will fail on re-entry.
-///
-/// If you need to change or add layers after initialization, `init_tracing_with_consumer_layer`
-/// can be used to set up a reloadable data layer. See `super::reload::create_realodable_data_layer`.
-///
-/// # Returns
-///
-/// On success, returns a `TelemetryHandle` that should be used for graceful shutdown.
-pub fn init_tracing(
-    config: FsTraceConfig,
+/// Initializes tracing from an explicitly assembled dbt middleware and consumer stack.
+pub fn init_tracing_with_layers(
+    package: &'static str,
+    fallback_trace_id: u128,
+    fallback_parent_span_id: Option<u64>,
+    max_log_verbosity: LevelFilter,
+    middlewares: Vec<MiddlewareLayer>,
+    consumer_layers: Vec<ConsumerLayer>,
+    shutdown_items: Vec<TelemetryShutdownItem>,
+    feature_handle: Box<dyn TracingConfigProvider>,
 ) -> FsResult<(TelemetryHandle, Box<dyn TracingConfigProvider>)> {
-    // Convert invocation ID to trace ID
-    let trace_id = config.invocation_id.as_u128();
-
-    let (middlewares, consumer_layers, shutdown_items, feature_handle) =
-        config.build_layers()?.into_parts();
-
     // Strip code location in non-debug builds
     let strip_code_location = !cfg!(debug_assertions);
 
     let data_layer = TelemetryDataLayer::new(
-        dbt_data_layer_config(trace_id, config.parent_span_id),
+        dbt_data_layer_config(fallback_trace_id, fallback_parent_span_id),
         strip_code_location,
         middlewares.into_iter(),
         consumer_layers.into_iter(),
     );
 
-    // Base filter must allow events at the highest configured verbosity across all sinks
-    // (e.g., stdout may be INFO while file log is TRACE)
-    let effective_max_verbosity =
-        std::cmp::max(config.max_log_verbosity, config.max_file_log_verbosity);
-
     let process_span = init_tracing_with_consumer_layer(
-        effective_max_verbosity,
-        dbt_process_span_attributes(config.package),
+        max_log_verbosity,
+        dbt_process_span_attributes(package),
         data_layer,
     )
     .map_err(FsError::from)?;

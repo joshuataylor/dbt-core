@@ -618,59 +618,37 @@ pub fn typecheck_macros(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_common::FsError;
-    use dbt_common::io_args::{IoArgs, StaticAnalysisKind, StaticAnalysisOffReason};
-    use dbt_common::io_utils::StatusReporter;
-    use dbt_common::path::DbtPath;
-    use dbt_telemetry::{ExecutionPhase, NodeOutcome};
+    use dbt_common::tracing::fs_error_log::FsErrorLog;
+    use dbt_tracing::{
+        SeverityNumber,
+        init::create_tracing_subcriber_with_layer,
+        layer::ConsumerLayer,
+        test_support::mocks::{TestLayer, test_data_layer},
+    };
     use dbt_yaml::Span;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
-
-    #[derive(Default)]
-    struct MockStatusReporter {
-        warnings: Mutex<Vec<(ErrorCode, Option<dbt_common::CodeLocationWithFile>)>>,
-    }
-
-    impl MockStatusReporter {
-        fn warnings(&self) -> Vec<(ErrorCode, Option<dbt_common::CodeLocationWithFile>)> {
-            self.warnings.lock().unwrap().clone()
-        }
-    }
-
-    impl StatusReporter for MockStatusReporter {
-        fn collect_error(&self, _error: &FsError) {}
-
-        fn collect_warning(&self, warning: &FsError) {
-            self.warnings
-                .lock()
-                .unwrap()
-                .push((warning.code, warning.location.clone()));
-        }
-
-        fn collect_node_evaluation(
-            &self,
-            _unique_id: &str,
-            _execution_phase: ExecutionPhase,
-            _node_outcome: NodeOutcome,
-            _upstream_target: Option<(String, String, bool)>,
-            _static_analysis: StaticAnalysisKind,
-            _static_analysis_off_reason: (Option<StaticAnalysisOffReason>, Span),
-        ) {
-        }
-
-        fn show_progress(&self, _action: &str, _target: &str, _description: Option<&str>) {}
-
-        fn bulk_publish_empty(&self, _file_paths: Vec<DbtPath>) {}
-    }
 
     #[test]
     fn invalid_markdown_doc_reports_warning_and_continues() -> FsResult<()> {
         let tmp_dir = tempdir().unwrap();
         let base_path = tmp_dir.path().to_path_buf();
         fs::create_dir_all(base_path.join("models")).unwrap();
+
+        let (test_layer, _, _, log_records) = TestLayer::new();
+        let subscriber = create_tracing_subcriber_with_layer(
+            tracing::level_filters::LevelFilter::TRACE,
+            test_data_layer(
+                1,
+                None,
+                false,
+                std::iter::empty(),
+                std::iter::once(Box::new(test_layer) as ConsumerLayer),
+            ),
+            &[],
+        )
+        .expect("test tracing subscriber should be valid");
 
         struct InvalidCase<'a> {
             name: &'a str,
@@ -711,79 +689,86 @@ mod tests {
             },
         ];
 
-        for case in invalid_cases {
-            let reporter = Arc::new(MockStatusReporter::default());
+        tracing::subscriber::with_default(subscriber, || {
             let io_args = IoArgs {
                 in_dir: base_path.clone(),
-                status_reporter: Some(reporter.clone()),
                 ..Default::default()
             };
 
-            let mut assets = Vec::new();
-            for (file_name, content) in &case.files {
-                let file_path = PathBuf::from(format!("models/{}", file_name));
-                fs::write(base_path.join(&file_path), content).unwrap();
-                assets.push(DbtAsset {
-                    base_path: base_path.clone(),
-                    original_path: file_path.clone(),
-                    path: file_path,
-                    package_name: "pkg".to_string(),
-                });
-            }
+            for case in invalid_cases {
+                let mut assets = Vec::new();
+                for (file_name, content) in &case.files {
+                    let file_path = PathBuf::from(format!("models/{file_name}"));
+                    fs::write(base_path.join(&file_path), content).unwrap();
+                    assets.push(DbtAsset {
+                        base_path: base_path.clone(),
+                        original_path: file_path.clone(),
+                        path: file_path,
+                        package_name: "pkg".to_string(),
+                    });
+                }
 
-            let _ = resolve_docs_macros(&io_args, &assets, None)?;
-            let warnings = reporter.warnings();
-            assert_eq!(
-                warnings.len(),
-                case.expected_warning_paths.len(),
-                "expected one warning for case {}",
-                case.name
-            );
-            for (warning, expected_path) in warnings.iter().zip(case.expected_warning_paths.iter())
-            {
-                assert_eq!(warning.0, case.expected_code);
+                let previous_record_count = log_records.lock().unwrap().len();
+                let _ = resolve_docs_macros(&io_args, &assets, None)?;
+                let records = log_records.lock().unwrap();
+                let warnings = &records[previous_record_count..];
                 assert_eq!(
-                    warning.1.as_ref().map(|loc| loc.file.as_ref().clone()),
-                    Some(PathBuf::from(expected_path)),
-                    "expected warning location for case {}",
+                    warnings.len(),
+                    case.expected_warning_paths.len(),
+                    "expected one warning for case {}",
                     case.name
                 );
+                for (warning, expected_path) in
+                    warnings.iter().zip(case.expected_warning_paths.iter())
+                {
+                    assert_eq!(warning.severity_number, SeverityNumber::Warn);
+                    let warning = warning
+                        .attributes
+                        .downcast_ref::<FsErrorLog>()
+                        .expect("warning should retain its FsError");
+                    assert_eq!(warning.get_fs_error().code, case.expected_code);
+                    assert_eq!(
+                        warning
+                            .get_fs_error()
+                            .location
+                            .as_ref()
+                            .map(|loc| loc.file.as_ref().clone()),
+                        Some(PathBuf::from(expected_path)),
+                        "expected warning location for case {}",
+                        case.name
+                    );
+                }
             }
-        }
 
-        // Positive case
-        let valid_path = PathBuf::from("models/valid_doc.md");
-        fs::write(
-            base_path.join(&valid_path),
-            "{% docs ok_doc %}all good{% enddocs %}",
-        )
-        .unwrap();
+            // Positive case
+            let valid_path = PathBuf::from("models/valid_doc.md");
+            fs::write(
+                base_path.join(&valid_path),
+                "{% docs ok_doc %}all good{% enddocs %}",
+            )
+            .unwrap();
 
-        let reporter = Arc::new(MockStatusReporter::default());
-        let io_args = IoArgs {
-            in_dir: base_path.clone(),
-            status_reporter: Some(reporter.clone()),
-            ..Default::default()
-        };
+            let docs_asset = DbtAsset {
+                base_path: base_path.clone(),
+                original_path: valid_path.clone(),
+                path: valid_path,
+                package_name: "pkg".to_string(),
+            };
 
-        let docs_asset = DbtAsset {
-            base_path,
-            original_path: valid_path.clone(),
-            path: valid_path,
-            package_name: "pkg".to_string(),
-        };
+            let previous_record_count = log_records.lock().unwrap().len();
+            let docs = resolve_docs_macros(&io_args, &[docs_asset], None)?;
+            assert!(
+                docs.contains_key("doc.pkg.ok_doc"),
+                "expected valid doc to be collected"
+            );
+            assert_eq!(
+                log_records.lock().unwrap().len(),
+                previous_record_count,
+                "did not expect warnings for valid doc"
+            );
 
-        let docs = resolve_docs_macros(&io_args, &[docs_asset], None)?;
-        assert!(
-            docs.contains_key("doc.pkg.ok_doc"),
-            "expected valid doc to be collected"
-        );
-        assert!(
-            reporter.warnings().is_empty(),
-            "did not expect warnings for valid doc"
-        );
-
-        Ok(())
+            Ok(())
+        })
     }
 
     #[test]

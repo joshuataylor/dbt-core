@@ -6,14 +6,13 @@ use dbt_common::collections::DashMap;
 use dbt_common::io_args::FsCommand;
 use dbt_common::stats::Stat;
 use dbt_common::tracing::dbt_emit::{
-    emit_error_log_from_fs_error, emit_error_log_message, emit_warn_log_message,
+    emit_error_log_from_fs_error, emit_warn_log_from_fs_error, emit_warn_log_message,
 };
 use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_common::{
-    ErrorCode, FsResult,
+    ErrorCode, FsError, FsResult,
     cancellation::CancellationToken,
     err, fs_err,
-    io_args::IoArgs,
     node_selector::{IndirectSelection, SelectExpression, convert_column_selectors_to_fqn},
 };
 use dbt_dag::{
@@ -345,7 +344,13 @@ fn schedule_graph(
     sorted_nodes.extend(frontier_nodes.iter().cloned());
 
     // Check for cycles in the selected nodes only
-    find_and_report_cycles(&selected_deps, nodes, &args.io);
+    let (cycle_warnings, cycle_errors) = find_cycle_diagnostics(&selected_deps, nodes);
+    for warning in cycle_warnings {
+        emit_warn_log_from_fs_error(&warning, args.io.status_reporter.as_ref());
+    }
+    for error in cycle_errors {
+        emit_error_log_from_fs_error(&error, args.io.status_reporter.as_ref());
+    }
 
     // Compute overlapping sources: sources whose relation_name matches a SELECTED seed's relation_name
     // Only skip hydration when the seed is selected in the current command, ensuring the seed runs
@@ -752,70 +757,72 @@ fn with_indirect_selection(expr: SelectExpression, mode: IndirectSelection) -> S
     }
 }
 
-/// Identifies cycles and reports them as errors to the provided io
-/// generates an error per cycle, and an error per node in the cycle with the exact location
-fn find_and_report_cycles(deps: &BTreeMap<String, BTreeSet<String>>, nodes: &Nodes, io: &IoArgs) {
+/// Identifies cycles and returns a diagnostic per cycle and per dependency reference.
+fn find_cycle_diagnostics(
+    deps: &BTreeMap<String, BTreeSet<String>>,
+    nodes: &Nodes,
+) -> (Vec<FsError>, Vec<FsError>) {
     let (cycles, _, _) = find_and_cut_cycles(deps, |_| true);
+    let warnings = Vec::new();
+    let mut errors = Vec::new();
 
-    // Report cycle errors
-    if !cycles.is_empty() {
-        for (i, cycle) in cycles.iter().enumerate() {
-            // show the full cycle
-            let mut cycle_with_first = cycle.clone();
-            cycle_with_first.push(cycle[0].clone());
-            let cycle_str = cycle_with_first
-                .iter()
-                .map(|node| format!("[{node}]"))
-                .collect::<Vec<_>>()
-                .join(" -> ");
+    for (i, cycle) in cycles.iter().enumerate() {
+        // Show the full cycle.
+        let mut cycle_with_first = cycle.clone();
+        cycle_with_first.push(cycle[0].clone());
+        let cycle_str = cycle_with_first
+            .iter()
+            .map(|node| format!("[{node}]"))
+            .collect::<Vec<_>>()
+            .join(" -> ");
 
-            emit_error_log_message(
-                ErrorCode::CyclicDependency,
-                format!("Cycle detected: {}", cycle_str),
-                io.status_reporter.as_ref(),
-            );
+        errors.push(FsError::new(
+            ErrorCode::CyclicDependency,
+            format!("Cycle detected: {cycle_str}"),
+        ));
 
-            // Show each dependency in the cycle with its location
-            for window in cycle.windows(2) {
-                let from = &window[0];
-                let to = &window[1];
-                if let Some(node) = nodes.get_node(from) {
-                    // Report all references to this dependency
-                    for (dep, location) in node.base().depends_on.nodes_with_ref_location.iter() {
-                        if dep == to {
-                            let err = fs_err!(
-                                code => ErrorCode::CyclicDependency,
-                                loc => location.clone(),
-                                "   Cycle {}:  [{}] depends on [{}]",
-                                i + 1,
-                                from,
-                                to
-                            );
-                            emit_error_log_from_fs_error(&err, io.status_reporter.as_ref());
-                        }
-                    }
-                }
-            }
-
-            // Last node -> First node in cycle
-            if let Some(node) = nodes.get_node(cycle.last().unwrap()) {
-                // Report all references to the first node
+        // Show each dependency in the cycle with its location.
+        for window in cycle.windows(2) {
+            let from = &window[0];
+            let to = &window[1];
+            if let Some(node) = nodes.get_node(from) {
+                // Report all references to this dependency.
                 for (dep, location) in node.base().depends_on.nodes_with_ref_location.iter() {
-                    if dep == cycle.first().unwrap() {
+                    if dep == to {
                         let err = fs_err!(
                             code => ErrorCode::CyclicDependency,
                             loc => location.clone(),
                             "   Cycle {}:  [{}] depends on [{}]",
-                            i+1,
-                            cycle.last().unwrap(),
-                            cycle.first().unwrap()
+                            i + 1,
+                            from,
+                            to
                         );
-                        emit_error_log_from_fs_error(&err, io.status_reporter.as_ref());
+                        errors.push(*err);
                     }
                 }
             }
         }
+
+        // Last node -> First node in cycle.
+        if let Some(node) = nodes.get_node(cycle.last().unwrap()) {
+            // Report all references to the first node.
+            for (dep, location) in node.base().depends_on.nodes_with_ref_location.iter() {
+                if dep == cycle.first().unwrap() {
+                    let err = fs_err!(
+                        code => ErrorCode::CyclicDependency,
+                        loc => location.clone(),
+                        "   Cycle {}:  [{}] depends on [{}]",
+                        i+1,
+                        cycle.last().unwrap(),
+                        cycle.first().unwrap()
+                    );
+                    errors.push(*err);
+                }
+            }
+        }
     }
+
+    (warnings, errors)
 }
 
 /// Recursively collect all ephemeral models upstream of a given node.
@@ -1324,7 +1331,7 @@ pub fn summarize_stats(schedule: &Schedule<String>, stats: &DashMap<String, Stat
 mod tests {
     use dbt_adapter_core::AdapterType;
     use dbt_common::cancellation::never_cancels;
-    use dbt_common::io_args::FsCommand;
+    use dbt_common::io_args::{FsCommand, IoArgs};
     use dbt_common::node_selector::SelectionCriteria;
     use dbt_common::{
         CodeLocationWithFile,
@@ -3019,7 +3026,7 @@ mod resource_type_filtering_tests {
     use super::*;
     use dbt_common::{
         cancellation::never_cancels,
-        io_args::{ClapResourceType, FsCommand, StaticAnalysisKind},
+        io_args::{ClapResourceType, FsCommand, IoArgs, StaticAnalysisKind},
     };
     use dbt_schemas::schemas::{
         CommonAttributes, DbtModel, DbtModelAttr, DbtSeed, DbtSeedAttr, DbtTest, DbtUnitTest,
@@ -3451,49 +3458,19 @@ mod resource_type_filtering_tests {
 mod cycle_detection_tests {
     use super::*;
     use dbt_common::CodeLocationWithFile;
-    use dbt_common::io_args::{FsCommand, StaticAnalysisKind, StaticAnalysisOffReason};
-    use dbt_common::io_utils::StatusReporter;
+    use dbt_common::io_args::{FsCommand, StaticAnalysisKind};
     use dbt_common::node_selector::{MethodName, SelectionCriteria};
-    use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::{
         Access, DbtMaterialization, NodeDependsOn, ResolvedQuoting,
     };
     use dbt_schemas::schemas::nodes::AdapterAttr;
     use dbt_schemas::schemas::project::ModelConfig;
-    use dbt_schemas::schemas::telemetry::NodeOutcome;
     use dbt_schemas::schemas::{
         CommonAttributes, DbtModel, DbtModelAttr, IntrospectionKind, NodeBaseAttributes,
     };
     use dbt_test_primitives::assert_contains;
-    use dbt_yaml::Span;
     use indexmap::IndexMap;
-    use std::sync::{Arc, Mutex};
-
-    // Used to check for errors sent to io via show_error macro
-    struct MockStatusReporter {
-        errors: Arc<Mutex<Vec<(String, CodeLocationWithFile)>>>,
-    }
-    impl StatusReporter for MockStatusReporter {
-        fn collect_error(&self, error: &dbt_common::FsError) {
-            self.errors.lock().unwrap().push((
-                error.to_string(),
-                error.location.clone().unwrap_or_default(),
-            ));
-        }
-        fn collect_warning(&self, _warning: &dbt_common::FsError) {}
-        fn show_progress(&self, _action: &str, _target: &str, _description: Option<&str>) {}
-        fn bulk_publish_empty(&self, _file_paths: Vec<DbtPath>) {}
-        fn collect_node_evaluation(
-            &self,
-            _unique_id: &str,
-            _execution_phase: ExecutionPhase,
-            _node_outcome: NodeOutcome,
-            _upstream_target: Option<(String, String, bool)>,
-            _static_analysis: StaticAnalysisKind,
-            _static_analysis_off_reason: (Option<StaticAnalysisOffReason>, Span),
-        ) {
-        }
-    }
+    use std::sync::Arc;
 
     // helper func to create nodes with dependencies
     fn create_test_node(
@@ -3570,34 +3547,28 @@ mod cycle_detection_tests {
         deps.insert(id_a.clone(), BTreeSet::from([id_b.clone()]));
         deps.insert(id_b, BTreeSet::from([id_a]));
 
-        let error_output = Arc::new(Mutex::new(Vec::new()));
-        let reporter = MockStatusReporter {
-            errors: error_output.clone(),
-        };
-        let io = IoArgs {
-            status_reporter: Some(Arc::new(reporter)),
-            ..Default::default()
-        };
+        let (warnings, errors) = find_cycle_diagnostics(&deps, &nodes);
 
-        find_and_report_cycles(&deps, &nodes, &io);
-
-        let error_output = error_output.lock().unwrap();
-        assert_eq!(error_output.len(), 3); // One for cycle detection, two for dependencies
+        assert!(warnings.is_empty());
+        assert_eq!(errors.len(), 3); // One for cycle detection, two for dependencies
         assert_contains!(
-            error_output[0].0,
+            errors[0].to_string(),
             "Cycle detected: [model.a] -> [model.b] -> [model.a]"
         );
-        assert_eq!(error_output[0].1, CodeLocationWithFile::default());
+        assert_eq!(
+            errors[0].location.clone().unwrap_or_default(),
+            CodeLocationWithFile::default()
+        );
         assert_contains!(
-            error_output[1].0,
+            errors[1].to_string(),
             "Cycle 1:  [model.a] depends on [model.b]"
         );
-        assert_eq!(error_output[1].1, loc1);
+        assert_eq!(errors[1].location.as_ref(), Some(&loc1));
         assert_contains!(
-            error_output[2].0,
+            errors[2].to_string(),
             "Cycle 1:  [model.b] depends on [model.a]"
         );
-        assert_eq!(error_output[2].1, loc2);
+        assert_eq!(errors[2].location.as_ref(), Some(&loc2));
     }
 
     #[test]
@@ -3622,39 +3593,33 @@ mod cycle_detection_tests {
         deps.insert(id_a.clone(), BTreeSet::from([id_b.clone()]));
         deps.insert(id_b, BTreeSet::from([id_a]));
 
-        let error_output = Arc::new(Mutex::new(Vec::new()));
-        let reporter = MockStatusReporter {
-            errors: error_output.clone(),
-        };
-        let io = IoArgs {
-            status_reporter: Some(Arc::new(reporter)),
-            ..Default::default()
-        };
+        let (warnings, errors) = find_cycle_diagnostics(&deps, &nodes);
 
-        find_and_report_cycles(&deps, &nodes, &io);
-
-        let error_output = error_output.lock().unwrap();
-        assert_eq!(error_output.len(), 4);
+        assert!(warnings.is_empty());
+        assert_eq!(errors.len(), 4);
         assert_contains!(
-            error_output[0].0,
+            errors[0].to_string(),
             "Cycle detected: [model.a] -> [model.b] -> [model.a]"
         );
-        assert_eq!(error_output[0].1, CodeLocationWithFile::default());
+        assert_eq!(
+            errors[0].location.clone().unwrap_or_default(),
+            CodeLocationWithFile::default()
+        );
         assert_contains!(
-            error_output[1].0,
+            errors[1].to_string(),
             "Cycle 1:  [model.a] depends on [model.b]"
         );
-        assert_eq!(error_output[1].1, loc1_a);
+        assert_eq!(errors[1].location.as_ref(), Some(&loc1_a));
         assert_contains!(
-            error_output[2].0,
+            errors[2].to_string(),
             "Cycle 1:  [model.a] depends on [model.b]"
         );
-        assert_eq!(error_output[2].1, loc2_a);
+        assert_eq!(errors[2].location.as_ref(), Some(&loc2_a));
         assert_contains!(
-            error_output[3].0,
+            errors[3].to_string(),
             "Cycle 1:  [model.b] depends on [model.a]"
         );
-        assert_eq!(error_output[3].1, loc3);
+        assert_eq!(errors[3].location.as_ref(), Some(&loc3));
     }
 
     #[test]
@@ -3675,31 +3640,28 @@ mod cycle_detection_tests {
         let mut deps = BTreeMap::new();
         deps.insert(id_a.clone(), BTreeSet::from([id_a]));
 
-        let error_output = Arc::new(Mutex::new(Vec::new()));
-        let reporter = MockStatusReporter {
-            errors: error_output.clone(),
-        };
-        let io = IoArgs {
-            status_reporter: Some(Arc::new(reporter)),
-            ..Default::default()
-        };
+        let (warnings, errors) = find_cycle_diagnostics(&deps, &nodes);
 
-        find_and_report_cycles(&deps, &nodes, &io);
-
-        let error_output = error_output.lock().unwrap();
-        assert_eq!(error_output.len(), 3);
-        assert_contains!(error_output[0].0, "Cycle detected: [model.a] -> [model.a]");
-        assert_eq!(error_output[0].1, CodeLocationWithFile::default());
+        assert!(warnings.is_empty());
+        assert_eq!(errors.len(), 3);
         assert_contains!(
-            error_output[1].0,
+            errors[0].to_string(),
+            "Cycle detected: [model.a] -> [model.a]"
+        );
+        assert_eq!(
+            errors[0].location.clone().unwrap_or_default(),
+            CodeLocationWithFile::default()
+        );
+        assert_contains!(
+            errors[1].to_string(),
             "Cycle 1:  [model.a] depends on [model.a]"
         );
-        assert_eq!(error_output[1].1, loc1);
+        assert_eq!(errors[1].location.as_ref(), Some(&loc1));
         assert_contains!(
-            error_output[2].0,
+            errors[2].to_string(),
             "Cycle 1:  [model.a] depends on [model.a]"
         );
-        assert_eq!(error_output[2].1, loc2);
+        assert_eq!(errors[2].location.as_ref(), Some(&loc2));
     }
 
     #[test]
@@ -3729,50 +3691,47 @@ mod cycle_detection_tests {
         deps.insert(id_c.clone(), BTreeSet::from([id_d.clone()]));
         deps.insert(id_d, BTreeSet::from([id_c]));
 
-        let error_output = Arc::new(Mutex::new(Vec::new()));
-        let reporter = MockStatusReporter {
-            errors: error_output.clone(),
-        };
-        let io = IoArgs {
-            status_reporter: Some(Arc::new(reporter)),
-            ..Default::default()
-        };
+        let (warnings, errors) = find_cycle_diagnostics(&deps, &nodes);
 
-        find_and_report_cycles(&deps, &nodes, &io);
-
-        let error_output = error_output.lock().unwrap();
-        assert_eq!(error_output.len(), 6);
+        assert!(warnings.is_empty());
+        assert_eq!(errors.len(), 6);
         assert_contains!(
-            error_output[0].0,
+            errors[0].to_string(),
             "Cycle detected: [model.a] -> [model.b] -> [model.a]"
         );
-        assert_eq!(error_output[0].1, CodeLocationWithFile::default());
+        assert_eq!(
+            errors[0].location.clone().unwrap_or_default(),
+            CodeLocationWithFile::default()
+        );
         assert_contains!(
-            error_output[1].0,
+            errors[1].to_string(),
             "Cycle 1:  [model.a] depends on [model.b]"
         );
-        assert_eq!(error_output[1].1, loc1);
+        assert_eq!(errors[1].location.as_ref(), Some(&loc1));
         assert_contains!(
-            error_output[2].0,
+            errors[2].to_string(),
             "Cycle 1:  [model.b] depends on [model.a]"
         );
-        assert_eq!(error_output[2].1, loc2);
+        assert_eq!(errors[2].location.as_ref(), Some(&loc2));
         // Second cycle
         assert_contains!(
-            error_output[3].0,
+            errors[3].to_string(),
             "Cycle detected: [model.c] -> [model.d] -> [model.c]"
         );
-        assert_eq!(error_output[3].1, CodeLocationWithFile::default());
+        assert_eq!(
+            errors[3].location.clone().unwrap_or_default(),
+            CodeLocationWithFile::default()
+        );
         assert_contains!(
-            error_output[4].0,
+            errors[4].to_string(),
             "Cycle 2:  [model.c] depends on [model.d]"
         );
-        assert_eq!(error_output[4].1, loc3);
+        assert_eq!(errors[4].location.as_ref(), Some(&loc3));
         assert_contains!(
-            error_output[5].0,
+            errors[5].to_string(),
             "Cycle 2:  [model.d] depends on [model.c]"
         );
-        assert_eq!(error_output[5].1, loc4);
+        assert_eq!(errors[5].location.as_ref(), Some(&loc4));
     }
 
     #[test]
@@ -4096,19 +4055,10 @@ mod cycle_detection_tests {
         deps.insert(id_a, BTreeSet::from([id_b.clone()]));
         deps.insert(id_b, BTreeSet::new());
 
-        let error_output = Arc::new(Mutex::new(Vec::new()));
-        let reporter = MockStatusReporter {
-            errors: error_output.clone(),
-        };
-        let io = IoArgs {
-            status_reporter: Some(Arc::new(reporter)),
-            ..Default::default()
-        };
+        let (warnings, errors) = find_cycle_diagnostics(&deps, &nodes);
 
-        find_and_report_cycles(&deps, &nodes, &io);
-
-        let error_output = error_output.lock().unwrap();
-        assert!(error_output.is_empty());
+        assert!(warnings.is_empty());
+        assert!(errors.is_empty());
     }
 }
 

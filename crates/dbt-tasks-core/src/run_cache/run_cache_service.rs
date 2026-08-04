@@ -13,6 +13,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+use tokio::sync::mpsc;
 
 use crate::context::TaskRunnerCtx;
 use crate::task::{TaskOp, TaskResult};
@@ -49,13 +53,14 @@ use dbt_state::explain::{
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::node_session::ExecutionGuard;
 use dbt_state::proto::query_cache::{
-    ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping, QueryDependency,
-    RecordExecutionsRequest, SkipExecutionResponse, Struct, SubmitEnrichedSqlRequest,
-    SubmitSqlResponse, SubmitValuesRequest, TableModifiedInfo, Value, submit_sql_response,
-    submit_sql_speculative_response, value::Kind,
+    ClientTelemetryEvent, ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping,
+    QueryDependency, RecordExecutionsRequest, SkipExecutionResponse, Struct,
+    SubmitEnrichedSqlRequest, SubmitSqlResponse, SubmitValuesRequest, TableModifiedInfo, Value,
+    submit_sql_response, submit_sql_speculative_response, value::Kind,
 };
 use dbt_state::request_builder::{
-    ExecutionOutcomeInput, sql_execution_record_from_submit_request,
+    ExecutionOutcomeInput, SessionEndResult, enriched_sql_prepared_event, session_end_event,
+    session_start_event, sql_execution_record_from_submit_request, telemetry_batch,
     values_execution_record_from_submit_request,
 };
 use dbt_state::service_client::RunCacheServiceError;
@@ -521,7 +526,7 @@ pub fn insert_compiled_view_definition(
 /// stored and submitted epochs identical and the comparison exact.
 #[derive(Debug)]
 pub struct HeuristicClock {
-    start_instant: std::time::Instant,
+    start_instant: Instant,
     start_ts_ms: i64,
 }
 
@@ -532,7 +537,7 @@ impl HeuristicClock {
         if !heuristic_clock_enabled_for_adapter(ctx.adapter_type()) {
             return None;
         }
-        let start_instant = std::time::Instant::now();
+        let start_instant = Instant::now();
         let start_ts_ms = warehouse_now_ms(ctx).await?;
         Some(Self {
             start_instant,
@@ -739,7 +744,7 @@ async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<(
         };
         rendered_overrides.insert(fqn, ovr);
     }
-    let started_at = std::time::Instant::now();
+    let started_at = Instant::now();
     let result = bulk_prefetch_last_modified_by_schema(ctx, &relations, &rendered_overrides).await;
     maybe_warn_slow_metadata_prefetch(ctx, started_at.elapsed());
     result
@@ -1064,6 +1069,8 @@ async fn prefetch_last_modified_for_schema_group(
 /// fetched at most once per run. Total IO is identical — only the timing
 /// changes from eager/pre-run to lazy/per-node.
 pub async fn run_cache_service_before_run(ctx: &TaskRunnerCtx) -> AdapterResult<()> {
+    run_cache_service_start_telemetry(ctx).await;
+
     let prefetch = ctx.inner.run_cache_ctx.prefetch.clone();
     prefetch.mark_started();
 
@@ -1121,6 +1128,280 @@ async fn await_prefetch(ctx: &TaskRunnerCtx) {
         );
     }
     prefetch.mark_done();
+}
+
+pub async fn run_cache_service_start_telemetry(ctx: &TaskRunnerCtx) {
+    submit_run_cache_session_start(ctx).await;
+}
+
+pub async fn run_cache_service_after_run(ctx: &TaskRunnerCtx, cancelled: bool) {
+    let result = if cancelled {
+        SessionEndResult::Cancelled
+    } else if ctx
+        .inner
+        .run_stats
+        .iter()
+        .any(|stat| stat.status == NodeStatus::Errored)
+        || ctx
+            .inner
+            .analyze_stats
+            .iter()
+            .any(|stat| stat.status == NodeStatus::Errored)
+    {
+        SessionEndResult::Failure
+    } else {
+        SessionEndResult::Success
+    };
+    submit_run_cache_session_end(ctx, result).await;
+}
+
+/// `cancelled` distinguishes a run aborted via the run's `CancellationToken`
+/// (e.g. a user hitting Ctrl-C) from any other early-return failure, so the
+/// dbt State service can tell the two apart in telemetry.
+pub async fn run_cache_service_after_run_failed(ctx: &TaskRunnerCtx, cancelled: bool) {
+    let result = if cancelled {
+        SessionEndResult::Cancelled
+    } else {
+        SessionEndResult::Failure
+    };
+    submit_run_cache_session_end(ctx, result).await;
+}
+
+/// Number of telemetry events buffered before new events are dropped.
+/// Matches the Python dbt State client's `TelemetryDispatcher` queue bound.
+const TELEMETRY_QUEUE_CAPACITY: usize = 150;
+
+/// Maximum number of events sent in a single `SubmitTelemetryBatch` RPC.
+/// Matches the Python dbt State client's `TelemetryDispatcher` batch bound.
+const TELEMETRY_MAX_BATCH_SIZE: usize = 50;
+
+/// Longest a queued event waits before being flushed, absent a full batch.
+/// Matches the Python dbt State client's `TelemetryDispatcher` emit interval.
+const TELEMETRY_MAX_EMIT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Retries for a batch that failed with a retriable error before its events
+/// are dropped. Matches the Python dbt State client's `TelemetryDispatcher`.
+const TELEMETRY_MAX_RETRY_COUNT: u32 = 3;
+
+type QueuedTelemetryEvent = (ClientTelemetryEvent, u32);
+
+/// Background dispatcher that batches and submits dbt State telemetry events
+/// without blocking node execution, mirroring the async batching design of
+/// the Python dbt State client's telemetry dispatcher: events are pushed
+/// onto a bounded channel (non-blocking, drop-on-full) and a single
+/// background task flushes whatever is queued into one `SubmitTelemetryBatch`
+/// RPC per batch, either once `TELEMETRY_MAX_BATCH_SIZE` events have
+/// accumulated or `TELEMETRY_MAX_EMIT_INTERVAL` has elapsed, whichever comes
+/// first. A batch that fails with a retriable error is re-queued (up to
+/// `TELEMETRY_MAX_RETRY_COUNT` times per event); anything else is dropped.
+///
+/// `flush` closes the channel and awaits the worker so the run's final
+/// events (in particular session-end) get a chance to be delivered before
+/// the process exits.
+pub struct TelemetryDispatcher {
+    sender: tokio::sync::Mutex<Option<mpsc::Sender<QueuedTelemetryEvent>>>,
+    worker: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl TelemetryDispatcher {
+    fn spawn(client: dbt_state::service_client::SharedRunCacheServiceClient) -> Self {
+        let (sender, receiver) = mpsc::channel(TELEMETRY_QUEUE_CAPACITY);
+        let worker = dbt_common::tracing::spawn_traced(Self::run(client, receiver));
+        Self {
+            sender: tokio::sync::Mutex::new(Some(sender)),
+            worker: tokio::sync::Mutex::new(Some(worker)),
+        }
+    }
+
+    async fn run(
+        client: dbt_state::service_client::SharedRunCacheServiceClient,
+        mut receiver: mpsc::Receiver<QueuedTelemetryEvent>,
+    ) {
+        // Retries go straight back into `buffer`, not through the channel: a
+        // `Sender` clone held by this task would stop `recv` from ever
+        // returning `None`, hanging `flush()` forever.
+        let mut buffer: Vec<QueuedTelemetryEvent> = Vec::new();
+        let mut interval = tokio::time::interval(TELEMETRY_MAX_EMIT_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                event = receiver.recv() => {
+                    let Some(event) = event else {
+                        Self::flush_buffer(&client, &mut buffer).await;
+                        break;
+                    };
+                    buffer.push(event);
+                    // `==`, not `>=`: a requeued failure can leave `buffer`
+                    // at the cap already, and `>=` would re-flush on every
+                    // event after that with no gap between retries.
+                    if buffer.len() == TELEMETRY_MAX_BATCH_SIZE {
+                        Self::flush_buffer(&client, &mut buffer).await;
+                    }
+                }
+                _ = interval.tick() => {
+                    Self::flush_buffer(&client, &mut buffer).await;
+                }
+            }
+        }
+    }
+
+    /// Drain `buffer` in chunks of at most `TELEMETRY_MAX_BATCH_SIZE`, one
+    /// `SubmitTelemetryBatch` RPC per chunk, stopping at the first chunk that
+    /// fails. Fail-open: a retriable failure re-queues that chunk (bounded by
+    /// `TELEMETRY_MAX_RETRY_COUNT`); anything else drops it.
+    async fn flush_buffer(
+        client: &dbt_state::service_client::SharedRunCacheServiceClient,
+        buffer: &mut Vec<QueuedTelemetryEvent>,
+    ) {
+        while !buffer.is_empty() {
+            let chunk_size = buffer.len().min(TELEMETRY_MAX_BATCH_SIZE);
+            let chunk: Vec<QueuedTelemetryEvent> = buffer.drain(..chunk_size).collect();
+            let events = chunk.iter().map(|(event, _)| event.clone()).collect();
+            let Err(err) = client.submit_telemetry_batch(telemetry_batch(events)).await else {
+                continue;
+            };
+            if !err.is_retriable_telemetry_submission() {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State service telemetry batch failed: {err}; dropping {} event(s)",
+                        chunk.len()
+                    )
+                });
+                return;
+            }
+            for (event, retry_count) in chunk {
+                if retry_count >= TELEMETRY_MAX_RETRY_COUNT {
+                    emit_trace_log_message(|| {
+                        "dbt State telemetry event exceeded max retries; dropping".to_string()
+                    });
+                    continue;
+                }
+                buffer.push((event, retry_count + 1));
+            }
+            return;
+        }
+    }
+
+    /// Enqueue an event without blocking on network I/O. Drops the event
+    /// (fail-open) if the queue is full or the dispatcher has been flushed.
+    async fn send(&self, event: ClientTelemetryEvent) {
+        let guard = self.sender.lock().await;
+        if let Some(sender) = guard.as_ref() {
+            if sender.try_send((event, 0)).is_err() {
+                emit_trace_log_message(|| {
+                    "dbt State telemetry queue full; dropping event".to_string()
+                });
+            }
+        }
+    }
+
+    /// Enqueue a critical event, waiting for capacity instead of dropping it.
+    async fn send_critical(&self, event: ClientTelemetryEvent) {
+        let sender = self.sender.lock().await.as_ref().cloned();
+        if let Some(sender) = sender
+            && sender.send((event, 0)).await.is_err()
+        {
+            emit_trace_log_message(|| {
+                "dbt State telemetry dispatcher is closed; dropping critical event".to_string()
+            });
+        }
+    }
+
+    /// Close the queue and await the worker so already-queued events flush
+    /// before the caller proceeds. Fail-open: a join error is swallowed.
+    async fn flush(&self) {
+        self.sender.lock().await.take();
+        if let Some(handle) = self.worker.lock().await.take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+async fn submit_run_cache_session_end(ctx: &TaskRunnerCtx, result: SessionEndResult) {
+    let run_cache_ctx = &ctx.inner.run_cache_ctx;
+    if run_cache_ctx
+        .telemetry_session_ended
+        .swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+
+    let Some(start) = run_cache_ctx.telemetry_session_start.get() else {
+        return;
+    };
+    let description = match result {
+        SessionEndResult::Success => "completed",
+        SessionEndResult::Failure => "completed with errors",
+        SessionEndResult::Cancelled => "cancelled",
+    };
+    let event = session_end_event(
+        start.elapsed(),
+        result,
+        description,
+        next_telemetry_event_order(ctx),
+    );
+    submit_run_cache_critical_telemetry_event(ctx, event).await;
+    flush_run_cache_telemetry(ctx).await;
+}
+
+async fn submit_run_cache_session_start(ctx: &TaskRunnerCtx) {
+    let run_cache_ctx = &ctx.inner.run_cache_ctx;
+    if run_cache_ctx
+        .telemetry_session_start
+        .set(Instant::now())
+        .is_err()
+    {
+        return;
+    }
+
+    let Some(config) = run_cache_ctx.run_cache_service_config.as_ref() else {
+        return;
+    };
+    let event = session_start_event(config.telemetry_config(), next_telemetry_event_order(ctx));
+    submit_run_cache_telemetry_event(ctx, event).await;
+}
+
+async fn submit_run_cache_telemetry_event(ctx: &TaskRunnerCtx, event: ClientTelemetryEvent) {
+    let Some(client) = ctx.inner.run_cache_ctx.run_cache_service_client.as_ref() else {
+        return;
+    };
+    let dispatcher = ctx
+        .inner
+        .run_cache_ctx
+        .telemetry_dispatcher
+        .get_or_init(|| TelemetryDispatcher::spawn(client.clone()));
+    dispatcher.send(event).await;
+}
+
+async fn submit_run_cache_critical_telemetry_event(
+    ctx: &TaskRunnerCtx,
+    event: ClientTelemetryEvent,
+) {
+    let Some(client) = ctx.inner.run_cache_ctx.run_cache_service_client.as_ref() else {
+        return;
+    };
+    let dispatcher = ctx
+        .inner
+        .run_cache_ctx
+        .telemetry_dispatcher
+        .get_or_init(|| TelemetryDispatcher::spawn(client.clone()));
+    dispatcher.send_critical(event).await;
+}
+
+/// Closes the run's telemetry dispatcher (if one was started) and awaits its
+/// worker, giving already-queued events — in particular session-end — a
+/// chance to reach the service before the command exits.
+async fn flush_run_cache_telemetry(ctx: &TaskRunnerCtx) {
+    if let Some(dispatcher) = ctx.inner.run_cache_ctx.telemetry_dispatcher.get() {
+        dispatcher.flush().await;
+    }
+}
+
+fn next_telemetry_event_order(ctx: &TaskRunnerCtx) -> i64 {
+    ctx.inner
+        .run_cache_ctx
+        .telemetry_event_order
+        .fetch_add(1, Ordering::Relaxed)
 }
 
 /// Submits a runnable node to the dbt State service before local execution.
@@ -2144,6 +2425,11 @@ async fn submit_sql_with_speculation(
     client: &dbt_state::service_client::SharedRunCacheServiceClient,
     build_request: impl Fn(SqlRunCacheRequestContext) -> FsResult<SubmitEnrichedSqlRequest>,
 ) -> FsResult<Option<RunCacheSubmitResult>> {
+    // Client-generated so `EnrichedSqlPrepared` telemetry doesn't depend on
+    // the server response carrying a request id (`SkipExecution` and
+    // `ReadyToExecuteUntracked` don't).
+    let request_id = dbt_state::service_client::new_request_id();
+
     if is_prefetch_ready(ctx) {
         return build_and_submit_non_speculative(
             ctx,
@@ -2154,10 +2440,13 @@ async fn submit_sql_with_speculation(
             microbatch_window,
             client,
             &build_request,
+            request_id,
+            true,
         )
         .await;
     }
 
+    let request_start = Instant::now();
     let Some((request, freshness_tolerance_seconds)) = build_sql_request(
         ctx,
         node,
@@ -2172,6 +2461,8 @@ async fn submit_sql_with_speculation(
     else {
         return Ok(None);
     };
+    let telemetry = enriched_sql_prepared_telemetry_input(&request);
+    let prepare_duration = request_start.elapsed();
 
     // Re-check readiness at the last responsible moment. `build_sql_request`
     // blocks on the view-definition traversal (fetching view DDL from the
@@ -2192,9 +2483,23 @@ async fn submit_sql_with_speculation(
             microbatch_window,
             client,
             &build_request,
+            request_id,
+            true,
         )
         .await;
     }
+
+    // Report the speculative attempt once the final path is known. If the
+    // prefetch completed while building the request, the regular path above
+    // is the only submission and reports its own event.
+    emit_enriched_sql_prepared_telemetry(
+        ctx,
+        request_id.clone(),
+        prepare_duration,
+        telemetry,
+        None,
+    )
+    .await;
 
     let unique_id = node.unique_id();
     let verdict = client
@@ -2250,11 +2555,16 @@ async fn submit_sql_with_speculation(
                     microbatch_window,
                     client,
                     &build_request,
+                    request_id,
+                    false,
                 )
                 .await
             }
         },
         Err(err) => {
+            // Swallowed here rather than reported as a prepare-error: the
+            // speculative RPC is a best-effort fast path, and the resubmit
+            // below still reports its own failures.
             emit_trace_log_message(|| {
                 format!(
                     "dbt State speculative submit failed for node {unique_id}: {err}; awaiting prefetch and resubmitting"
@@ -2270,6 +2580,8 @@ async fn submit_sql_with_speculation(
                 microbatch_window,
                 client,
                 &build_request,
+                request_id,
+                false,
             )
             .await
         }
@@ -2280,6 +2592,11 @@ async fn submit_sql_with_speculation(
 /// prefetch first so freshness resolves from the warm cache. Idempotent with
 /// respect to the prefetch await, so it is safe to call after the speculative
 /// path already awaited it.
+///
+/// `request_id` is the attempt's client-generated id (see
+/// `submit_sql_with_speculation`). `report_prepared_success` is `false` when
+/// this is a resubmit after a speculative attempt already reported success
+/// telemetry for the same id — a failure here is still reported either way.
 #[allow(clippy::too_many_arguments)]
 async fn build_and_submit_non_speculative(
     ctx: &TaskRunnerCtx,
@@ -2290,8 +2607,11 @@ async fn build_and_submit_non_speculative(
     microbatch_window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     client: &dbt_state::service_client::SharedRunCacheServiceClient,
     build_request: &impl Fn(SqlRunCacheRequestContext) -> FsResult<SubmitEnrichedSqlRequest>,
+    request_id: String,
+    report_prepared_success: bool,
 ) -> FsResult<Option<RunCacheSubmitResult>> {
     await_prefetch(ctx).await;
+    let request_start = Instant::now();
     let Some((request, freshness_tolerance_seconds)) = build_sql_request(
         ctx,
         node,
@@ -2306,14 +2626,41 @@ async fn build_and_submit_non_speculative(
     else {
         return Ok(None);
     };
+    let telemetry = enriched_sql_prepared_telemetry_input(&request);
+    let prepare_duration = request_start.elapsed();
 
-    let response = client.submit_enriched_sql(request).await.map_err(|e| {
-        fs_err!(
-            ErrorCode::Generic,
-            "dbt State service SubmitEnrichedSQL failed: {}",
-            e
-        )
-    })?;
+    // Success only if `report_prepared_success` (the sole/first build for
+    // this attempt); failure always, even on a resubmit.
+    let response = match client.submit_enriched_sql(request).await {
+        Ok(response) => {
+            if report_prepared_success {
+                emit_enriched_sql_prepared_telemetry(
+                    ctx,
+                    request_id,
+                    prepare_duration,
+                    telemetry,
+                    None,
+                )
+                .await;
+            }
+            response
+        }
+        Err(err) => {
+            emit_enriched_sql_prepared_telemetry(
+                ctx,
+                request_id,
+                request_start.elapsed(),
+                telemetry,
+                Some(err.error_type_label().to_string()),
+            )
+            .await;
+            return Err(fs_err!(
+                ErrorCode::Generic,
+                "dbt State service SubmitEnrichedSQL failed: {}",
+                err
+            ));
+        }
+    };
     Ok(Some(RunCacheSubmitResult::outcome(
         response,
         freshness_tolerance_seconds,
@@ -2555,6 +2902,55 @@ async fn submit_test(
         |context| build_test_sql_request(test, context, create_macro_resolver(ctx)),
     )
     .await
+}
+
+struct EnrichedSqlPreparedTelemetryInput {
+    target_table_fqn: Option<String>,
+    num_dependencies: Option<i64>,
+    num_view_dependencies: Option<i64>,
+    labels: HashMap<String, String>,
+}
+
+fn enriched_sql_prepared_telemetry_input(
+    request: &SubmitEnrichedSqlRequest,
+) -> EnrichedSqlPreparedTelemetryInput {
+    EnrichedSqlPreparedTelemetryInput {
+        target_table_fqn: request.target_table.clone(),
+        num_dependencies: i64::try_from(
+            request
+                .tables
+                .iter()
+                .filter(|table| Some(table.name.as_str()) != request.target_table.as_deref())
+                .count(),
+        )
+        .ok(),
+        num_view_dependencies: i64::try_from(request.query_dependencies.len()).ok(),
+        labels: request.labels.clone(),
+    }
+}
+
+/// Emit an `EnrichedSqlPrepared` telemetry event for one submission attempt.
+/// `request_id` is a client-generated id correlating this event with the
+/// attempt, independent of whatever the server ends up deciding (or whether
+/// it responds at all) — see `submit_sql_with_speculation`.
+async fn emit_enriched_sql_prepared_telemetry(
+    ctx: &TaskRunnerCtx,
+    request_id: String,
+    duration: std::time::Duration,
+    input: EnrichedSqlPreparedTelemetryInput,
+    error_type: Option<String>,
+) {
+    let event = enriched_sql_prepared_event(
+        request_id,
+        duration,
+        input.target_table_fqn,
+        input.num_dependencies,
+        input.num_view_dependencies,
+        error_type,
+        input.labels,
+        next_telemetry_event_order(ctx),
+    );
+    submit_run_cache_telemetry_event(ctx, event).await;
 }
 
 struct BuiltSqlRunCacheContext {
@@ -4968,7 +5364,7 @@ mod tests {
             .heuristic_clock
             .set(HeuristicClock {
                 start_ts_ms: 1_700_000_000_000,
-                start_instant: std::time::Instant::now(),
+                start_instant: Instant::now(),
             })
             .unwrap();
 
@@ -5003,7 +5399,7 @@ mod tests {
             .heuristic_clock
             .set(HeuristicClock {
                 start_ts_ms: 1_700_000_000_000,
-                start_instant: std::time::Instant::now(),
+                start_instant: Instant::now(),
             })
             .unwrap();
 
@@ -6367,6 +6763,215 @@ mod tests {
         }
     }
 
+    /// `RunCacheServiceError` isn't `Clone` (and can't be made so from this
+    /// crate — the type is foreign), so `TelemetryTestClient` stores which
+    /// error to manufacture rather than a reusable instance.
+    #[derive(Clone, Copy)]
+    enum TestFailure {
+        Retriable,
+        NonRetriable,
+    }
+
+    impl TestFailure {
+        fn build(self) -> RunCacheServiceError {
+            match self {
+                Self::Retriable => RunCacheServiceError::Rpc(tonic::Status::unavailable("down")),
+                Self::NonRetriable => {
+                    RunCacheServiceError::Rpc(tonic::Status::invalid_argument("bad request"))
+                }
+            }
+        }
+    }
+
+    /// Test double for `TelemetryDispatcher` tests: records every batch it's
+    /// asked to submit, and fails the first `fail_count` calls with a
+    /// configurable error before succeeding.
+    #[derive(Default)]
+    struct TelemetryTestClient {
+        batches: Mutex<Vec<Vec<ClientTelemetryEvent>>>,
+        fail_count: std::sync::atomic::AtomicUsize,
+        failure: Option<TestFailure>,
+    }
+
+    impl TelemetryTestClient {
+        fn failing(fail_count: usize, failure: TestFailure) -> Self {
+            Self {
+                batches: Mutex::new(Vec::new()),
+                fail_count: std::sync::atomic::AtomicUsize::new(fail_count),
+                failure: Some(failure),
+            }
+        }
+
+        fn batches(&self) -> Vec<Vec<ClientTelemetryEvent>> {
+            self.batches.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunCacheServiceClient for TelemetryTestClient {
+        async fn validate_client_version(
+            &self,
+        ) -> Result<ClientVersionStatus, RunCacheServiceError> {
+            Ok(ClientVersionStatus::Supported)
+        }
+
+        async fn submit_enriched_sql(
+            &self,
+            _request: SubmitEnrichedSqlRequest,
+        ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
+            Err(RunCacheServiceError::Disabled)
+        }
+
+        async fn submit_values(
+            &self,
+            _request: SubmitValuesRequest,
+        ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
+            Err(RunCacheServiceError::Disabled)
+        }
+
+        async fn confirm_execution(
+            &self,
+            _request: ConfirmExecutionRequest,
+        ) -> Result<ConfirmExecutionResponse, RunCacheServiceError> {
+            Err(RunCacheServiceError::Disabled)
+        }
+
+        async fn submit_telemetry_batch(
+            &self,
+            request: dbt_state::proto::query_cache::SubmitTelemetryBatchRequest,
+        ) -> Result<dbt_state::proto::query_cache::SubmitTelemetryBatchResponse, RunCacheServiceError>
+        {
+            if self
+                .fail_count
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    (count > 0).then(|| count - 1)
+                })
+                .is_ok()
+            {
+                let failure = self.failure.unwrap_or(TestFailure::Retriable);
+                return Err(failure.build());
+            }
+            self.batches.lock().unwrap().push(request.events);
+            Ok(dbt_state::proto::query_cache::SubmitTelemetryBatchResponse { success: true })
+        }
+    }
+
+    fn test_telemetry_event(event_order: i64) -> ClientTelemetryEvent {
+        session_start_event(Struct::default(), event_order)
+    }
+
+    #[test]
+    fn enriched_sql_telemetry_counts_dependencies_without_existing_target() {
+        let request = SubmitEnrichedSqlRequest {
+            target_table: Some("db.schema.target".to_string()),
+            tables: vec![TableModifiedInfo {
+                name: "db.schema.dependency".to_string(),
+                last_modified_epoch: Some(1),
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            enriched_sql_prepared_telemetry_input(&request).num_dependencies,
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_buffer_delivers_and_clears_buffer_on_success() {
+        let client: dbt_state::service_client::SharedRunCacheServiceClient =
+            Arc::new(TelemetryTestClient::default());
+        let mut buffer: Vec<QueuedTelemetryEvent> =
+            (0..3).map(|i| (test_telemetry_event(i), 0)).collect();
+
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+
+        assert!(buffer.is_empty(), "successful flush must drain the buffer");
+    }
+
+    #[tokio::test]
+    async fn flush_buffer_caps_each_rpc_at_max_batch_size() {
+        let client_arc = Arc::new(TelemetryTestClient::default());
+        let client: dbt_state::service_client::SharedRunCacheServiceClient = client_arc.clone();
+        let total = TELEMETRY_MAX_BATCH_SIZE * 2 + 20;
+        let mut buffer: Vec<QueuedTelemetryEvent> = (0..total as i64)
+            .map(|i| (test_telemetry_event(i), 0))
+            .collect();
+
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+
+        assert!(buffer.is_empty());
+        let batches = client_arc.batches();
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.len() <= TELEMETRY_MAX_BATCH_SIZE),
+            "no single SubmitTelemetryBatch RPC may exceed the batch cap: {batches:?}",
+        );
+        assert_eq!(batches.iter().map(Vec::len).sum::<usize>(), total);
+    }
+
+    #[tokio::test]
+    async fn flush_buffer_requeues_retriable_failures_with_incremented_retry_count() {
+        let client: dbt_state::service_client::SharedRunCacheServiceClient = Arc::new(
+            TelemetryTestClient::failing(usize::MAX, TestFailure::Retriable),
+        );
+        let mut buffer: Vec<QueuedTelemetryEvent> = vec![(test_telemetry_event(0), 0)];
+
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+        assert_eq!(buffer.len(), 1);
+        assert_eq!(buffer[0].1, 1, "retriable failure increments retry_count");
+
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+        assert_eq!(buffer[0].1, 2);
+
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+        assert_eq!(buffer[0].1, 3);
+
+        // One more attempt exceeds `TELEMETRY_MAX_RETRY_COUNT`: dropped, not requeued.
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+        assert!(
+            buffer.is_empty(),
+            "event exceeding max retries must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_buffer_drops_batch_on_non_retriable_error() {
+        let client: dbt_state::service_client::SharedRunCacheServiceClient = Arc::new(
+            TelemetryTestClient::failing(usize::MAX, TestFailure::NonRetriable),
+        );
+        let mut buffer: Vec<QueuedTelemetryEvent> = vec![(test_telemetry_event(0), 0)];
+
+        TelemetryDispatcher::flush_buffer(&client, &mut buffer).await;
+
+        assert!(
+            buffer.is_empty(),
+            "a non-retriable error must drop the batch outright, not requeue it"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatcher_flush_terminates_instead_of_hanging() {
+        // Regression test: `flush()` closes the dispatcher's `Sender` and
+        // awaits the worker task, which only exits once
+        // `mpsc::Receiver::recv` returns `None` — which requires every
+        // `Sender` clone, including any the worker task itself might hold,
+        // to be dropped. If the worker ever holds on to a `Sender` clone
+        // (e.g. to requeue retries through the channel instead of the local
+        // buffer), this hangs forever.
+        let client = Arc::new(TelemetryTestClient::default());
+        let dispatcher = TelemetryDispatcher::spawn(client.clone());
+        dispatcher.send(test_telemetry_event(0)).await;
+        dispatcher.send(test_telemetry_event(1)).await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher.flush())
+            .await
+            .expect("flush() must terminate, not hang");
+
+        assert_eq!(client.batches().iter().flatten().count(), 2);
+    }
+
     #[derive(Debug)]
     struct TestExtendedCtx;
 
@@ -6647,6 +7252,10 @@ mod tests {
                 view_traverser: None,
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
+                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                telemetry_session_start: std::sync::OnceLock::new(),
+                telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
+                telemetry_dispatcher: std::sync::OnceLock::new(),
             },
         );
 
@@ -7170,7 +7779,7 @@ mod tests {
         let start_ts_ms: i64 = 1_700_000_000_000;
         let clock = HeuristicClock {
             start_ts_ms,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         };
         assert_eq!(clock.now_ms(), start_ts_ms);
     }
@@ -7180,12 +7789,12 @@ mod tests {
         let start_ts_ms: i64 = 1_700_000_000_000;
         let clock = HeuristicClock {
             start_ts_ms,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         };
         let first = clock.now_ms();
         // Spin briefly so at least one millisecond passes.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5);
-        while std::time::Instant::now() < deadline {}
+        let deadline = Instant::now() + std::time::Duration::from_millis(5);
+        while Instant::now() < deadline {}
         let second = clock.now_ms();
         assert!(
             second >= first,
@@ -7201,11 +7810,11 @@ mod tests {
         let base: i64 = 1_700_000_000_000;
         let clock_a = HeuristicClock {
             start_ts_ms: base,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         };
         let clock_b = HeuristicClock {
             start_ts_ms: base + 1_000,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         };
         // Both clocks were created at approximately the same real time, so
         // their elapsed values are nearly equal. The difference in now_ms
@@ -7223,7 +7832,7 @@ mod tests {
         assert!(lock.get().is_none(), "lock should be empty before set");
         lock.set(HeuristicClock {
             start_ts_ms: 42_000,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         })
         .unwrap();
         let clock = lock.get().expect("clock should be set");
@@ -7237,7 +7846,7 @@ mod tests {
         cache.insert_last_modified_epoch(&fqn, Some(123));
         let clock = HeuristicClock {
             start_ts_ms: 1_700_000_000_000,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         };
 
         apply_unresolvable_last_modified_overrides(
@@ -7260,7 +7869,7 @@ mod tests {
         cache.insert_last_modified_epoch(&fqn, Some(123));
         let clock = HeuristicClock {
             start_ts_ms: 1_700_000_000_000,
-            start_instant: std::time::Instant::now(),
+            start_instant: Instant::now(),
         };
         let overrides = BTreeMap::from([(
             fqn.clone(),

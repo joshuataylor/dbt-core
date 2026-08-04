@@ -80,6 +80,25 @@ pub enum RunCacheServiceError {
 }
 
 impl RunCacheServiceError {
+    /// Short, stable label for the error's variant, used as `error_type` on
+    /// `ClientEnrichedSqlPrepared` telemetry. Mirrors the Python dbt State
+    /// client's use of the caught exception's class name.
+    pub fn error_type_label(&self) -> &'static str {
+        match self {
+            Self::Disabled => "Disabled",
+            Self::Config(_) => "Config",
+            Self::Transport(_) => "Transport",
+            Self::AuthRequest(_) => "AuthRequest",
+            Self::Auth(_) => "Auth",
+            Self::OrgDisabled { .. } => "OrgDisabled",
+            Self::Metadata(_) => "Metadata",
+            Self::Rpc(_) => "Rpc",
+            Self::Aborted => "Aborted",
+            Self::Timeout(_) => "Timeout",
+            Self::NoInteractiveTerminal => "NoInteractiveTerminal",
+        }
+    }
+
     pub fn is_transient_transport_rpc(&self) -> bool {
         match self {
             Self::Rpc(status) => {
@@ -112,6 +131,28 @@ impl RunCacheServiceError {
             self,
             Self::Auth(_) | Self::AuthRequest(_) | Self::Aborted | Self::Timeout(_)
         ) && !self.disables_service()
+    }
+
+    /// Whether a failed telemetry submission is worth retrying. Mirrors the
+    /// Python dbt State client's telemetry dispatcher: `Unimplemented`,
+    /// `PermissionDenied`, and `InvalidArgument` RPC errors indicate the
+    /// batch itself will never succeed, so those are dropped immediately.
+    /// `Disabled` means the client has been permanently disabled for the rest
+    /// of the process (see `GrpcRunCacheServiceClient::before_request`), so
+    /// every subsequent attempt would fail identically — also not worth
+    /// retrying. Everything else (including other non-RPC errors) is
+    /// treated as transient.
+    pub fn is_retriable_telemetry_submission(&self) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::Rpc(status) => !matches!(
+                status.code(),
+                tonic::Code::Unimplemented
+                    | tonic::Code::PermissionDenied
+                    | tonic::Code::InvalidArgument
+            ),
+            _ => true,
+        }
     }
 }
 
@@ -501,7 +542,11 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
     }
 }
 
-fn new_request_id() -> String {
+/// Generate a fresh client-side request id (used both as the gRPC
+/// `x-request-id` header and, for SQL submissions, as the id correlating a
+/// submission attempt's `ClientEnrichedSqlPrepared` telemetry event with the
+/// attempt itself, independent of whatever the server ends up deciding).
+pub fn new_request_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 

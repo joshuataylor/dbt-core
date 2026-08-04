@@ -507,7 +507,7 @@ impl TaskRunner {
         let storeables = self.hooks.collect_storeables(&run_task_args, &mut ctx);
 
         self.hooks
-            .did_collect_all_run_task_results(&run_task_args, &mut ctx)
+            .did_collect_all_run_task_results(&run_task_args, &mut ctx, &token)
             .await;
 
         Ok(RunTaskResults {

@@ -3,8 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::time::Instant;
 
-use crate::run_cache::run_cache_service::{CachedTestExecutionResult, HeuristicClock};
+use crate::run_cache::run_cache_service::{
+    CachedTestExecutionResult, HeuristicClock, TelemetryDispatcher,
+};
 use arrow::array::RecordBatch;
 use arrow_schema::SchemaRef;
 use dbt_adapter::relation::create_relation_from_node;
@@ -61,6 +65,12 @@ pub struct RunCacheCtx {
     /// Tracks the background dependency last-modified prefetch so per-node
     /// submits can observe its progress and await it on demand.
     pub prefetch: RunCachePrefetchState,
+    pub telemetry_event_order: AtomicI64,
+    pub telemetry_session_start: std::sync::OnceLock<Instant>,
+    pub telemetry_session_ended: AtomicBool,
+    /// Background telemetry batching worker, started lazily on the first
+    /// event so runs with the dbt State service disabled never spawn it.
+    pub telemetry_dispatcher: std::sync::OnceLock<TelemetryDispatcher>,
 }
 
 /// Lifecycle handle for the background dependency last-modified prefetch.
@@ -77,9 +87,9 @@ pub struct RunCachePrefetchState {
 #[derive(Default)]
 struct RunCachePrefetchStateInner {
     /// Set once the prefetch has been kicked off (or determined to be a no-op).
-    started: std::sync::atomic::AtomicBool,
+    started: AtomicBool,
     /// Set once the prefetch has finished (or there was nothing to fetch).
-    done: std::sync::atomic::AtomicBool,
+    done: AtomicBool,
     /// Handle to the background prefetch task, taken and joined the first time
     /// the prefetch is awaited. `None` when there was nothing to spawn or it
     /// has already been joined.

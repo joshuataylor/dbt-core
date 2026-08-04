@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
+use std::time::Duration;
 
 use dbt_telemetry::NodeType;
 use serde_json::Value;
@@ -13,9 +14,11 @@ use thiserror::Error;
 
 use crate::hash;
 use crate::proto::query_cache::{
-    CloneRequest, DbtNodeState, ExecutionOutcome, ExecutionRecord, ModelExecutionType,
-    QueryDependency, StaleUpstreamPolicy, SubmitEnrichedSqlRequest, SubmitValuesRequest,
-    TableModifiedInfo, TableProperties, ValuesExecution, execution_record,
+    ClientPrepareEnrichedSqlRequest, ClientTelemetryEvent, CloneRequest, DbtNodeState,
+    ExecutionOutcome, ExecutionRecord, ModelExecutionType, QueryDependency, SessionEndRequest,
+    SessionStartRequest, StaleUpstreamPolicy, Struct, SubmitEnrichedSqlRequest,
+    SubmitTelemetryBatchRequest, SubmitValuesRequest, TableModifiedInfo, TableProperties,
+    ValuesExecution, client_telemetry_event, execution_record,
 };
 
 pub const SQL_SEMANTIC_EXTRA_KEYS: &[&str] = &[
@@ -324,6 +327,87 @@ pub fn values_execution_record_from_submit_request(
     }
 }
 
+/// `dbt_run_cache_version` and `sqlglot_version` are left empty: unlike the
+/// Python dbt State client (a package layered on top of dbt-core, using a
+/// separately-versioned sqlglot dependency), Fusion has no separate "state
+/// client plugin" or SQL-parsing library with its own version to report —
+/// the running binary's version (`dbt_version`) is the only one that applies.
+pub fn session_start_event(config: Struct, event_order: i64) -> ClientTelemetryEvent {
+    ClientTelemetryEvent {
+        request: Some(client_telemetry_event::Request::SessionStart(
+            SessionStartRequest {
+                dbt_run_cache_version: String::new(),
+                dbt_version: env!("CARGO_PKG_VERSION").to_string(),
+                sqlglot_version: String::new(),
+                config: Some(config),
+            },
+        )),
+        event_order: Some(event_order),
+    }
+}
+
+pub fn session_end_event(
+    duration: Duration,
+    result: SessionEndResult,
+    description: impl Into<String>,
+    event_order: i64,
+) -> ClientTelemetryEvent {
+    ClientTelemetryEvent {
+        request: Some(client_telemetry_event::Request::SessionEnd(
+            SessionEndRequest {
+                session_duration: Some(prost_types::Duration {
+                    seconds: i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
+                    nanos: i32::try_from(duration.subsec_nanos()).unwrap_or_default(),
+                }),
+                result: result as i32,
+                result_description: description.into(),
+                metrics: Some(Struct::default()),
+            },
+        )),
+        event_order: Some(event_order),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionEndResult {
+    Success = 0,
+    Failure = 1,
+    Cancelled = 2,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn enriched_sql_prepared_event(
+    request_id: String,
+    duration: Duration,
+    target_table_fqn: Option<String>,
+    num_dependencies: Option<i64>,
+    num_view_dependencies: Option<i64>,
+    error_type: Option<String>,
+    labels: HashMap<String, String>,
+    event_order: i64,
+) -> ClientTelemetryEvent {
+    ClientTelemetryEvent {
+        request: Some(client_telemetry_event::Request::EnrichedSqlPrepared(
+            ClientPrepareEnrichedSqlRequest {
+                request_id,
+                duration: duration.as_secs_f64(),
+                target_table_fqn,
+                num_dependencies,
+                num_view_dependencies,
+                error_type,
+                view_traversal_duration_ms: None,
+                last_modified_duration_ms: None,
+                labels,
+            },
+        )),
+        event_order: Some(event_order),
+    }
+}
+
+pub fn telemetry_batch(events: Vec<ClientTelemetryEvent>) -> SubmitTelemetryBatchRequest {
+    SubmitTelemetryBatchRequest { events }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloneRequestInput {
     pub target_table: String,
@@ -383,6 +467,77 @@ mod tests {
             "model.jaffle_shop.orders"
         );
         assert_eq!(labels.len(), 3);
+    }
+
+    #[test]
+    fn telemetry_events_use_expected_payloads_and_order() {
+        let start = session_start_event(Struct::default(), 7);
+        assert_eq!(start.event_order, Some(7));
+        let Some(client_telemetry_event::Request::SessionStart(payload)) = start.request else {
+            panic!("expected session start event");
+        };
+        assert_eq!(payload.dbt_run_cache_version, "");
+        assert_eq!(payload.dbt_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(payload.sqlglot_version, "");
+
+        let mut labels = HashMap::new();
+        labels.insert(
+            "dbt_node_unique_id".to_string(),
+            "model.pkg.node".to_string(),
+        );
+        let prepared = enriched_sql_prepared_event(
+            "request-1".to_string(),
+            Duration::from_millis(1250),
+            Some("db.schema.node".to_string()),
+            Some(2),
+            Some(1),
+            None,
+            labels,
+            8,
+        );
+        assert_eq!(prepared.event_order, Some(8));
+        let Some(client_telemetry_event::Request::EnrichedSqlPrepared(payload)) = prepared.request
+        else {
+            panic!("expected prepared SQL event");
+        };
+        assert_eq!(payload.request_id, "request-1");
+        assert_eq!(payload.duration, 1.25);
+        assert_eq!(payload.target_table_fqn.as_deref(), Some("db.schema.node"));
+        assert_eq!(payload.num_dependencies, Some(2));
+        assert_eq!(payload.num_view_dependencies, Some(1));
+        assert_eq!(payload.error_type, None);
+
+        let failed = enriched_sql_prepared_event(
+            "request-2".to_string(),
+            Duration::from_millis(40),
+            None,
+            None,
+            None,
+            Some("Rpc".to_string()),
+            HashMap::new(),
+            9,
+        );
+        let Some(client_telemetry_event::Request::EnrichedSqlPrepared(failed_payload)) =
+            failed.request
+        else {
+            panic!("expected prepared SQL event");
+        };
+        assert_eq!(failed_payload.error_type, Some("Rpc".to_string()));
+        assert_eq!(failed_payload.num_dependencies, None);
+
+        let end = session_end_event(
+            Duration::from_secs(3),
+            SessionEndResult::Success,
+            "completed",
+            9,
+        );
+        assert_eq!(end.event_order, Some(9));
+        let Some(client_telemetry_event::Request::SessionEnd(payload)) = end.request else {
+            panic!("expected session end event");
+        };
+        assert_eq!(payload.result, SessionEndResult::Success as i32);
+        assert_eq!(payload.result_description, "completed");
+        assert_eq!(payload.session_duration.unwrap().seconds, 3);
     }
 
     #[test]

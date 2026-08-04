@@ -152,6 +152,10 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
+                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                telemetry_session_start: std::sync::OnceLock::new(),
+                telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
+                telemetry_dispatcher: std::sync::OnceLock::new(),
             };
 
             Ok(TaskRunnerCtx {

@@ -41,6 +41,7 @@ use dbt_tasks_core::{
     CompiledSqlCache, RunTaskResults,
     local_schema_builder::{init_data_store, init_schema_store},
     metricflow::MetricflowClient,
+    run_cache::run_cache_service::run_cache_service_after_run_failed,
     static_analysis_buckets::{StaticAnalysisBuckets, build_refresh_intervals},
     utils::{write_run_results_json, write_run_results_json_or_warn},
 };
@@ -2130,7 +2131,12 @@ impl DbtProjectCompilation {
                     )
                     .await?;
 
-                task_runner
+                // Cheap clone (all fields are `Arc`s): keeps a handle to the
+                // run's telemetry state even if `run` drops `ctx` on an early
+                // error, so any failure still reports `SessionEnd` instead of
+                // leaving the session open. No-ops if a session never started.
+                let run_cache_ctx_on_error = ctx.clone();
+                let run_result = task_runner
                     .run(
                         Arc::clone(&run_task_args),
                         schedule,
@@ -2140,7 +2146,15 @@ impl DbtProjectCompilation {
                         has_dynamic_closure,
                         token.clone(),
                     )
-                    .await?
+                    .await;
+                if run_result.is_err() {
+                    run_cache_service_after_run_failed(
+                        &run_cache_ctx_on_error,
+                        token.is_cancelled(),
+                    )
+                    .await;
+                }
+                run_result?
             }
         };
 

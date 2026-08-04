@@ -70,7 +70,7 @@ impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
                         .as_err_msg()
                         .expect("Error message always present on ShouldBe::ButIsnt variant")
                 ));
-                emit_strict_parse_error(&fs_err, dependency_package_name, io);
+                emit_strict_parse_error(fs_err, dependency_package_name, io);
             }
         };
         Ok(recur_build_dbt_project_config(

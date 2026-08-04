@@ -199,7 +199,7 @@ where
 
     if show_errors_or_warnings {
         for error in errors {
-            emit_strict_parse_error(&error, dependency_package_name, io_args);
+            emit_strict_parse_error(error, dependency_package_name, io_args);
         }
     }
 
@@ -234,7 +234,7 @@ where
         for error in errors {
             let context = error_context(&error);
             let error = error.with_context(context);
-            emit_strict_parse_error(&error, dependency_package_name, io_args);
+            emit_strict_parse_error(error, dependency_package_name, io_args);
         }
     }
 
@@ -259,7 +259,7 @@ where
             let error = error.with_location(CodeLocationWithFile::from(
                 error_path.clone().unwrap_or_default(),
             ));
-            emit_strict_parse_error(&error, dependency_package_name, io_args);
+            emit_strict_parse_error(error, dependency_package_name, io_args);
         }
     }
 
@@ -294,7 +294,7 @@ where
 
     if show_errors_or_warnings {
         for error in errors {
-            emit_strict_parse_error(&error, dependency_package_name, io_args);
+            emit_strict_parse_error(error, dependency_package_name, io_args);
         }
     }
 
@@ -360,7 +360,7 @@ fn value_from_str(
         );
 
         if show_errors_or_warnings {
-            emit_strict_parse_error(&duplicate_key_error, dependency_package_name, io_args);
+            emit_strict_parse_error(*duplicate_key_error, dependency_package_name, io_args);
         }
         // last key wins:
         dbt_yaml::mapping::DuplicateKey::Overwrite

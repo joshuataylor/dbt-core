@@ -643,7 +643,7 @@ pub async fn resolve_snapshots(
                 Ok(_) => (),
                 Err(e) => {
                     let err_with_loc = e.with_location(error_path.clone());
-                    emit_error_log_from_fs_error(&err_with_loc, arg.io.status_reporter.as_ref());
+                    emit_error_log_from_fs_error(err_with_loc, arg.io.status_reporter.as_ref());
                 }
             }
 
@@ -656,7 +656,7 @@ pub async fn resolve_snapshots(
                             "Snapshot '{}' must be configured with a 'strategy' and 'unique_key'",
                             snapshot_name
                         );
-                        emit_error_log_from_fs_error(&e, arg.io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
                     }
                     if sql_file_info.execute && sql_defined_snapshots.contains(&dbt_asset.path) {
                         snapshots_with_execute.insert(unique_id.to_owned(), dbt_snapshot);
@@ -701,7 +701,7 @@ pub async fn resolve_snapshots(
                 "Unused schema.yml entry for snapshot '{}'",
                 snapshot_name,
             );
-            emit_warn_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
         }
     }
     // Second pass to capture all identifiers with the appropriate context
@@ -784,7 +784,7 @@ async fn recalculate_snapshot_checksum(
         }
         Err(e) => {
             // Fallback to sql_file_info checksum if original file can't be read
-            emit_warn_log_from_fs_error(&e, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
             sql_file_info.checksum.clone()
         }
     }

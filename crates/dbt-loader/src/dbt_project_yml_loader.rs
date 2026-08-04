@@ -132,7 +132,7 @@ fn prune_unexpected_nulls_in_children<T>(
                         suggestion,
                         yaml_path
                     );
-                    emit_warn_log_from_fs_error(&err, io_args.status_reporter.as_ref());
+                    emit_warn_log_from_fs_error(*err, io_args.status_reporter.as_ref());
                     keys_to_remove.push(child_key.clone());
                 }
             }

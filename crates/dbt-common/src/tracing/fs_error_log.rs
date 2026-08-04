@@ -22,9 +22,9 @@ pub struct FsErrorLog {
 }
 
 impl FsErrorLog {
-    pub fn new(error: &FsError, level: tracing::Level) -> Self {
+    pub fn new(error: FsError, level: tracing::Level) -> Self {
         Self {
-            fs_error: Arc::new(error.clone_without_backtrace()),
+            fs_error: Arc::new(error),
             log_message: OnceLock::new(),
             level,
             package_name: None,

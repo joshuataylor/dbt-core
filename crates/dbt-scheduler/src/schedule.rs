@@ -346,10 +346,10 @@ fn schedule_graph(
     // Check for cycles in the selected nodes only
     let (cycle_warnings, cycle_errors) = find_cycle_diagnostics(&selected_deps, nodes);
     for warning in cycle_warnings {
-        emit_warn_log_from_fs_error(&warning, args.io.status_reporter.as_ref());
+        emit_warn_log_from_fs_error(warning, args.io.status_reporter.as_ref());
     }
     for error in cycle_errors {
-        emit_error_log_from_fs_error(&error, args.io.status_reporter.as_ref());
+        emit_error_log_from_fs_error(error, args.io.status_reporter.as_ref());
     }
 
     // Compute overlapping sources: sources whose relation_name matches a SELECTED seed's relation_name

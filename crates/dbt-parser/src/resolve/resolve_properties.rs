@@ -651,11 +651,11 @@ pub fn resolve_minimal_properties(
             None
         };
 
-        let result = {
+        {
             let _guard = span.enter();
             let input = try_read_yml_to_str(&absolute_path)?;
 
-            match from_yaml_raw::<DbtPropertiesFileValues>(
+            let result = match from_yaml_raw::<DbtPropertiesFileValues>(
                 &arg.io,
                 &input,
                 Some(&absolute_path),
@@ -700,17 +700,16 @@ pub fn resolve_minimal_properties(
 
                     Ok(())
                 }
-                Err(e) => {
-                    // Emit error and save it to apply to span, but continue processing other files
-                    emit_strict_parse_error(&e, dependency_package_name, &arg.io);
-                    Err(e)
-                }
-            }
-        };
+                Err(e) => Err(e),
+            };
 
-        // Record both success and failure statuses to the span, but continue processing
-        // regardless of outcome
-        let _ = result.record_status(&span);
+            // Record both success and failure statuses to the span, but continue processing
+            // regardless of outcome.
+            let _ = result.as_ref().record_status(&span);
+            if let Err(e) = result {
+                emit_strict_parse_error(*e, dependency_package_name, &arg.io);
+            }
+        }
     }
     Ok(minimal_resolved_properties)
 }

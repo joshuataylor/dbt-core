@@ -306,7 +306,7 @@ pub async fn resolve(
     match nodes.warn_on_microbatch(adapter_type) {
         Ok(_) => {}
         Err(e) => {
-            emit_warn_log_from_fs_error(e.as_ref(), arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
         }
     }
 
@@ -369,7 +369,7 @@ pub async fn resolve(
         &node_resolver,
     );
     for warning in microbatch_model_no_event_time_inputs_warnings(&nodes) {
-        emit_warn_log_from_fs_error(&warning, arg.io.status_reporter.as_ref());
+        emit_warn_log_from_fs_error(warning, arg.io.status_reporter.as_ref());
     }
 
     // Check for model deprecation warnings
@@ -525,7 +525,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                         name,
                         adapter_type,
                     );
-                    emit_error_log_from_fs_error(&err, status_reporter);
+                    emit_error_log_from_fs_error(*err, status_reporter);
                     continue;
                 }
             }
@@ -536,7 +536,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                     name,
                     adapter_type,
                 );
-                emit_error_log_from_fs_error(&err, status_reporter);
+                emit_error_log_from_fs_error(*err, status_reporter);
                 continue;
             }
             // SQL / Python / unspecified: no per-adapter restrictions today.
@@ -561,7 +561,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                             "Function '{}' has arguments with 'default_value' that are not at the end of the argument list. Defaulted arguments must form a trailing suffix.",
                             name,
                         );
-                        emit_error_log_from_fs_error(&err, status_reporter);
+                        emit_error_log_from_fs_error(*err, status_reporter);
                     }
                 }
                 _ => {
@@ -571,7 +571,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                         name,
                         adapter_type,
                     );
-                    emit_error_log_from_fs_error(&err, status_reporter);
+                    emit_error_log_from_fs_error(*err, status_reporter);
                 }
             }
         }
@@ -643,7 +643,7 @@ where
                     target_unique_id,
                     target_node.__model_attr__.group.as_deref().unwrap_or(""),
                 );
-                emit_error_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
                 had_violation = true;
             } else if target_node.__model_attr__.access == Access::Protected && diffent_packages {
                 let err = fs_err!(
@@ -654,7 +654,7 @@ where
                     target_unique_id,
                     target_node.common().package_name,
                 );
-                emit_error_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
                 had_violation = true;
             }
         }

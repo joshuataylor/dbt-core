@@ -39,7 +39,7 @@ pub fn warn_python_static_analysis(
 ) {
     if matches!(kind, StaticAnalysisKind::On | StaticAnalysisKind::Strict) {
         emit_warn_log_from_fs_error(
-            &FsError::new(
+            FsError::new(
                 ErrorCode::InvalidConfig,
                 format!(
                     "Python model '{unique_id}' has static_analysis set to '{kind}', but static \

@@ -328,7 +328,7 @@ impl DocMacro {
             doc_name, package_name
         );
         let warning = fs_err!(code, "{}", message).with_location(location);
-        emit_warn_log_from_fs_error(&warning, status_reporter)
+        emit_warn_log_from_fs_error(warning, status_reporter)
     }
 
     fn missing_doc_placeholder(package_name: &str, doc_name: &str) -> String {
@@ -1086,13 +1086,13 @@ impl Object for Exceptions {
 
                 // Emit through the warn path even when warn-error upgrades it because tracing
                 // handles the event level upgrade for dbt-facing outputs.
-                emit_warn_log_from_fs_error(&warning, self.io_args.status_reporter.as_ref());
-
-                if self
+                let warn_error_decision = self
                     .warn_error_options
                     .decision_for_error_code(warning.code)
-                    == WarnErrorDecision::UpgradeToError
-                {
+                    == WarnErrorDecision::UpgradeToError;
+                emit_warn_log_from_fs_error(*warning, self.io_args.status_reporter.as_ref());
+
+                if warn_error_decision {
                     return Err(Error::new(ErrorKind::ExitWithStatus, warn_string));
                 }
 

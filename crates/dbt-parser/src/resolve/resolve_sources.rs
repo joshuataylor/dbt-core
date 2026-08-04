@@ -428,10 +428,10 @@ pub async fn resolve_sources(
             // when the rule is consumed. F1 (fully-empty rule) is already
             // accepted silently by `FreshnessRules::validate`.
             if let Err(err) = FreshnessRules::validate(freshness.error_after.as_ref()) {
-                emit_warn_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
             }
             if let Err(err) = FreshnessRules::validate(freshness.warn_after.as_ref()) {
-                emit_warn_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
             }
         }
 
@@ -525,7 +525,7 @@ pub async fn resolve_sources(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(mpe.relative_path.clone());
-                emit_error_log_from_fs_error(&err_with_loc, io_args.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc, io_args.status_reporter.as_ref());
             }
         }
 

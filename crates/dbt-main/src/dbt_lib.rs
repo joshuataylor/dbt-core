@@ -268,7 +268,7 @@ async fn do_execute_fs(
                 ErrorCode::InvalidArgument,
                 "`dbt state explain` does not support --selector. Use --select and --exclude to filter explain output."
             );
-            emit_error_log_from_fs_error(err.as_ref(), eval_arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err, eval_arg.io.status_reporter.as_ref());
             return Err(FsError::exit_with_status(1));
         }
         let project_dir = state_args
@@ -298,7 +298,7 @@ async fn do_execute_fs(
             Ok(()) => Ok(()),
             Err(err) if err.exit_status().is_some() => Err(err),
             Err(err) => {
-                emit_error_log_from_fs_error(err.as_ref(), eval_arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err, eval_arg.io.status_reporter.as_ref());
                 Err(FsError::exit_with_status(1))
             }
         };
@@ -400,8 +400,8 @@ async fn do_execute_fs(
                 ));
             }
             Err(e) => {
-                emit_error_log_from_fs_error(e.as_ref(), eval_arg.io.status_reporter.as_ref());
                 let code = e.exit_status().unwrap_or(1);
+                emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
                 return Err(FsError::exit_with_status(code));
             }
         }
@@ -427,7 +427,7 @@ async fn do_execute_fs(
             Ok(()) => Ok(()),
             Err(e) if e.exit_status().is_some() => Err(e),
             Err(e) => {
-                emit_error_log_from_fs_error(e.as_ref(), eval_arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
                 Err(FsError::exit_with_status(1))
             }
         };
@@ -463,7 +463,7 @@ pub async fn execute_setup_and_all_phases(
 
     check_options(&eval_arg.io, cli);
     if let Err(e) = validate_engine_env_vars() {
-        emit_error_log_from_fs_error(e.as_ref(), eval_arg.io.status_reporter.as_ref());
+        emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
         return Err(FsError::exit_with_status(1));
     }
 
@@ -477,7 +477,7 @@ pub async fn execute_setup_and_all_phases(
         Ok(()) => Ok(()),
         Err(e) if e.exit_status().is_some() => Err(e),
         Err(e) => {
-            emit_error_log_from_fs_error(e.as_ref(), eval_arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
             Err(FsError::exit_with_status(1))
         }
     };

@@ -589,7 +589,7 @@ where
                     ErrorCode::MacroSyntaxInvalid => {
                         let err_with_loc = err.with_location(display_path.clone());
                         emit_error_log_from_fs_error(
-                            &err_with_loc,
+                            err_with_loc,
                             args.io.status_reporter.as_ref(),
                         );
                         ModelStatus::ParsingFailed
@@ -598,7 +598,7 @@ where
                         if was_enabled {
                             let err_with_loc = err.with_location(display_path.clone());
                             emit_error_log_from_fs_error(
-                                &err_with_loc,
+                                err_with_loc,
                                 args.io.status_reporter.as_ref(),
                             );
                             ModelStatus::ParsingFailed
@@ -1045,7 +1045,7 @@ pub fn collect_hook_dependencies_from_config(
                     err.to_string()
                 )
                 .with_location(resource_path.to_path_buf());
-                emit_warn_log_from_fs_error(&err, io.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(err, io.status_reporter.as_ref());
 
                 Ok(()) // Return Ok to avoid breaking the build
             }

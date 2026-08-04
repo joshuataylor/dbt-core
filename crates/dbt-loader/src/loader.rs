@@ -97,7 +97,7 @@ fn warn_on_unlinked_cloud_project(
          one. Features that need dbt platform credentials will not work.",
         project_id
     );
-    emit_warn_log_from_fs_error(&err, io.status_reporter.as_ref());
+    emit_warn_log_from_fs_error(*err, io.status_reporter.as_ref());
 }
 
 fn resolve_and_set_threads(

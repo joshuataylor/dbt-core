@@ -188,21 +188,22 @@ pub async fn clean_project(
 }
 
 fn unrelated_paths<P: AsRef<Path>, Q: AsRef<Path>>(io: &IoArgs, to: P, from: Q) -> bool {
-    stdfs::diff_paths(&to, &from)
-        .and_then(|diff| {
-            // It is safe to delete a directory if the only way to get to a protected directory is to navigate to the parent.
-            if diff.components().next() == Some(std::path::Component::ParentDir) {
-                Ok(true)
-            } else {
-                Err(fs_err!(
-                    ErrorCode::InvalidPath,
-                    "The target directory is protected: {}",
-                    from.as_ref().display()
-                ))
-            }
-        })
-        .inspect_err(|e| {
-            emit_error_log_from_fs_error(e, io.status_reporter.as_ref());
-        })
-        .is_ok()
+    match stdfs::diff_paths(&to, &from).and_then(|diff| {
+        // It is safe to delete a directory if the only way to get to a protected directory is to navigate to the parent.
+        if diff.components().next() == Some(std::path::Component::ParentDir) {
+            Ok(true)
+        } else {
+            Err(fs_err!(
+                ErrorCode::InvalidPath,
+                "The target directory is protected: {}",
+                from.as_ref().display()
+            ))
+        }
+    }) {
+        Ok(_) => true,
+        Err(e) => {
+            emit_error_log_from_fs_error(*e, io.status_reporter.as_ref());
+            false
+        }
+    }
 }

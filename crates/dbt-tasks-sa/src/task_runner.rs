@@ -389,8 +389,7 @@ impl TaskRunner {
             // dbt-labs/fs#12418.
             if let Some(ref span) = on_run_end_span {
                 let mut hook_failed = false;
-                let result: FsResult<()> = async {
-                    let mut first_error: Option<Box<FsError>> = None;
+                async {
                     for (idx, operation) in
                         self.resolved_state.operations.on_run_end.iter().enumerate()
                     {
@@ -431,6 +430,7 @@ impl TaskRunner {
                         )
                         .instrument(hook_span.clone())
                         .await;
+                        let _ = result.as_ref().record_status(span);
 
                         let (hook_outcome, error_message) = match &result {
                             Ok(_) => (HookOutcome::Success, None),
@@ -468,27 +468,15 @@ impl TaskRunner {
                             // prints and drives a non-zero exit code, without unwinding out
                             // of `run()` and discarding the per-model stats.
                             emit_error_log_from_fs_error(
-                                e.as_ref(),
+                                *e,
                                 run_task_args.io.status_reporter.as_ref(),
                             );
                             hook_failed = true;
-                            first_error = Some(e);
                         }
-                    }
-
-                    // Return the hook error only so the phase span records `error` in
-                    // telemetry. It is deliberately not propagated out of `run()` — the
-                    // error was already emitted/counted above.
-                    match first_error {
-                        Some(e) => Err(e),
-                        None => Ok(()),
                     }
                 }
                 .instrument(span.clone())
-                .await
-                .record_status(span);
-
-                let _ = result;
+                .await;
             }
         }
 

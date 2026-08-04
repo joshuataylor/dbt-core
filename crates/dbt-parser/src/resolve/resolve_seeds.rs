@@ -394,7 +394,7 @@ pub async fn resolve_seeds(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());
-                emit_error_log_from_fs_error(&err_with_loc, io_args.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc, io_args.status_reporter.as_ref());
             }
         }
 
@@ -430,7 +430,7 @@ pub async fn resolve_seeds(
                 "Unused schema.yml entry for seed '{}'",
                 seed_name,
             );
-            emit_warn_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
         }
     }
 

@@ -76,12 +76,13 @@ pub fn emit_error_log_message_package_scoped(
 /// Emit a log message event at ERROR level based on the given FsError.
 #[track_caller]
 pub fn emit_error_log_from_fs_error(
-    error: &FsError,
+    error: FsError,
     _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
 ) {
+    let message = error.message();
     emit_error_event(
         FsErrorLog::new(error, tracing::Level::ERROR),
-        Some(error.message().as_str()),
+        Some(message.as_str()),
     );
 }
 
@@ -115,12 +116,13 @@ pub fn emit_warn_log_message_package_scoped(
 /// Emit a log message event at WARN level based on the given FsError.
 #[track_caller]
 pub fn emit_warn_log_from_fs_error(
-    warning: &FsError,
+    warning: FsError,
     _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
 ) {
+    let message = warning.message();
     emit_warn_event(
         FsErrorLog::new(warning, tracing::Level::WARN),
-        Some(warning.message().as_str()),
+        Some(message.as_str()),
     );
 }
 
@@ -128,14 +130,16 @@ pub fn emit_warn_log_from_fs_error(
 ///
 #[track_caller]
 pub fn emit_strict_parse_error(
-    error: &FsError,
+    error: FsError,
     package_name: Option<impl AsRef<str>>,
     _io: &IoArgs,
 ) {
+    let message = error.message();
+    let package_name = package_name.as_ref().map(|name| name.as_ref().to_string());
     let event = FsErrorLog::new(error, tracing::Level::ERROR)
-        .with_package_name(package_name.as_ref().map(|name| name.as_ref().to_string()))
+        .with_package_name(package_name)
         .with_parsing_error();
-    emit_error_event(event, Some(error.message().as_str()));
+    emit_error_event(event, Some(message.as_str()));
 }
 
 // Progress messages

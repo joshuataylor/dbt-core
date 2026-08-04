@@ -53,7 +53,7 @@ impl TypecheckingEventListener for YamlTypecheckingEventListener {
 
         let fs_error =
             FsError::new(ErrorCode::JinjaError, message.to_string()).with_location(location);
-        emit_warn_log_from_fs_error(&fs_error, self.status_reporter.as_ref());
+        emit_warn_log_from_fs_error(fs_error, self.status_reporter.as_ref());
     }
 
     fn set_span(&self, _span: &Span) {

@@ -603,7 +603,7 @@ fn extract_kwargs_and_jinja_vars_and_dep_kwarg_and_configs(
         );
 
         if !suppress_deprecated_test_validation {
-            emit_strict_parse_error(&schema_error, dependency_package_name, io_args);
+            emit_strict_parse_error(*schema_error, dependency_package_name, io_args);
         }
     }
     for (key, value) in deprecated.clone() {

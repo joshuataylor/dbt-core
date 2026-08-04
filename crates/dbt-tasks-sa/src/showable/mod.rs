@@ -145,8 +145,9 @@ where
     let (batches, schema) = match batches_result {
         Ok(batches) => batches,
         Err(e) => {
-            emit_error_log_from_fs_error(e.as_ref(), ctx.inner.arg.io.status_reporter.as_ref());
-            *ctx.inner.preview_error.lock() = Some(e.to_string());
+            let error_message = e.to_string();
+            emit_error_log_from_fs_error(*e, ctx.inner.arg.io.status_reporter.as_ref());
+            *ctx.inner.preview_error.lock() = Some(error_message);
             return Ok(NodeStatus::Errored);
         }
     };

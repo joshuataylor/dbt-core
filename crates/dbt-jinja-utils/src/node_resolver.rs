@@ -902,7 +902,7 @@ pub fn resolve_dependencies(
                             name
                         )
                         .with_location(location);
-                        emit_error_log_from_fs_error(&err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
                     } else {
                         if !node_base.depends_on.nodes.contains(&dependency_id) {
                             node_base.depends_on.nodes.push(dependency_id.clone());
@@ -923,12 +923,12 @@ pub fn resolve_dependencies(
                         // excluded — dbt-core issues NodeNotFoundOrDisabled in both cases and
                         // never executes the test.
                         has_disabled_or_missing_dependency = disable;
-                        emit_warn_log_from_fs_error(&warning, io.status_reporter.as_ref());
+                        emit_warn_log_from_fs_error(warning, io.status_reporter.as_ref());
                     } else {
                         // Track this node as having an error (unresolved ref/source)
                         nodes_with_errors.insert(node_unique_id.clone());
                         let err_with_loc = e.with_location(location);
-                        emit_error_log_from_fs_error(&err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
                     }
                 }
             };
@@ -968,12 +968,12 @@ pub fn resolve_dependencies(
                         // excluded — dbt-core issues NodeNotFoundOrDisabled in both cases and
                         // never executes the test.
                         has_disabled_or_missing_dependency = disable;
-                        emit_warn_log_from_fs_error(&warning, io.status_reporter.as_ref());
+                        emit_warn_log_from_fs_error(warning, io.status_reporter.as_ref());
                     } else {
                         // Track this node as having an error (unresolved ref/source)
                         nodes_with_errors.insert(node_unique_id.clone());
                         let err_with_loc = e.with_location(location);
-                        emit_error_log_from_fs_error(&err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
                     }
                 }
             };
@@ -1010,12 +1010,12 @@ pub fn resolve_dependencies(
                     if (is_test || is_exposure) && e.code == ErrorCode::DisabledDependency {
                         has_disabled_or_missing_dependency = true;
                         let err_with_loc = e.with_location(location);
-                        emit_warn_log_from_fs_error(&err_with_loc, io.status_reporter.as_ref());
+                        emit_warn_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
                     } else {
                         // Track this node as having an error (unresolved function)
                         nodes_with_errors.insert(node_unique_id.clone());
                         let err_with_loc = e.with_location(location);
-                        emit_error_log_from_fs_error(&err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
                     }
                 }
             };
@@ -1090,10 +1090,7 @@ pub fn resolve_dependencies(
                         Err(e) => {
                             nodes_with_errors.insert(operation_unique_id.clone());
                             let err_with_loc = e.with_location(location);
-                            emit_error_log_from_fs_error(
-                                &err_with_loc,
-                                io.status_reporter.as_ref(),
-                            );
+                            emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
                         }
                     }
                 });
@@ -1135,7 +1132,7 @@ pub fn resolve_dependencies(
                                 nodes_with_errors.insert(operation_unique_id.clone());
                                 let err_with_loc = e.with_location(location);
                                 emit_error_log_from_fs_error(
-                                    &err_with_loc,
+                                    err_with_loc,
                                     io.status_reporter.as_ref(),
                                 );
                             }

@@ -454,13 +454,13 @@ pub async fn resolve_models(
                 if !errors.is_empty() {
                     // Show each error individually
                     for error in errors {
-                        emit_error_log_from_fs_error(&error, arg.io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(error, arg.io.status_reporter.as_ref());
                     }
                     continue;
                 }
             }
             Err(e) => {
-                emit_error_log_from_fs_error(&e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
 
                 continue;
             }
@@ -477,7 +477,7 @@ pub async fn resolve_models(
                 "Invalid access type '{}' — must be one of: private, protected, public",
                 raw,
             );
-            emit_error_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
         }
 
         // Iterate over metrics and construct the dependencies
@@ -544,7 +544,7 @@ pub async fn resolve_models(
                 "Invalid value for on_schema_change: {}. Models materialized as incremental with contracts enabled must set on_schema_change to 'append_new_columns' or 'fail'",
                 osc_str,
             );
-            emit_error_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
             continue;
         }
 
@@ -872,7 +872,7 @@ pub async fn resolve_models(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
-                emit_error_log_from_fs_error(&err_with_loc, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc, arg.io.status_reporter.as_ref());
             }
         }
 
@@ -949,7 +949,7 @@ pub async fn resolve_models(
                 "Unused schema.yml entry for model '{}'",
                 model_name,
             );
-            emit_warn_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
         }
     }
 
@@ -974,7 +974,7 @@ pub async fn resolve_models(
             if errs.is_empty() {
                 return Err(err);
             }
-            emit_error_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
         }
     }
 
@@ -1196,14 +1196,14 @@ fn process_python_models(
         let stmts = match parse_python(&source, &python_asset.path) {
             Ok(stmts) => stmts,
             Err(e) => {
-                emit_error_log_from_fs_error(&e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
                 continue;
             }
         };
 
         // Validate Python model structure (def model(dbt, session): ...)
         if let Err(e) = validate_python_model(&python_asset.path, &stmts) {
-            emit_error_log_from_fs_error(&e, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
             continue;
         }
 
@@ -1222,7 +1222,7 @@ fn process_python_models(
         ) {
             Ok(info) => info,
             Err(e) => {
-                emit_error_log_from_fs_error(&e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
                 continue;
             }
         };
@@ -1245,7 +1245,7 @@ fn process_python_models(
         ) {
             Ok(config) => config,
             Err(err) => {
-                emit_error_log_from_fs_error(&err, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
                 continue;
             }
         };
@@ -1343,7 +1343,7 @@ fn check_config_get_on_meta_keys(
     };
     for key in config_keys.iter().filter(|key| meta.contains_key(*key)) {
         emit_warn_log_from_fs_error(
-            &fs_err!(
+            *fs_err!(
                 code => ErrorCode::Generic,
                 loc => path.to_path_buf(),
                 "The key '{}' was accessed using dbt.config.get('{}'), \

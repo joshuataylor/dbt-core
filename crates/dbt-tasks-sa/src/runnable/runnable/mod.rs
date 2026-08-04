@@ -554,6 +554,7 @@ impl Task for RunTask {
                 Err(e) => {
                     // TODO: At some point, these should log as part of the same event
                     let node_status = NodeStatus::Errored;
+                    let error_message = e.to_string();
                     report_completed(
                         &NodeStatus::Errored,
                         self.node.defined_at().cloned(),
@@ -568,10 +569,7 @@ impl Task for RunTask {
                             | RunExecutionPath::SideCar
                             | RunExecutionPath::AltCompute
                     ) {
-                        emit_error_log_from_fs_error(
-                            e.as_ref(),
-                            ctx.inner.arg.io.status_reporter.as_ref(),
-                        );
+                        emit_error_log_from_fs_error(*e, ctx.inner.arg.io.status_reporter.as_ref());
                     }
 
                     // Insert stats for the error case so it appears in run_results.json
@@ -582,7 +580,7 @@ impl Task for RunTask {
                             start_time.into(),
                             None,
                             node_status.clone(),
-                            Some(e.to_string()),
+                            Some(error_message),
                             ctx.thread_id,
                         ),
                     );

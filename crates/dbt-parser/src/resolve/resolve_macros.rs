@@ -41,7 +41,7 @@ pub fn resolve_docs_macros(
         if let Err(err) = process_docs_macro_file(io, &mut docs_map, docs_asset, embedded_contents)
         {
             let err = err.with_location(docs_asset.path.clone());
-            emit_warn_log_from_fs_error(&err, io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(err, io.status_reporter.as_ref());
         }
     }
 

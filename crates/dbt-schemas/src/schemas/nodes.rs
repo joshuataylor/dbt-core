@@ -7460,6 +7460,7 @@ mod seed_has_same_content_tests {
                     c.state = Some(DataTestState {
                         require_fresh_data_from: Some(UpdatesOn::All),
                         evaluate_volatile_sql: Some(true),
+                        compare_unrendered_code: None,
                     })
                 }),
             ),

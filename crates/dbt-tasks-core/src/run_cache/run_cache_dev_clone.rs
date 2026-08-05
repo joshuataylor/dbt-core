@@ -615,6 +615,7 @@ mod tests {
             evaluate_volatile_sql: None,
             pre_clone: Some(StatePreClone::Always),
             execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
         });
         let candidate = DevCloneCandidate::Model {
             local: Arc::new(local),
@@ -641,6 +642,7 @@ mod tests {
             evaluate_volatile_sql: None,
             pre_clone: Some(StatePreClone::IfMissing),
             execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
         });
         let candidate = DevCloneCandidate::Snapshot {
             local: Arc::new(local),

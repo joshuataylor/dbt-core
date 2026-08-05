@@ -204,6 +204,7 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub stale_upstream_policy: StaleUpstreamPolicy,
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
+    pub compare_unrendered_code: bool,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -227,7 +228,7 @@ impl SubmitEnrichedSqlRequestInput {
             stale_upstream_policy: self.stale_upstream_policy as i32,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
-            compare_unrendered_code: false, //todo: implement
+            compare_unrendered_code: self.compare_unrendered_code,
         }
     }
 }
@@ -858,9 +859,11 @@ mod tests {
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
             }),
+            compare_unrendered_code: true,
         }
         .into_proto();
 
+        assert!(request.compare_unrendered_code);
         assert_eq!(request.target_table.as_deref(), Some("analytics.orders"));
         assert_eq!(request.default_schema.as_deref(), Some("marts"));
         assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
@@ -977,6 +980,7 @@ mod tests {
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             clone_chain_depth_limit: None,
             dbt_node_state: None,
+            compare_unrendered_code: false,
         }
         .into_proto();
 

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter_core::AdapterType;
+use dbt_common::tracing::dbt_emit::emit_trace_log_message;
 use dbt_common::{ErrorCode, FsResult, fs_err, path::DbtPath};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::{DbtIncrementalStrategy, DbtMaterialization, OnSchemaChange};
@@ -97,6 +98,9 @@ pub struct SqlRunCacheRequestContext {
     pub freshness_tolerance_seconds: i64,
     pub lenient_dependencies: Vec<String>,
     pub tolerate_nondeterminism: bool,
+    /// When set, the service first matches candidates on the unrendered node hashes carried in
+    /// `dbt_node_state` and only falls back to the compiled-SQL hash if those differ.
+    pub compare_unrendered_code: bool,
     pub full_refresh: bool,
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
@@ -201,6 +205,27 @@ fn build_node_state<'a, 'b>(
         node_macros_hash: hashes.node_macros_hash,
         node_contract_hash: hashes.node_contract_hash,
     };
+
+    // Every component is logged individually because the server compares them
+    // individually: a reuse decision turns on body/configs/macros agreeing, and any one of
+    // them differing is enough to fall back to the compiled-SQL hash. Logging only
+    // `node_hash` would say "something changed" without saying which.
+    emit_trace_log_message(|| {
+        format!(
+            "dbt State node hashes for {} (fqn {}): node_hash={} body={} configs={} persisted_docs={} macros={} contract={}",
+            node_state.node_unique_id,
+            node.selector_string(),
+            node_state.node_hash,
+            node_state.node_body_hash.as_deref().unwrap_or("<none>"),
+            node_state.node_configs_hash.as_deref().unwrap_or("<none>"),
+            node_state
+                .node_persisted_descriptions_hash
+                .as_deref()
+                .unwrap_or("<none>"),
+            node_state.node_macros_hash.as_deref().unwrap_or("<none>"),
+            node_state.node_contract_hash.as_deref().unwrap_or("<none>"),
+        )
+    });
 
     Ok(node_state)
 }
@@ -484,6 +509,7 @@ fn build_sql_request_input(
         stale_upstream_policy: context.stale_upstream_policy,
         clone_chain_depth_limit: context.clone_chain_depth_limit,
         dbt_node_state: Some(node_state),
+        compare_unrendered_code: context.compare_unrendered_code,
     })
 }
 
@@ -955,6 +981,7 @@ mod tests {
             freshness_tolerance_seconds: 2700,
             lenient_dependencies: vec![],
             tolerate_nondeterminism: true,
+            compare_unrendered_code: false,
             full_refresh,
             clone_time_travel_limit: None,
             clone_table_properties: None,

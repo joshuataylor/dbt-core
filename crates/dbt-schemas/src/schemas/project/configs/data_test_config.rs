@@ -748,6 +748,7 @@ __warehouse_specific_config__: {}
             state: Some(DataTestState {
                 require_fresh_data_from: Some(UpdatesOn::All),
                 evaluate_volatile_sql: Some(true),
+                compare_unrendered_code: None,
             }),
             ..Default::default()
         };

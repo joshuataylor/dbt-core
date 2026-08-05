@@ -2351,6 +2351,7 @@ mod tests {
                         evaluate_volatile_sql: Some(true),
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
+                        compare_unrendered_code: None,
                     })
                 }),
             ),
@@ -2627,6 +2628,7 @@ mod tests {
                         evaluate_volatile_sql: Some(true),
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
+                        compare_unrendered_code: None,
                     })
                 }),
             ),

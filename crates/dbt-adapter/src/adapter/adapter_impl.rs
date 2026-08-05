@@ -2773,6 +2773,14 @@ impl AdapterImpl {
                     })
                     .collect::<BTreeMap<String, Vec<String>>>();
 
+                // Skip the ADBC round-trip (and its ETag-race exposure) when
+                // there is nothing to update. Matches dbt-core Python's
+                // `if len(columns) == 0: return` guard in dbt-bigquery's
+                // `update_columns`.
+                if column_to_description.is_empty() && column_to_policy_tags.is_empty() {
+                    return Ok(none_value());
+                }
+
                 // The heavy lift is delegated to the driver via googleapi Table.update
                 // since ALTER TABLE ... ALTER COLUMNS doesn't support updating a view.
                 // Descriptions and policy tags are applied in a single REST API call,
@@ -2800,11 +2808,14 @@ impl AdapterImpl {
                 ]);
 
                 let ctx = query_ctx_from_state(state)?;
+                let sql = format!(
+                    "-- adapter.update_columns via BigQuery REST API on `{database}.{schema}.{table}`"
+                );
                 self.engine().execute_with_options(
                     Some(state),
                     &ctx,
                     conn,
-                    "none",
+                    &sql,
                     options,
                     false,
                     token,

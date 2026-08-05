@@ -11,7 +11,7 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         &str, // version
     ),
     &str, // checksum
-); 221] = [
+); 226] = [
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "07c3a53a87d2304f37bcb5dedb9596432c5fed8e7f3403dfa9f1d5912e523aa8",
@@ -39,6 +39,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.16"),
         "153a80ed3ff94f19362bb5e7cd556a03fbb64d3a009c7c06b31e8c05a2a5cda8",
+    ),
+    (
+        ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.17"),
+        "d398066b9290ca0564d302a7905e82187680981e0ac603a511d892cf6b31cdd2",
     ),
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.8"),
@@ -77,6 +81,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         "4ef95bf4c0ca3c26ffc992091e46a6ff0593eacf8ef27bb608ea43a9d525e2df",
     ),
     (
+        ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.17"),
+        "bf7a70a24875b1e0f5d3830eba9d56d47039877e588201fef894d08792def4d6",
+    ),
+    (
         ("bigquery", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.21.8"),
         "346f3a916575f08bdba98d6dd6bc69df5d70d197e614cca25213ec839a4bb1b4",
     ),
@@ -111,6 +119,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.16"),
         "ac0fa9cf98296bdb8985df84c8bdcf60b8cb9b66cd262a587005dc8b08c30543",
+    ),
+    (
+        ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.17"),
+        "a5bbd1aa9f61830d0f4a584e43eb8da82854a2879e551566875cd93944baced0",
     ),
     (
         ("bigquery", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.21.8"),
@@ -149,6 +161,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         "ee830706345e68ee484ee7d4f7dbe830c90b48f2f1fc0832f3fdc47eb09a9d4b",
     ),
     (
+        ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.17"),
+        "5949adac13905f7e1efc483df53e690f315ccb6747690a3c042cd98fd89675a4",
+    ),
+    (
         ("bigquery", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.21.8"),
         "9d1ff67cde78b73bd5cc28b2f5ab4b853c3b4b598d99f7c9f1140b8111bf126b",
     ),
@@ -183,6 +199,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.16"),
         "09497a7dc4d37486ec02eb69b9c876cd20836fb354aea7434f3e66711f76bf2b",
+    ),
+    (
+        ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.17"),
+        "edaa8848d0f54a5a7119fa5ea1d7ecf7aee0c5e68713e28e476812666aaa5981",
     ),
     (
         ("bigquery", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.21.8"),

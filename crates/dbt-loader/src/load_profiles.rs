@@ -89,6 +89,7 @@ pub fn load_profiles(
     })?;
 
     let defer_to_target = profile_defer_to_target(&resolved.credentials);
+    let allow_clones = target_allow_clones(&resolved.credentials);
 
     // Convert the rendered credentials mapping into a typed DbConfig
     let credentials_value = dbt_yaml::Value::Mapping(resolved.credentials, Span::default());
@@ -144,6 +145,7 @@ pub fn load_profiles(
         profile: profile.into_inner(),
         target: resolved.target_name,
         defer_to_target,
+        allow_clones,
         db_config,
         alt_target_db_config,
         relative_profile_path,
@@ -155,6 +157,18 @@ fn profile_defer_to_target(credentials: &dbt_yaml::Mapping) -> Option<String> {
     match credentials.get("defer_to_target") {
         Some(dbt_yaml::Value::String(target, _)) if !target.is_empty() => Some(target.clone()),
         _ => None,
+    }
+}
+
+/// Reads the active target's `allow_clones` setting straight from its
+/// `outputs.<target>` block in profiles.yml, ahead of typed `DbConfig` parsing.
+fn target_allow_clones(credentials: &dbt_yaml::Mapping) -> bool {
+    match credentials.get("allow_clones") {
+        Some(dbt_yaml::Value::Bool(allow_clones, _)) => *allow_clones,
+        Some(dbt_yaml::Value::String(value, _)) => {
+            matches!(value.to_ascii_lowercase().as_str(), "true")
+        }
+        _ => true, //if not specified, defaults to true
     }
 }
 
@@ -216,5 +230,29 @@ mod tests {
             .render_str("{{ tojson({'a': 1}) }}", &penv.ctx, &[])
             .expect("tojson should be registered for loader profile resolution");
         assert!(out.contains("\"a\""), "unexpected tojson output: {out}");
+    }
+
+    #[test]
+    fn target_allow_clones_defaults_to_true() {
+        let credentials = dbt_yaml::Mapping::new();
+        assert!(target_allow_clones(&credentials));
+    }
+
+    #[test]
+    fn target_allow_clones_reads_bool_value() {
+        let credentials = dbt_yaml::Mapping::from_iter([(
+            "allow_clones".into(),
+            dbt_yaml::Value::Bool(false, Span::default()),
+        )]);
+        assert!(!target_allow_clones(&credentials));
+    }
+
+    #[test]
+    fn target_allow_clones_reads_string_value() {
+        let credentials = dbt_yaml::Mapping::from_iter([(
+            "allow_clones".into(),
+            dbt_yaml::Value::String("false".to_string(), Span::default()),
+        )]);
+        assert!(!target_allow_clones(&credentials));
     }
 }

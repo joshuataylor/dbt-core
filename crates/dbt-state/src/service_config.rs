@@ -590,6 +590,7 @@ mod tests {
             profile: "default".to_string(),
             target: target.to_string(),
             defer_to_target: defer_to_target.map(|target| target.to_string()),
+            allow_clones: true,
             db_config: DbConfig::DuckDB(Box::<DuckDbConfig>::default()),
             alt_target_db_config: None,
             schema: "dbt_test".to_string(),

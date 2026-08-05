@@ -2994,9 +2994,13 @@ async fn build_sql_context(
 
     let stale_upstream_policy = stale_upstream_policy_for_node(node);
 
-    let is_targeting_prod = config.is_defer_to_target(ctx.dbt_profile());
-    let clone_chain_depth_limit =
-        clone_chain_depth_limit_for_adapter(ctx.adapter_type(), is_targeting_prod);
+    let active_profile = ctx.dbt_profile();
+    let is_targeting_prod = config.is_defer_to_target(active_profile);
+    let clone_chain_depth_limit = clone_chain_depth_limit_for_adapter(
+        ctx.adapter_type(),
+        is_targeting_prod,
+        active_profile.allow_clones,
+    );
 
     Ok(BuiltSqlRunCacheContext {
         request: SqlRunCacheRequestContext {
@@ -3188,7 +3192,14 @@ fn stale_upstream_policy_for_node(
 pub(crate) fn clone_chain_depth_limit_for_adapter(
     adapter_type: AdapterType,
     is_targeting_prod: bool,
+    allow_clones: bool,
 ) -> Option<i64> {
+    // if cloning is disabled by the active target's config, send a limit of 0 to
+    // exclude clone candidates regardless of adapter
+    if !allow_clones {
+        return Some(0);
+    }
+
     // the Python implementation hardcodes the default on each adapter
     // ref: https://github.com/fivetran/query-cache/blob/14dddc260082af4bc6a9800743ddbe5ccb03ba67/clients/dbt_state/src/dbt_state/run_cache.py#L1911
     match adapter_type {
@@ -7297,6 +7308,7 @@ mod tests {
                 profile: "default".to_string(),
                 target: "dev".to_string(),
                 defer_to_target: None,
+                allow_clones: true,
                 db_config: DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default()),
                 alt_target_db_config: None,
                 schema: "dbt_test".to_string(),
@@ -8012,11 +8024,11 @@ mod tests {
     #[test]
     fn clone_chain_depth_limit_for_adapter_returns_n_minus_1_for_prod() {
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, true),
             Some(0)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, true, true),
             Some(2)
         );
     }
@@ -8024,11 +8036,11 @@ mod tests {
     #[test]
     fn clone_chain_depth_limit_for_adapter_returns_default_for_non_prod() {
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, false, true),
             Some(1)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false, true),
             Some(3)
         );
     }
@@ -8036,12 +8048,34 @@ mod tests {
     #[test]
     fn clone_chain_depth_limit_for_adapter_none_for_adapters_with_no_limits() {
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true, true),
             None
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false, true),
             None
+        );
+    }
+
+    #[test]
+    fn clone_chain_depth_limit_for_adapter_zero_when_clones_disallowed() {
+        // allow_clones=false overrides to 0 regardless of adapter or prod/dev direction,
+        // including adapters that otherwise have no default limit at all.
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, false),
+            Some(0)
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false, false),
+            Some(0)
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true, false),
+            Some(0)
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false, false),
+            Some(0)
         );
     }
 

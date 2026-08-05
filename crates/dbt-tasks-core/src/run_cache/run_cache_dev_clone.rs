@@ -420,7 +420,11 @@ async fn prepare_dev_clone_request(
         labels: node_identity(candidate.local()).labels(),
         clone_source_table_type: candidate.clone_source_table_type(ctx.adapter_type()),
         table_properties: candidate.table_properties(),
-        clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(ctx.adapter_type(), false),
+        clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(
+            ctx.adapter_type(),
+            false,
+            ctx.dbt_profile().allow_clones,
+        ),
     }
     .into_proto();
 

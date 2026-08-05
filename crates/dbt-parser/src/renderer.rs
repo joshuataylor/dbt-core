@@ -4,7 +4,9 @@ use crate::dbt_namespace::DbtNamespace;
 use crate::dbt_project_config::ProjectConfigResolver;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::sql_file_info::SqlFileInfo;
-use crate::utils::{get_node_fqn, register_duplicate_resource, trigger_duplicate_errors};
+use crate::utils::{
+    get_node_fqn, get_snapshot_fqn, register_duplicate_resource, trigger_duplicate_errors,
+};
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{DBT_SNAPSHOTS_DIR_NAME, DBT_TARGET_DIR_NAME, PARSING};
@@ -285,6 +287,7 @@ where
         config_resolver,
         resource_paths,
         package_quoting,
+        uses_snapshot_fqn,
     } = &**inner;
 
     token.check_cancellation()?;
@@ -317,18 +320,33 @@ where
 
     let model_name = ref_name.to_string();
 
-    let fqn = get_node_fqn(
-        package_name,
-        dbt_asset.path.clone(),
-        vec![model_name.clone()],
-        resource_paths,
-    );
-    let original_fqn = get_node_fqn(
-        package_name,
-        dbt_asset.original_path.clone(),
-        vec![model_name.clone()],
-        resource_paths,
-    );
+    let (fqn, original_fqn) = if *uses_snapshot_fqn {
+        // Snapshots have a single, definition-style-aware fqn; it already reads
+        // from the original path where that matters, so both roles use it.
+        let fqn = get_snapshot_fqn(
+            package_name,
+            &dbt_asset.path,
+            &dbt_asset.original_path,
+            &model_name,
+            resource_paths,
+        );
+        (fqn.clone(), fqn)
+    } else {
+        (
+            get_node_fqn(
+                package_name,
+                dbt_asset.path.clone(),
+                vec![model_name.clone()],
+                resource_paths,
+            ),
+            get_node_fqn(
+                package_name,
+                dbt_asset.original_path.clone(),
+                vec![model_name.clone()],
+                resource_paths,
+            ),
+        )
+    };
 
     let model_properties_config = maybe_model.as_ref().and_then(|m| m.get_config());
     let properties_configs: &[Option<&T>] =
@@ -667,6 +685,13 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     pub resource_paths: Vec<String>,
     /// The quoting for the package
     pub package_quoting: DbtQuoting,
+    /// Derive fqns with [`get_snapshot_fqn`] instead of the generic path + node
+    /// name rule. Only snapshots do this: dbt-core keeps the source filename stem
+    /// as an fqn segment for block-style snapshots, and `dbt_project.yml` config
+    /// is applied off that fqn. Without this the renderer would resolve config
+    /// from the rewritten `{snapshot_name}.sql` stub path and disagree with both
+    /// dbt-core and the fqn stored on the node.
+    pub uses_snapshot_fqn: bool,
 }
 
 /// Outer context for rendering sql files

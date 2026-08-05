@@ -18,8 +18,8 @@ use crate::resolve::resolve_utils::{
 use crate::resolve::yaml_field_utils;
 use crate::sql_file_info::SqlFileInfo;
 use crate::utils::{
-    RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
-    get_original_file_path, parse_unrendered_config, update_node_relation_components,
+    RelationComponents, extract_resource_config_from_raw_project, get_original_file_path,
+    get_snapshot_fqn, parse_unrendered_config, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
@@ -300,16 +300,19 @@ pub async fn resolve_snapshots(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             package_quoting,
+            uses_snapshot_fqn: true,
             base_ctx: base_ctx.clone(),
             package_name: package_name.to_string(),
             adapter_type,
             database: database.to_string(),
             schema: schema.to_string(),
+            // Must match the resource paths used for the node's own fqn below,
+            // or the config the renderer resolves keys off a different path.
             resource_paths: package
                 .dbt_project
                 .snapshot_paths
                 .as_ref()
-                .unwrap_or(&vec![])
+                .unwrap_or(&default_snapshots_path)
                 .clone(),
         }),
         jinja_env: jinja_env.clone(),
@@ -396,55 +399,21 @@ pub async fn resolve_snapshots(
                 snapshot_config.tags.inner().clone().map(|tags| tags.into()),
             )?;
 
-            // dbt-core builds snapshot fqns differently for the two definition
-            // styles, so mirror both to keep `state:modified` comparisons against
-            // a dbt-core-produced manifest from seeing a spurious fqn difference:
-            //
-            //   * Block-style (`{% snapshot %}` in a .sql file):
-            //     `SnapshotParser.get_fqn` keeps the original filename stem ->
-            //     `[pkg, ..dirs, file_stem, block_name]`.
-            //   * YAML-defined: the generic `get_fqn_prefix` drops the filename
-            //     entirely -> `[pkg, ..dirs, snapshot_name]`.
-            //
-            // For block-style we must consult the original file path, since fs
-            // rewrites the stub file to `{snapshot_name}.sql` and the source
-            // filename stem can differ from the block name. For YAML-defined
-            // snapshots the rewritten stub path (`dbt_asset.path`) already encodes
-            // the correct directory structure under the snapshots dir and carries
-            // no source filename to leak, so use it as-is.
+            // Mirror dbt-core's per-definition-style snapshot fqn so that
+            // `state:modified` comparisons against a dbt-core-produced manifest
+            // don't see a spurious fqn difference. See `get_snapshot_fqn`.
             let snapshot_paths = package
                 .dbt_project
                 .snapshot_paths
                 .as_ref()
                 .unwrap_or(&default_snapshots_path);
-            let is_yaml_defined = dbt_asset
-                .original_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| {
-                    ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
-                });
-            let fqn = if is_yaml_defined {
-                get_node_fqn(
-                    &package_name,
-                    dbt_asset.path.clone(),
-                    vec![snapshot_name.to_string()],
-                    snapshot_paths,
-                )
-            } else {
-                let original_file_stem =
-                    strip_resource_paths_from_ref_path(&dbt_asset.original_path, snapshot_paths)
-                        .file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .unwrap_or(snapshot_name)
-                        .to_string();
-                get_node_fqn(
-                    &package_name,
-                    dbt_asset.original_path.clone(),
-                    vec![original_file_stem, snapshot_name.to_string()],
-                    snapshot_paths,
-                )
-            };
+            let fqn = get_snapshot_fqn(
+                &package_name,
+                &dbt_asset.path,
+                &dbt_asset.original_path,
+                snapshot_name,
+                snapshot_paths,
+            );
 
             let static_analysis = snapshot_config.static_analysis.clone();
             check_node_static_analysis(

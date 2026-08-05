@@ -158,6 +158,59 @@ pub fn get_node_fqn(
     fqn
 }
 
+/// generate the fqn for a snapshot
+///
+/// dbt-core builds snapshot fqns differently for the two definition styles, and
+/// that fqn drives both node selection and `dbt_project.yml` config application:
+///
+///   * Block-style (`{% snapshot %}` in a .sql file): `SnapshotParser.get_fqn`
+///     keeps the original filename stem -> `[pkg, ..dirs, file_stem, block_name]`.
+///   * YAML-defined: the generic `get_fqn_prefix` drops the filename entirely ->
+///     `[pkg, ..dirs, snapshot_name]`.
+///
+/// For block-style we must consult the original file path, since fs rewrites the
+/// stub file to `{snapshot_name}.sql` and the source filename stem can differ from
+/// the block name. For YAML-defined snapshots the rewritten stub path (`path`)
+/// already encodes the correct directory structure under the snapshots dir and
+/// carries no source filename to leak, so use it as-is.
+///
+/// Both the renderer (which resolves the project config) and the snapshot resolver
+/// (which stores the fqn on the node) must call this, or the two disagree about
+/// which `snapshots:` config paths apply.
+pub fn get_snapshot_fqn(
+    package_name: &str,
+    path: &Path,
+    original_path: &Path,
+    snapshot_name: &str,
+    snapshot_paths: &[String],
+) -> Vec<String> {
+    let is_yaml_defined = original_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"));
+
+    if is_yaml_defined {
+        get_node_fqn(
+            package_name,
+            path.to_path_buf(),
+            vec![snapshot_name.to_string()],
+            snapshot_paths,
+        )
+    } else {
+        let original_file_stem = strip_resource_paths_from_ref_path(original_path, snapshot_paths)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(snapshot_name)
+            .to_string();
+        get_node_fqn(
+            package_name,
+            original_path.to_path_buf(),
+            vec![original_file_stem, snapshot_name.to_string()],
+            snapshot_paths,
+        )
+    }
+}
+
 // TODO: Versions need to have explicit params (not just additional_properties)
 // TODO: We need to propgate column test logic correctly for versions
 /// Split schema model object to multiple versions if provided

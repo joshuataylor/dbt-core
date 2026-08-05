@@ -340,7 +340,7 @@ pub trait CliExtensionHooks: Send + Sync {
         task_runner_ctx: Option<&TaskRunnerCtx>,
         schema_store: &Arc<dyn SchemaStoreTrait>,
         data_store: &Arc<dyn DataStoreTrait>,
-        map_compiled_sql: &HashMap<String, Option<String>>,
+        map_compiled_sql: &HashMap<&str, Option<&str>>,
         feature_stack: &Arc<FeatureStack>,
         token: &CancellationToken,
     ) -> FsResult<()>;
@@ -527,7 +527,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         _task_runner_ctx: Option<&TaskRunnerCtx>,
         _schema_store: &Arc<dyn SchemaStoreTrait>,
         _data_store: &Arc<dyn DataStoreTrait>,
-        _map_compiled_sql: &HashMap<String, Option<String>>,
+        _map_compiled_sql: &HashMap<&str, Option<&str>>,
         _feature_stack: &Arc<FeatureStack>,
         _token: &CancellationToken,
     ) -> FsResult<()> {

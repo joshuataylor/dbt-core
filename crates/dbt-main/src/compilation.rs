@@ -43,7 +43,7 @@ use dbt_tasks_core::{
     metricflow::MetricflowClient,
     run_cache::run_cache_service::run_cache_service_after_run_failed,
     static_analysis_buckets::{StaticAnalysisBuckets, build_refresh_intervals},
-    utils::{write_run_results_json, write_run_results_json_or_warn},
+    utils::{build_run_results_artifact, write_run_results_json, write_run_results_json_or_warn},
 };
 
 use dbt_common::{
@@ -68,8 +68,8 @@ use dbt_metadata::file_registry::CompleteStateWithKind;
 use dbt_schemas::{
     filter::RunFilter,
     schemas::{
-        Nodes, ResolvedCloudConfig, common::ResolvedQuoting, manifest::DbtManifestV12,
-        profiles::Execute, project::DbtProject,
+        DbtCommandExecutionArtifacts, Nodes, ResolvedCloudConfig, common::ResolvedQuoting,
+        manifest::DbtManifestV12, profiles::Execute, project::DbtProject,
         semantic_layer::semantic_manifest::SemanticManifest,
     },
     state::{CacheState, DbtPackage, DbtState, Macros, ModelStatus, ResolverState},
@@ -557,7 +557,11 @@ impl<'a> CompilationPhasesExecutor<'a> {
                         batch_results: Default::default(),
                     };
                     if self.arg.write_json {
-                        write_run_results_json_or_warn(&error_stats, self.arg.as_ref());
+                        write_run_results_json_or_warn(
+                            // TODO: should also be captured by the caller?
+                            &build_run_results_artifact(&error_stats, self.arg.as_ref()),
+                            self.arg.as_ref(),
+                        );
                     }
                     if self.arg.write_metadata {
                         crate::utils::write_runtime_results_parquet(
@@ -884,6 +888,7 @@ impl DbtProjectCompilation {
         jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
         token: &CancellationToken,
         version_check_handle: &mut Option<tokio::task::JoinHandle<Option<String>>>,
+        artifacts_sink: &mut DbtCommandExecutionArtifacts,
     ) -> FsResult<(
         DbtProjectCompilation,
         JinjaEnv,
@@ -900,6 +905,7 @@ impl DbtProjectCompilation {
                 jinja_type_checking_event_listener_factory,
                 token,
                 version_check_handle,
+                artifacts_sink,
             )
             .await;
         }
@@ -931,6 +937,7 @@ impl DbtProjectCompilation {
             None,
             token,
             version_check_handle,
+            artifacts_sink,
         )
         .await
     }
@@ -947,6 +954,7 @@ impl DbtProjectCompilation {
         jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
         token: &CancellationToken,
         version_check_handle: &mut Option<tokio::task::JoinHandle<Option<String>>>,
+        artifacts_sink: &mut DbtCommandExecutionArtifacts,
     ) -> FsResult<(
         DbtProjectCompilation,
         JinjaEnv,
@@ -992,6 +1000,7 @@ impl DbtProjectCompilation {
                         None,
                         token,
                         version_check_handle,
+                        artifacts_sink,
                     )
                     .await;
                 }
@@ -1066,6 +1075,7 @@ impl DbtProjectCompilation {
             maybe_prev.clone(),
             token,
             version_check_handle,
+            artifacts_sink,
         )
         .await;
 
@@ -1102,6 +1112,7 @@ impl DbtProjectCompilation {
                             None,
                             token,
                             version_check_handle,
+                            artifacts_sink,
                         )
                         .await;
                     }
@@ -1121,6 +1132,7 @@ impl DbtProjectCompilation {
                                 None,
                                 token,
                                 version_check_handle,
+                                artifacts_sink,
                             )
                             .await;
                         }
@@ -1138,6 +1150,7 @@ impl DbtProjectCompilation {
                         None,
                         token,
                         version_check_handle,
+                        artifacts_sink,
                     )
                     .await
                 }
@@ -1160,6 +1173,7 @@ impl DbtProjectCompilation {
                     None,
                     token,
                     version_check_handle,
+                    artifacts_sink,
                 )
                 .await
             }
@@ -1209,6 +1223,7 @@ impl DbtProjectCompilation {
             prev_compilation,
             token,
             &mut None,
+            &mut Default::default(),
         )
         .await
     }
@@ -1227,6 +1242,7 @@ impl DbtProjectCompilation {
         maybe_prev_compilation: Option<Arc<DbtProjectCompilation>>,
         token: &CancellationToken,
         version_check_handle: &mut Option<tokio::task::JoinHandle<Option<String>>>,
+        artifacts_sink: &mut DbtCommandExecutionArtifacts,
     ) -> FsResult<(
         DbtProjectCompilation,
         JinjaEnv,
@@ -1328,7 +1344,7 @@ impl DbtProjectCompilation {
             };
         token.check_cancellation()?;
 
-        executor
+        match executor
             .maybe_write_json_and_exit(
                 feature_stack,
                 &loaded_project,
@@ -1339,7 +1355,19 @@ impl DbtProjectCompilation {
                 &invocation_id,
                 &jinja_env,
             )
-            .await?;
+            .await
+        {
+            // `compile --write-catalog` returns Ok here, so the catalog has to be
+            // taken on this path too or it is never surfaced.
+            Ok(()) => artifacts_sink.catalog = executor.catalog_artifact.take(),
+            Err(e) => {
+                // Capture artifacts if possible before early exit
+                artifacts_sink.manifest = executor.lazy_dbt_manifest.take();
+                artifacts_sink.catalog = executor.catalog_artifact.take();
+
+                return Err(e);
+            }
+        };
         token.check_cancellation()?;
 
         let mut cloud_defer_path: Option<PathBuf> = None;
@@ -2028,7 +2056,8 @@ impl DbtProjectCompilation {
                 batch_results: Default::default(),
             };
             if arg.write_json {
-                write_run_results_json(&run_stats, arg)?;
+                // TODO: should also be captured by the caller?
+                write_run_results_json(&build_run_results_artifact(&run_stats, arg), arg)?;
             }
 
             return Err(return_exit_code_from_error_counter());

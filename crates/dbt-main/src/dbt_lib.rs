@@ -22,7 +22,7 @@ use dbt_common::{
         INSTALLING, VALIDATING,
     },
     create_root_info_span, fs_err,
-    io_args::{DisplayFormat, EvalArgs, IoArgs, Phases, ShowOptions, SystemArgs},
+    io_args::{DisplayFormat, EvalArgs, IoArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
     node_selector::IndirectSelection,
     path::get_target_write_path,
     pretty_string::{GREEN, RED, color_quotes},
@@ -65,6 +65,7 @@ use dbt_loader::{
 };
 use dbt_login::{execute_login, execute_login_status};
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
+use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
 use dbt_schemas::{
     man::execute_man_command,
     schemas::legacy_catalog::{DbtCatalog, build_catalog},
@@ -79,8 +80,9 @@ use dbt_schemas::{
 };
 use dbt_state::explain::{StateExplainOptions, execute_state_explain};
 use dbt_tasks_core::{
-    RunTaskResults, task_runner_hooks::TaskRunnerHooksFactory,
-    utils::write_run_results_json_or_warn,
+    RunTaskResults,
+    task_runner_hooks::TaskRunnerHooksFactory,
+    utils::{build_run_results_artifact, write_run_results_json_or_warn},
 };
 use dbt_tasks_sa::base_context::build_base_context;
 use dbt_telemetry::ArtifactType;
@@ -109,22 +111,90 @@ use crate::{
 
 // ------------------------------------------------------------------------------------------------
 
+/// A failed dbt invocation together with any artifacts produced before it failed.
+pub struct DbtCommandExecutionFailure {
+    pub error: Box<FsError>,
+    pub artifacts: DbtCommandExecutionArtifacts,
+}
+
+impl std::fmt::Debug for DbtCommandExecutionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbtCommandExecutionFailure")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for DbtCommandExecutionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for DbtCommandExecutionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+
+impl From<DbtCommandExecutionFailure> for Box<FsError> {
+    fn from(failure: DbtCommandExecutionFailure) -> Self {
+        failure.error
+    }
+}
+
+impl From<Box<FsError>> for DbtCommandExecutionFailure {
+    fn from(error: Box<FsError>) -> Self {
+        Self {
+            error,
+            artifacts: DbtCommandExecutionArtifacts::default(),
+        }
+    }
+}
+
+pub type DbtCommandExecutionResult =
+    Result<DbtCommandExecutionArtifacts, DbtCommandExecutionFailure>;
+
+/// Runs a full invocation in a multi-invocation execution environment.
+///
+/// Flushes but doesn't shutdown telemtry if it is enabled.
+///
+/// Primary test entry point. Embedders that need the captured artifacts (the
+/// Python binding) call [`setup_and_execute_fs`] directly instead.
 pub async fn execute_fs(
     system_arg: SystemArgs,
     cli: Box<Cli>,
     feature_stack: Arc<FeatureStack>,
     token: CancellationToken,
 ) -> FsResult<()> {
-    execute_fs_and_shutdown(system_arg, cli, false, feature_stack, token).await
+    setup_and_execute_fs(system_arg, cli, false, feature_stack, token)
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
 }
 
+/// Runs a full invocation for one-off execution, forcing full shutdown & discarding returned artifacts.
+///
+/// Primary cli entrypoint.
 pub async fn execute_fs_and_shutdown(
+    system_arg: SystemArgs,
+    cli: Box<Cli>,
+    feature_stack: Arc<FeatureStack>,
+    token: CancellationToken,
+) -> FsResult<()> {
+    setup_and_execute_fs(system_arg, cli, true, feature_stack, token)
+        .await
+        .map(|_| ())
+        .map_err(Into::into)
+}
+
+pub async fn setup_and_execute_fs(
     system_arg: SystemArgs,
     cli: Box<Cli>,
     shutdown: bool,
     feature_stack: Arc<FeatureStack>,
     token: CancellationToken,
-) -> FsResult<()> {
+) -> DbtCommandExecutionResult {
     // Resolve EvalArgs from SystemArgs and Cli. This will create out folders,
     // for commands that need it and canonicalize the paths. May error on invalid paths.
     // If this fails (e.g., not in a dbt project directory), print a concise error and exit 1.
@@ -172,7 +242,11 @@ pub async fn execute_fs_and_shutdown(
 
     // Create the Invocation span as a new root
     let invocation_span = create_root_info_span(create_invocation_attributes("dbt", &eval_arg));
-    let result = do_execute_fs(&eval_arg, cli, feature_stack, &token)
+
+    // We are forced to use a mutable argument, because we want to recover artifcats
+    // even when execution is short-circuited on Err and thus can't return it as the result type
+    let mut artifacts_sink = DbtCommandExecutionArtifacts::default();
+    let result = do_execute_fs(&eval_arg, cli, &mut artifacts_sink, feature_stack, &token)
         .instrument(invocation_span.clone())
         .await;
 
@@ -232,13 +306,25 @@ is false. This should not happen."
         .unwrap();
     }
 
-    result
+    // Hand the captured artifacts (if any) to the caller. Phase-checkpoint
+    // commands (parse, list, ...) signal success via Err(exit_status == 0) — a
+    // success sentinel — after the artifacts have been captured, so treat that
+    // the same as Ok here. Real errors propagate unchanged.
+    match result {
+        Ok(()) => Ok(artifacts_sink),
+        Err(e) if e.exit_status() == Some(0) => Ok(artifacts_sink),
+        Err(error) => Err(DbtCommandExecutionFailure {
+            error,
+            artifacts: artifacts_sink,
+        }),
+    }
 }
 
 #[allow(clippy::cognitive_complexity)]
 async fn do_execute_fs(
     eval_arg: &EvalArgs,
     cli: Box<Cli>,
+    artifacts_sink: &mut DbtCommandExecutionArtifacts,
     feature_stack: Arc<FeatureStack>,
     token: &CancellationToken,
 ) -> FsResult<()> {
@@ -445,13 +531,22 @@ async fn do_execute_fs(
     }
     // Handle project specific commands
     let hooks_factory = Arc::clone(&feature_stack.task_runner.hooks_factory);
-    execute_setup_and_all_phases(eval_arg, &cli, feature_stack, hooks_factory, token).await
+    execute_setup_and_all_phases(
+        eval_arg,
+        &cli,
+        artifacts_sink,
+        feature_stack,
+        hooks_factory,
+        token,
+    )
+    .await
 }
 
 #[allow(clippy::cognitive_complexity)]
 pub async fn execute_setup_and_all_phases(
     eval_arg: &EvalArgs,
     cli: &Cli,
+    artifacts_sink: &mut DbtCommandExecutionArtifacts,
     feature_stack: Arc<FeatureStack>,
     task_runner_hooks_factory: Arc<dyn TaskRunnerHooksFactory>,
     token: &CancellationToken,
@@ -473,10 +568,14 @@ pub async fn execute_setup_and_all_phases(
         AllPhasesExecutor::new(arg, cli, feature_stack, task_runner_hooks_factory)
     };
 
-    let result = match executor.execute_all_phases(token).await {
+    let phases_result = executor.execute_all_phases(token).await;
+    let result = match phases_result {
         Ok(()) => Ok(()),
         Err(e) if e.exit_status().is_some() => Err(e),
         Err(e) => {
+            // Keep the rendered message for embedders: flattening below drops it,
+            // and `exit_with_status` carries no context of its own.
+            executor.captured_artifacts.error_message = Some(e.pretty());
             emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
             Err(FsError::exit_with_status(1))
         }
@@ -502,6 +601,9 @@ pub async fn execute_setup_and_all_phases(
             eval_arg.io.status_reporter.as_ref(),
         );
     }
+
+    // Hand the captured artifacts (if any) up to the caller via the sink.
+    *artifacts_sink = executor.captured_artifacts;
 
     result
 }
@@ -560,6 +662,7 @@ struct AllPhasesExecutor<'a> {
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     task_runner_hooks_factory: Arc<dyn TaskRunnerHooksFactory>,
     version_check_handle: Option<tokio::task::JoinHandle<Option<String>>>,
+    captured_artifacts: DbtCommandExecutionArtifacts,
     /// Previous batch results from retry, to skip already-successful overloads
     previous_batch_results: HashMap<String, dbt_schemas::schemas::BatchResults>,
 }
@@ -585,6 +688,7 @@ impl<'a> AllPhasesExecutor<'a> {
             jinja_type_checking_event_listener_factory,
             task_runner_hooks_factory,
             version_check_handle: None,
+            captured_artifacts: DbtCommandExecutionArtifacts::default(),
             previous_batch_results: Default::default(),
         }
     }
@@ -704,6 +808,7 @@ impl<'a> AllPhasesExecutor<'a> {
             .instrumentation
             .event_emitter
             .as_ref();
+
         DbtProjectCompilation::initialize_cli(
             &self.feature_stack,
             self.arg.as_ref(),
@@ -713,6 +818,10 @@ impl<'a> AllPhasesExecutor<'a> {
                 as Arc<dyn JinjaTypeCheckingEventListenerFactory>,
             token,
             &mut self.version_check_handle,
+            // TODO: Same ugly pattern as artifacts sink. `initialize` needs to be refactored
+            // to avoid early exit with side-effect path within it and instead always return
+            // artifacts to be written by executor at the end. Then this may be removed
+            &mut self.captured_artifacts,
         )
         .await
     }
@@ -804,7 +913,7 @@ impl<'a> AllPhasesExecutor<'a> {
         &self,
         resolved_state: &ResolverState,
         schedule: &Schedule<String>,
-        map_compiled_sql: &HashMap<String, Option<String>>,
+        map_compiled_sql: &HashMap<&str, Option<&str>>,
     ) -> FsResult<()> {
         if !matches!(
             &self.cli.command,
@@ -852,10 +961,10 @@ impl<'a> AllPhasesExecutor<'a> {
             return Ok(());
         }
 
-        let compiled_sql = map_compiled_sql
-            .get(unique_id)
+        let compiled_sql: Cow<str> = map_compiled_sql
+            .get(unique_id.as_str())
             .and_then(Option::as_deref)
-            .map(|s| s.to_string())
+            .map(|s| s.into())
             .or_else(|| {
                 let path = get_target_write_path(
                     &self.arg.io.in_dir,
@@ -864,7 +973,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     &model.__common_attr__.path,
                     &model.__common_attr__.original_file_path,
                 );
-                stdfs::read_to_string(&path).ok()
+                stdfs::read_to_string(&path).ok().map(Cow::Owned)
             })
             .ok_or_else(|| {
                 fs_err!(
@@ -943,7 +1052,7 @@ impl<'a> AllPhasesExecutor<'a> {
         base_context: &BTreeMap<String, Value>,
         resolved_state: &ResolverState,
         adapter: &Arc<Adapter>,
-    ) -> FsResult<()> {
+    ) -> FsResult<Option<DbtCatalog>> {
         debug_assert!(self.arg.write_json);
 
         if self.arg.write_catalog && !self.arg.write_metadata {
@@ -952,20 +1061,24 @@ impl<'a> AllPhasesExecutor<'a> {
                 .expect("Expected implements MetadataAdapter");
             let relations = metadata_adapter
                 .create_relations_from_executed_nodes(resolved_state, &run_task_results.stats.run);
-            let _ = write_catalog_json(
-                adapter,
-                resolved_state,
-                relations,
-                jinja_env,
-                compilation.root_project_name(),
-                base_context,
-                self.arg.as_ref(),
-                20,
-            )
-            .await?;
+            // Returned, not discarded: this is the only fetch on the --write-catalog
+            // without --write-metadata path, so a library caller has no other source.
+            return Ok(Some(
+                write_catalog_json(
+                    adapter,
+                    resolved_state,
+                    relations,
+                    jinja_env,
+                    compilation.root_project_name(),
+                    base_context,
+                    self.arg.as_ref(),
+                    20,
+                )
+                .await?,
+            ));
         }
 
-        Ok(())
+        Ok(None)
     }
 
     #[allow(clippy::cognitive_complexity)]
@@ -1051,17 +1164,31 @@ impl<'a> AllPhasesExecutor<'a> {
             }
         }
 
+        if self.arg.command == FsCommand::List {
+            self.captured_artifacts.list_items = Some(
+                schedule
+                    .show_dbt_nodes(
+                        &compilation.resolved_state.nodes,
+                        ListOutputFormat::Selector,
+                        &[],
+                    )
+                    .into_iter()
+                    .map(|item| item.content)
+                    .collect(),
+            );
+        }
+
+        let run_tasks_result = self
+            .run_tasks(
+                &mut compilation,
+                jinja_env,
+                compilation_cache_changes.as_ref(),
+                schedule.clone(),
+                token,
+            )
+            .await;
         let (run_task_args, run_task_results, jinja_env, adapter, compilation_cache_state) =
-            match self
-                .run_tasks(
-                    &mut compilation,
-                    jinja_env,
-                    compilation_cache_changes.as_ref(),
-                    schedule.clone(),
-                    token,
-                )
-                .await
-            {
+            match run_tasks_result {
                 Ok(result) => result,
                 Err(err) => {
                     // The manifest represents the parsed project state and is always valid after
@@ -1095,20 +1222,37 @@ impl<'a> AllPhasesExecutor<'a> {
                                 nodes: Some(compilation.nodes().clone()),
                                 batch_results: Default::default(),
                             };
-                            write_run_results_json_or_warn(&error_stats, self.arg.as_ref());
+
+                            // Prepare artifact
+                            let run_results_artifact =
+                                build_run_results_artifact(&error_stats, self.arg.as_ref());
+
+                            write_run_results_json_or_warn(
+                                &run_results_artifact,
+                                self.arg.as_ref(),
+                            );
+
+                            // Save artifact for callers
+                            self.captured_artifacts.run_results = Some(run_results_artifact);
+
                             if self.arg.write_metadata {
                                 write_runtime_results_parquet(&error_stats, self.arg.as_ref());
                             }
                         }
 
                         let dbt_manifest = compilation.take_dbt_manifest();
-                        write_artifact_to_file(
+                        if let Err(e) = write_artifact_to_file(
                             &dbt_manifest,
                             ArtifactType::Manifest,
                             &self.arg.io.out_dir,
                             DBT_MANIFEST_JSON,
                             &self.arg.io.in_dir,
-                        )?;
+                        ) {
+                            self.captured_artifacts.manifest = Some(dbt_manifest);
+                            return Err(e);
+                        };
+
+                        self.captured_artifacts.manifest = Some(dbt_manifest);
                     }
                     return Err(err);
                 }
@@ -1116,20 +1260,37 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
+        // Prepare artifact
+        let run_results_artifact =
+            build_run_results_artifact(&run_task_results.stats.run, self.arg.as_ref());
+
         // Write run_results.json eagerly from real stats so that it persists
         // even if post-execution steps (did_run_tasks, update_manifest,
         // save_build_cache, did_compile, etc.) fail before the late write_json() call.
         if self.arg.write_json && self.arg.command != FsCommand::Parse {
-            write_run_results_json_or_warn(&run_task_results.stats.run, self.arg.as_ref());
+            write_run_results_json_or_warn(&run_results_artifact, self.arg.as_ref());
         }
+
+        // Save artifact for callers
+        self.captured_artifacts.run_results = Some(run_results_artifact);
+
         if self.arg.write_metadata {
             write_runtime_results_parquet(&run_task_results.stats.run, self.arg.as_ref());
         }
 
         for s in &run_task_results.storeables {
             let path = self.arg.io.out_dir.join(s.out_dir_relpath());
-            let mut output = stdfs::File::create(&path)?;
-            s.write_results(resolved_state.as_ref(), &mut output)?;
+            let mut output = stdfs::File::create(&path).inspect_err(|_| {
+                self.captured_artifacts
+                    .manifest
+                    .get_or_insert_with(|| compilation.take_dbt_manifest());
+            })?;
+            s.write_results(resolved_state.as_ref(), &mut output)
+                .inspect_err(|_| {
+                    self.captured_artifacts
+                        .manifest
+                        .get_or_insert_with(|| compilation.take_dbt_manifest());
+                })?;
         }
 
         self.feature_stack
@@ -1143,7 +1304,12 @@ impl<'a> AllPhasesExecutor<'a> {
                 resolved_state.as_ref(),
                 token,
             )
-            .await?;
+            .await
+            .inspect_err(|_| {
+                self.captured_artifacts
+                    .manifest
+                    .get_or_insert_with(|| compilation.take_dbt_manifest());
+            })?;
 
         let mut dbt_manifest = compilation.take_dbt_manifest();
         // update_manifest clones the full ResolverState (~3GB for 6k nodes) to merge
@@ -1157,17 +1323,30 @@ impl<'a> AllPhasesExecutor<'a> {
                 .jinja_type_checking_event_listener_factory
                 .all_macro_depends_on();
 
-            Arc::new(update_manifest(
+            match update_manifest(
                 &run_task_args,
                 &type_ops_factory,
                 &schema_store,
                 resolved_state,
                 &macro_depends_on,
                 &mut dbt_manifest,
-            )?)
+            ) {
+                Err(e) => {
+                    self.captured_artifacts.manifest.get_or_insert(dbt_manifest);
+                    return Err(e);
+                }
+                Ok(resolved_state) => Arc::new(resolved_state),
+            }
         } else {
             resolved_state
         };
+
+        // Save updated manifest, overwriting previous one even if it was there (which would be a coding error really)
+        // TODO: above where we do `self.captured_artifacts.manifest.get_or_insert(dbt_manifest)` - this is
+        // defensive tactic to avoid reasoning through all possible control flows. Logically it should never be set if
+        // we reached here, since only parse pahse, which short-circuits writes manifest early. Maybe worth using
+        // debug_aserts! to check for this invariant everwhere we set it in this function...
+        self.captured_artifacts.manifest = Some(dbt_manifest);
 
         // Single warehouse INFORMATION_SCHEMA fetch shared by all catalog consumers.
         // Gated on write_metadata && (write_catalog || write_index): --write-metadata alone
@@ -1199,7 +1378,7 @@ impl<'a> AllPhasesExecutor<'a> {
         };
 
         // Produce parquet metadata epoch files (compile/nodes, compile/columns, cll, etc.).
-        // Must happen before into_map_compiled_sql() consumes the manifest.
+        // Must happen before the manifest is consumed below.
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
             // Catalog epochs fire whenever catalog_data is Some — catalog_data is non-None
             // only when write_metadata && (write_catalog || write_index) && Run|Build,
@@ -1246,7 +1425,10 @@ impl<'a> AllPhasesExecutor<'a> {
             if recomputed_targets.is_empty() {
                 write_metadata_parquet(
                     self.arg.as_ref(),
-                    &dbt_manifest,
+                    self.captured_artifacts
+                        .manifest
+                        .as_ref()
+                        .expect("Unconditionally set earlier"),
                     Some(resolved_state.as_ref()),
                     Some(schema_store.as_ref()),
                     None,
@@ -1258,7 +1440,10 @@ impl<'a> AllPhasesExecutor<'a> {
             } else if !self.arg.write_lineage {
                 write_metadata_parquet(
                     self.arg.as_ref(),
-                    &dbt_manifest,
+                    self.captured_artifacts
+                        .manifest
+                        .as_ref()
+                        .expect("Unconditionally set earlier"),
                     Some(resolved_state.as_ref()),
                     Some(schema_store.as_ref()),
                     Some(&[]),
@@ -1299,7 +1484,10 @@ impl<'a> AllPhasesExecutor<'a> {
                         }
                         write_metadata_parquet(
                             self.arg.as_ref(),
-                            &dbt_manifest,
+                            self.captured_artifacts
+                                .manifest
+                                .as_ref()
+                                .expect("Unconditionally set earlier"),
                             Some(resolved_state.as_ref()),
                             Some(schema_store.as_ref()),
                             Some(&column_lineage),
@@ -1318,7 +1506,10 @@ impl<'a> AllPhasesExecutor<'a> {
                         let empty_targets: HashSet<String> = HashSet::new();
                         write_metadata_parquet(
                             self.arg.as_ref(),
-                            &dbt_manifest,
+                            self.captured_artifacts
+                                .manifest
+                                .as_ref()
+                                .expect("Unconditionally set earlier"),
                             Some(resolved_state.as_ref()),
                             Some(schema_store.as_ref()),
                             Some(&[]),
@@ -1358,6 +1549,9 @@ impl<'a> AllPhasesExecutor<'a> {
                     }
                 }
             }
+
+            // Save catalog
+            self.captured_artifacts.catalog = catalog_data;
 
             // When --write-index is active, convert metadata epochs → snapshot index parquet.
             if self.arg.write_index {
@@ -1402,8 +1596,12 @@ impl<'a> AllPhasesExecutor<'a> {
             }
         }
 
-        // todo: here we clone lots of stuff, but this could also be just the CAS
-        let map_compiled_sql = dbt_manifest.into_map_compiled_sql();
+        let map_compiled_sql = self
+            .captured_artifacts
+            .manifest
+            .as_ref()
+            .expect("Unconditionally set earlier")
+            .into_map_compiled_sql();
 
         if self.arg.io.should_show(ShowOptions::Stats) {
             emit_info_event(
@@ -1482,15 +1680,19 @@ impl<'a> AllPhasesExecutor<'a> {
         // Write run_results.json
         if self.arg.write_json {
             let base_context = build_base_context(&resolved_state, &jinja_env);
-            self.write_json(
-                &run_task_results,
-                &compilation,
-                &jinja_env,
-                &base_context,
-                &resolved_state,
-                &adapter,
-            )
-            .await?;
+            let refetched_catalog = self
+                .write_json(
+                    &run_task_results,
+                    &compilation,
+                    &jinja_env,
+                    &base_context,
+                    &resolved_state,
+                    &adapter,
+                )
+                .await?;
+            if refetched_catalog.is_some() {
+                self.captured_artifacts.catalog = refetched_catalog;
+            }
 
             if matches!(self.arg.command, FsCommand::Run | FsCommand::Build) {
                 upload_artifacts_ingest_if_enabled(

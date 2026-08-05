@@ -7,6 +7,8 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use crate::schemas::InternalDbtNodeAttributes;
 
+use crate::schemas::legacy_catalog::DbtCatalog;
+use crate::schemas::manifest::DbtManifest;
 use crate::schemas::serde::typed_struct_from_json_file;
 
 // Type aliases for clarity
@@ -205,6 +207,23 @@ impl RunResultsArtifact {
     pub fn from_file(path: &Path) -> FsResult<Self> {
         typed_struct_from_json_file(path)
     }
+}
+
+/// In-memory result of dbt command invocation.
+///
+/// Maybe partially populated depending on the command and if execution reached
+/// the point of producing the artifacts.
+#[derive(Default)]
+pub struct DbtCommandExecutionArtifacts {
+    pub manifest: Option<DbtManifest>,
+    pub run_results: Option<RunResultsArtifact>,
+    pub catalog: Option<DbtCatalog>,
+    /// `list`'s selected nodes in selector format.
+    pub list_items: Option<Vec<String>>,
+    /// Rendered message of a real (non-exit-status) error, captured before it is
+    /// flattened to a bare exit status for CLI callers. Embedders surface this;
+    /// the diagnostics also went to the log either way.
+    pub error_message: Option<String>,
 }
 
 #[cfg(test)]

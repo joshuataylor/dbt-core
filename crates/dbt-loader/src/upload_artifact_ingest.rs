@@ -100,16 +100,13 @@ pub async fn upload_artifacts_ingest_if_enabled(
         }
     };
 
-    emit_info_progress_message(
-        ProgressMessage::new_from_action_and_target(
-            "Uploading".to_string(),
-            format!(
-                "artifacts ingest bundle (environment {})",
-                config.environment_id
-            ),
+    emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+        "Uploading".to_string(),
+        format!(
+            "artifacts ingest bundle (environment {})",
+            config.environment_id
         ),
-        io.status_reporter.as_ref(),
-    );
+    ));
 
     let Some(cloud_client) = build_cloud_api_client(&config, io) else {
         return Ok(());
@@ -128,16 +125,13 @@ pub async fn upload_artifacts_ingest_if_enabled(
         return Ok(());
     }
 
-    emit_info_progress_message(
-        ProgressMessage::new_from_action_and_target(
-            "Uploaded".to_string(),
-            format!(
-                "artifacts ingest bundle (environment {})",
-                config.environment_id
-            ),
+    emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+        "Uploaded".to_string(),
+        format!(
+            "artifacts ingest bundle (environment {})",
+            config.environment_id
         ),
-        io.status_reporter.as_ref(),
-    );
+    ));
 
     Ok(())
 }

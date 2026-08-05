@@ -56,13 +56,10 @@ pub fn load_profiles(
         relative_profile_path.clone()
     };
 
-    emit_info_progress_message(
-        ProgressMessage::new_from_action_and_target(
-            "Loading".to_string(),
-            show_path.display().to_string(),
-        ),
-        arg.io.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+        "Loading".to_string(),
+        show_path.display().to_string(),
+    ));
 
     let profile_name = profile.clone().into_inner();
 

@@ -1,12 +1,9 @@
 //! Dbt-specific convenience helpers built on top of the generic tracing emit API.
 
-use std::sync::Arc;
-
 use dbt_error::{ErrorCode, FsError};
 use dbt_telemetry::{LogMessage, ProgressMessage};
 
 use super::fs_error_log::FsErrorLog;
-use crate::io_utils::StatusReporter;
 
 use dbt_tracing::emit::{
     emit_debug_event, emit_error_event, emit_info_event, emit_trace_event, emit_warn_event,
@@ -125,18 +122,7 @@ pub fn emit_strict_parse_error(error: FsError, package_name: Option<impl AsRef<s
 // Progress messages
 /// Emit a regular progress message at INFO level.
 #[track_caller]
-pub fn emit_info_progress_message(
-    message: ProgressMessage,
-    status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
-    if let Some(status_reporter) = status_reporter {
-        status_reporter.show_progress(
-            message.action.as_str(),
-            message.target.as_str(),
-            message.description.as_deref(),
-        );
-    };
-
+pub fn emit_info_progress_message(message: ProgressMessage) {
     emit_info_event(message, None)
 }
 

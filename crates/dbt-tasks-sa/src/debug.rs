@@ -6,7 +6,6 @@ use dbt_adbc::QueryCtx;
 use dbt_agate::MappedSequence;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, LocalExecutionBackendKind};
-use dbt_common::io_utils::StatusReporter;
 use dbt_common::tracing::dbt_emit::emit_info_progress_message;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_compilation::core::DbtLoadedProject;
@@ -50,7 +49,6 @@ fn create_progress_msg(action: &str, target: &str) -> ProgressMessage {
 }
 
 pub struct DebugArgs {
-    pub status_reporter: Option<Arc<dyn StatusReporter>>,
     pub target: Option<String>,
     pub connection: bool,
     pub local_execution_backend: LocalExecutionBackendKind,
@@ -62,7 +60,6 @@ pub struct DebugArgs {
 impl DebugArgs {
     pub fn from_eval_args(arg: &EvalArgs) -> Self {
         Self {
-            status_reporter: arg.io.status_reporter.clone(),
             target: arg.target.clone(),
             connection: arg.connection,
             local_execution_backend: arg.local_execution_backend,
@@ -83,17 +80,11 @@ pub async fn debug(
 
     // profile info
     let profile_display = format!("profile: {}", arg.target.clone().unwrap_or_default());
-    emit_info_progress_message(
-        create_progress_msg(ACTION_DEBUGGING, &profile_display),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &profile_display));
 
     // dbt version
     let dbt_version_display = format!("dbt version: {}", env!("CARGO_PKG_VERSION"));
-    emit_info_progress_message(
-        create_progress_msg(ACTION_DEBUGGING, &dbt_version_display),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &dbt_version_display));
 
     // platform info
     let platform_info_display = format!(
@@ -102,25 +93,22 @@ pub async fn debug(
         std::env::consts::ARCH,
         std::env::consts::FAMILY
     );
-    emit_info_progress_message(
-        create_progress_msg(ACTION_DEBUGGING, &platform_info_display),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(
+        ACTION_DEBUGGING,
+        &platform_info_display,
+    ));
 
     let adapter_type = db_config.adapter_type();
     let execute = Execute::from_compute_flag(arg.local_execution_backend);
     let adapter_info_display = format!("adapter type: {} ({})", adapter_type, execute);
-    emit_info_progress_message(
-        create_progress_msg(ACTION_DEBUGGING, &adapter_info_display),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &adapter_info_display));
 
     // Skip dependency info if --connection is set
     if arg.connection {
-        emit_info_progress_message(
-            create_progress_msg(ACTION_SKIPPED, "steps before connection testing"),
-            arg.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(create_progress_msg(
+            ACTION_SKIPPED,
+            "steps before connection testing",
+        ));
     } else {
         // dependency info
         let dependencies = ["git"];
@@ -135,13 +123,10 @@ pub async fn debug(
             dependency_displays.push(status);
         }
 
-        emit_info_progress_message(
-            create_progress_msg(
-                ACTION_DEBUGGING,
-                &format!("dependencies:\n  {}", dependency_displays.join("\n  ")),
-            ),
-            arg.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(create_progress_msg(
+            ACTION_DEBUGGING,
+            &format!("dependencies:\n  {}", dependency_displays.join("\n  ")),
+        ));
     }
 
     // Format connection details, omitting any secrets via into_connection_mapping().
@@ -152,20 +137,14 @@ pub async fn debug(
         .trim()
         .to_string();
 
-    emit_info_progress_message(
-        create_progress_msg(
-            ACTION_DEBUGGING,
-            &format!("connection:\n  {}", connection_details),
-        ),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(
+        ACTION_DEBUGGING,
+        &format!("connection:\n  {}", connection_details),
+    ));
 
     // Sidecar/DuckDB mode doesn't connect to a remote warehouse; skip the connection test.
     if execute == Execute::Sidecar {
-        emit_info_progress_message(
-            create_progress_msg(ACTION_SKIPPED, "local connection test"),
-            arg.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(create_progress_msg(ACTION_SKIPPED, "local connection test"));
     } else {
         let mut config_as_mapping = db_config.to_mapping().unwrap();
         // set a short timeout for the connection test to fail fast if there are issues
@@ -219,28 +198,22 @@ pub async fn debug(
                     None => "Unable to confirm. Consider enabling the Snowflake system parameter allow_id_token, to open fewer browser tabs during authentication. See https://docs.getdbt.com/docs/local/connect-data-platform/snowflake-setup?version=2.0#supported-authentication-types for more info.".to_string(),
                 };
 
-            emit_info_progress_message(
-                create_progress_msg(
-                    ACTION_DEBUGGING,
-                    &format!(
-                        "externalbrowser connection caching: {}",
-                        allow_token_id_result
-                    ),
-                ),
-                arg.status_reporter.as_ref(),
-            );
-        }
-
-        emit_info_progress_message(
-            create_progress_msg(
+            emit_info_progress_message(create_progress_msg(
                 ACTION_DEBUGGING,
                 &format!(
-                    "connection test: OK{}",
-                    duration_suffix(connection_test_elapsed)
+                    "externalbrowser connection caching: {}",
+                    allow_token_id_result
                 ),
+            ));
+        }
+
+        emit_info_progress_message(create_progress_msg(
+            ACTION_DEBUGGING,
+            &format!(
+                "connection test: OK{}",
+                duration_suffix(connection_test_elapsed)
             ),
-            arg.status_reporter.as_ref(),
-        );
+        ));
     }
 
     // Lake Compute (dbt-compute / MDLS) checks: only when the profile
@@ -256,10 +229,7 @@ pub async fn debug(
     }
 
     if all_debug_checks_passed {
-        emit_info_progress_message(
-            create_progress_msg(ACTION_DEBUGGED, "All checks passed!"),
-            arg.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(create_progress_msg(ACTION_DEBUGGED, "All checks passed!"));
     }
 
     Ok(())
@@ -297,16 +267,13 @@ async fn debug_lake_compute(
                 e
             )
         })?;
-    emit_info_progress_message(
-        create_progress_msg(
-            ACTION_DEBUGGING,
-            &format!(
-                "dbt Compute connection test: OK{}",
-                duration_suffix(alt_connection_started.elapsed())
-            ),
+    emit_info_progress_message(create_progress_msg(
+        ACTION_DEBUGGING,
+        &format!(
+            "dbt Compute connection test: OK{}",
+            duration_suffix(alt_connection_started.elapsed())
         ),
-        arg.status_reporter.as_ref(),
-    );
+    ));
 
     // 2. MDLS write + read-back, in an already-authorized namespace (the alt
     // target's configured database/schema). Namespace-level DDL is
@@ -349,13 +316,10 @@ async fn debug_lake_compute(
             e
         ));
     }
-    emit_info_progress_message(
-        create_progress_msg(
-            ACTION_DEBUGGING,
-            &format!("MDLS write test: OK{}", duration_suffix(write_elapsed)),
-        ),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(
+        ACTION_DEBUGGING,
+        &format!("MDLS write test: OK{}", duration_suffix(write_elapsed)),
+    ));
 
     let read_started = Instant::now();
     let read_result = alt_adapter.execute_without_state(
@@ -385,13 +349,10 @@ async fn debug_lake_compute(
             )
         })?;
     }
-    emit_info_progress_message(
-        create_progress_msg(
-            ACTION_DEBUGGING,
-            &format!("MDLS read-back test: OK{}", duration_suffix(read_elapsed)),
-        ),
-        arg.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(create_progress_msg(
+        ACTION_DEBUGGING,
+        &format!("MDLS read-back test: OK{}", duration_suffix(read_elapsed)),
+    ));
 
     // 3. Snowflake propagation / catalog-linking: only if the project
     // declares a catalog-linked database, and a checker is registered.
@@ -405,33 +366,24 @@ async fn debug_lake_compute(
 
     match (&linked_database, &arg.alt_propagation_checker) {
         (None, _) => {
-            emit_info_progress_message(
-                create_progress_msg(
-                    ACTION_SKIPPED,
-                    "Snowflake propagation test (no catalog-linked database configured)",
-                ),
-                arg.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(create_progress_msg(
+                ACTION_SKIPPED,
+                "Snowflake propagation test (no catalog-linked database configured)",
+            ));
         }
         (Some(_), None) => {
-            emit_info_progress_message(
-                create_progress_msg(
-                    ACTION_SKIPPED,
-                    "Snowflake propagation test (unavailable in this build)",
-                ),
-                arg.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(create_progress_msg(
+                ACTION_SKIPPED,
+                "Snowflake propagation test (unavailable in this build)",
+            ));
         }
         (Some(linked_database), Some(checker)) => {
-            emit_info_progress_message(
-                create_progress_msg(
-                    ACTION_DEBUGGING,
-                    "Snowflake propagation test (this mints a short-lived credential and waits \
-                     for dbt Compute to confirm the write is visible in Snowflake; can take up \
-                     to a minute)...",
-                ),
-                arg.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(create_progress_msg(
+                ACTION_DEBUGGING,
+                "Snowflake propagation test (this mints a short-lived credential and waits \
+                 for dbt Compute to confirm the write is visible in Snowflake; can take up \
+                 to a minute)...",
+            ));
             let propagation_started = Instant::now();
             let outcome = checker
                 .check_alt_propagation(
@@ -442,17 +394,14 @@ async fn debug_lake_compute(
                 )
                 .await?;
             let propagation_elapsed = propagation_started.elapsed();
-            emit_info_progress_message(
-                create_progress_msg(
-                    ACTION_DEBUGGING,
-                    &format!(
-                        "{}{}",
-                        format_propagation_outcome(&outcome),
-                        duration_suffix(propagation_elapsed)
-                    ),
+            emit_info_progress_message(create_progress_msg(
+                ACTION_DEBUGGING,
+                &format!(
+                    "{}{}",
+                    format_propagation_outcome(&outcome),
+                    duration_suffix(propagation_elapsed)
                 ),
-                arg.status_reporter.as_ref(),
-            );
+            ));
         }
     }
 

@@ -81,13 +81,10 @@ pub async fn get_or_install_packages(
                 .await?
                 .unwrap_or_default();
 
-        emit_info_progress_message(
-            dbt_telemetry::ProgressMessage::new_from_action_and_target(
-                "Loading".to_string(),
-                "package-lock.yml".to_string(),
-            ),
-            io.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(dbt_telemetry::ProgressMessage::new_from_action_and_target(
+            "Loading".to_string(),
+            "package-lock.yml".to_string(),
+        ));
 
         // Return empty upstream projects since we're not fetching anything
         return Ok((dbt_packages_lock, vec![]));
@@ -132,13 +129,10 @@ pub async fn get_or_install_packages(
         };
 
         if let Some(dbt_packages_lock) = try_cached_lock {
-            emit_info_progress_message(
-                dbt_telemetry::ProgressMessage::new_from_action_and_target(
-                    "Loading".to_string(),
-                    package_yml_name.to_string(),
-                ),
-                io.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(dbt_telemetry::ProgressMessage::new_from_action_and_target(
+                "Loading".to_string(),
+                package_yml_name.to_string(),
+            ));
             dbt_packages_lock
         } else {
             let fetch_span = create_info_span(GenericOpExecuted::new(
@@ -186,13 +180,10 @@ pub async fn get_or_install_packages(
         if let Some(dbt_packages_lock) =
             load_dbt_packages_lock_without_validation(io, packages_install_path, env, &vars).await?
         {
-            emit_info_progress_message(
-                dbt_telemetry::ProgressMessage::new_from_action_and_target(
-                    "Loading".to_string(),
-                    "package-lock.yml".to_string(),
-                ),
-                io.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(dbt_telemetry::ProgressMessage::new_from_action_and_target(
+                "Loading".to_string(),
+                "package-lock.yml".to_string(),
+            ));
             dbt_packages_lock
         } else {
             // No packages.yml and no valid package-lock.yml - return empty

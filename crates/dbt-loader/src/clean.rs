@@ -163,13 +163,10 @@ pub async fn clean_project(
         };
 
         for (path, display_path_string, _) in &lease_guards {
-            emit_info_progress_message(
-                ProgressMessage::new_from_action_and_target(
-                    "Removing".to_string(),
-                    display_path_string.to_string(),
-                ),
-                arg.io.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+                "Removing".to_string(),
+                display_path_string.to_string(),
+            ));
             stdfs::remove_dir_all(path)?;
         }
 

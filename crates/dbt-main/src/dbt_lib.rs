@@ -445,13 +445,10 @@ async fn do_execute_fs(
             .will_init_project(eval_arg.io.invocation_id, &cli, init_args)
             .await?;
 
-        emit_info_progress_message(
-            ProgressMessage::new_from_action_and_target(
-                INSTALLING.to_string(),
-                "dbt project and profile setup".to_string(),
-            ),
-            eval_arg.io.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+            INSTALLING.to_string(),
+            "dbt project and profile setup".to_string(),
+        ));
 
         let project_name = if init_args.project_name == "jaffle_shop" {
             None // Use default
@@ -491,13 +488,10 @@ async fn do_execute_fs(
         }
     } else if let Command::Core(Deps(deps_args)) = &cli.command {
         let command_name = feature_stack.tracing.config_provider.get_command_name();
-        emit_info_progress_message(
-            ProgressMessage::new_from_action_and_target(
-                command_name.to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
-            ),
-            eval_arg.io.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+            command_name.to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        ));
 
         return match execute_deps_command(
             eval_arg,
@@ -517,13 +511,10 @@ async fn do_execute_fs(
         };
     } else if let Command::Core(Clean(clean_args)) = &cli.command {
         let command_name = feature_stack.tracing.config_provider.get_command_name();
-        emit_info_progress_message(
-            ProgressMessage::new_from_action_and_target(
-                command_name.to_string(),
-                env!("CARGO_PKG_VERSION").to_string(),
-            ),
-            eval_arg.io.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+            command_name.to_string(),
+            env!("CARGO_PKG_VERSION").to_string(),
+        ));
 
         return execute_clean_command(eval_arg, &clean_args.files, token).await;
     }
@@ -594,10 +585,10 @@ pub async fn execute_setup_and_all_phases(
                 format!("{latest_version} (upgrade via the package manager you installed dbt with)")
             }
         };
-        emit_info_progress_message(
-            ProgressMessage::new_from_action_and_target("New version available".to_string(), hint),
-            eval_arg.io.status_reporter.as_ref(),
-        );
+        emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+            "New version available".to_string(),
+            hint,
+        ));
     }
 
     // Hand the captured artifacts (if any) up to the caller via the sink.
@@ -630,23 +621,20 @@ fn emit_version_info(eval_arg: &EvalArgs, command_name: &str) -> FsResult<()> {
                 git_hash,
                 formatted_time
             );
-            emit_info_progress_message(
-                ProgressMessage::new_from_action_and_target(command_name.to_string(), build_time),
-                eval_arg.io.status_reporter.as_ref(),
-            );
+            emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+                command_name.to_string(),
+                build_time,
+            ));
             return Ok(());
         };
     }
 
     // Show version (always shown in release builds, or in debug builds when not from_main)
     let current_version = env!("CARGO_PKG_VERSION");
-    emit_info_progress_message(
-        ProgressMessage::new_from_action_and_target(
-            command_name.to_string(),
-            current_version.to_string(),
-        ),
-        eval_arg.io.status_reporter.as_ref(),
-    );
+    emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+        command_name.to_string(),
+        current_version.to_string(),
+    ));
 
     Ok(())
 }
@@ -738,17 +726,14 @@ impl<'a> AllPhasesExecutor<'a> {
                 ));
             }
 
-            emit_info_progress_message(
-                ProgressMessage::new_from_action_and_target(
-                    "Retrying".to_string(),
-                    format!(
-                        "{} nodes from previous {} command",
-                        retry_state.retryable_node_ids.len(),
-                        retry_state.original_command
-                    ),
+            emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+                "Retrying".to_string(),
+                format!(
+                    "{} nodes from previous {} command",
+                    retry_state.retryable_node_ids.len(),
+                    retry_state.original_command
                 ),
-                self.arg.io.status_reporter.as_ref(),
-            );
+            ));
 
             // Modify command in-place eval args with the original command and effective SA
             let arg_for_retry = self.arg.to_mut();

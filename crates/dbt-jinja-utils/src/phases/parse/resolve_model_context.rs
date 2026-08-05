@@ -651,45 +651,18 @@ pub struct ParseConfig<T: ResolvableConfig<T> + 'static> {
     pub error_path: Option<PathBuf>,
 }
 
-impl<T: ResolvableConfig<T>> Object for ParseConfig<T> {
-    /// Implement the call method on the config object
-    fn call(
+impl<T: ResolvableConfig<T>> ParseConfig<T> {
+    /// Shared logic for turning a set of config kwargs into a typed config
+    /// and pushing it as a `SqlResource::ConfigCall`. Used by both
+    /// `config(...)` (via `call`) and `config.set(name, value)` (via
+    /// `call_method`), matching dbt-core's `ParseConfigObject.set`
+    /// (`core/dbt/context/providers.py:550-551`), which is defined as
+    /// `def set(self, name, value): return self.__call__({name: value})`.
+    fn apply_config(
         self: &Arc<Self>,
         state: &State<'_, '_>,
-        args: &[MinijinjaValue],
-        _listeners: &[Rc<dyn RenderingEventListener>],
+        mut kwargs: BTreeMap<String, MinijinjaValue>,
     ) -> Result<MinijinjaValue, MinijinjaError> {
-        let mut args = ArgParser::new(args, None);
-        // If there is a positional argument, it must be a map
-        let mut kwargs = if args.positional_len() == 1 {
-            let positional_val: MinijinjaValue = args.next_positional::<MinijinjaValue>()?;
-            if positional_val.kind() != ValueKind::Map {
-                return Err(MinijinjaError::new(
-                    MinijinjaErrorKind::InvalidOperation,
-                    format!(
-                        "Invalid config argument kind specified: {}",
-                        positional_val.kind()
-                    ),
-                ));
-            }
-            positional_val
-                .as_object()
-                .unwrap()
-                .try_iter_pairs()
-                .expect("Invalid config object specified")
-                .map(|(k, v)| {
-                    (
-                        k.as_str()
-                            .expect("Invalid config object specified. Keys must be strings")
-                            .to_string(),
-                        v,
-                    )
-                })
-                .collect()
-        } else {
-            args.drain_kwargs()
-        };
-
         let enabled = if !kwargs.contains_key("enabled") {
             kwargs.insert("enabled".to_string(), MinijinjaValue::from(self.enabled));
             self.enabled
@@ -777,10 +750,53 @@ impl<T: ResolvableConfig<T>> Object for ParseConfig<T> {
         }
         Ok(MinijinjaValue::UNDEFINED)
     }
+}
+
+impl<T: ResolvableConfig<T>> Object for ParseConfig<T> {
+    /// Implement the call method on the config object
+    fn call(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        args: &[MinijinjaValue],
+        _listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<MinijinjaValue, MinijinjaError> {
+        let mut args = ArgParser::new(args, None);
+        // If there is a positional argument, it must be a map
+        let kwargs = if args.positional_len() == 1 {
+            let positional_val: MinijinjaValue = args.next_positional::<MinijinjaValue>()?;
+            if positional_val.kind() != ValueKind::Map {
+                return Err(MinijinjaError::new(
+                    MinijinjaErrorKind::InvalidOperation,
+                    format!(
+                        "Invalid config argument kind specified: {}",
+                        positional_val.kind()
+                    ),
+                ));
+            }
+            positional_val
+                .as_object()
+                .unwrap()
+                .try_iter_pairs()
+                .expect("Invalid config object specified")
+                .map(|(k, v)| {
+                    (
+                        k.as_str()
+                            .expect("Invalid config object specified. Keys must be strings")
+                            .to_string(),
+                        v,
+                    )
+                })
+                .collect()
+        } else {
+            args.drain_kwargs()
+        };
+
+        self.apply_config(state, kwargs)
+    }
 
     fn call_method(
         self: &Arc<Self>,
-        _state: &State<'_, '_>,
+        state: &State<'_, '_>,
         name: &str,
         args: &[MinijinjaValue],
         _listeners: &[Rc<dyn RenderingEventListener>],
@@ -821,11 +837,17 @@ impl<T: ResolvableConfig<T>> Object for ParseConfig<T> {
                     _ => Ok(MinijinjaValue::from("")),
                 }
             }
-            // At compile time, this just returns an empty string
+            // `config.set(name, value)` at parse time is equivalent to
+            // `config(**{name: value})`, matching dbt-core's
+            // `ParseConfigObject.set` (core/dbt/context/providers.py:550-551):
+            // `def set(self, name, value): return self.__call__({name: value})`.
             "set" => {
                 let mut args = ArgParser::new(args, None);
-                let _: String = args.get("name")?;
-                Ok(MinijinjaValue::from(""))
+                let name: String = args.get("name")?;
+                let value: MinijinjaValue = args.get("value")?;
+                let mut kwargs = BTreeMap::new();
+                kwargs.insert(name, value);
+                self.apply_config(state, kwargs)
             }
             // At compile time, this will throw an error if the config required does not exist
             "require" => {

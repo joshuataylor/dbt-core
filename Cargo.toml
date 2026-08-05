@@ -83,6 +83,7 @@ members = [
   "crates/dbt-ci",
   "crates/dbt-login",
   "crates/dbt-platform-auth",
+
 ]
 exclude = [
   "wizard/wizard-app/src-tauri",
@@ -134,6 +135,7 @@ sqlparser = { git = "https://github.com/sdf-labs/datafusion-sqlparser-rs", rev =
 # sqlparser = { path = "../datafusion-sqlparser-rs" }
 
 # All arrow dependencies (run `cargo tree --prefix none | grep ^arrow | cut -d ' ' -f1 | sort -u` to get this list)
+arrow-flight = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
 arrow = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
 arrow-arith = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
 arrow-array = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
@@ -347,6 +349,7 @@ arrow-buffer = { version = "=56.0.0" }
 arrow-cast = { version = "=56.0.0" }
 arrow-csv = { version = "=56.0.0" }
 arrow-data = { version = "=56.0.0" }
+arrow-flight = { version = "=56.0.0" }
 arrow-ipc = { version = "=56.0.0" }
 arrow-json = { version = "=56.0.0" }
 arrow-schema = { version = "=56.0.0", features = ["serde"] }

@@ -122,11 +122,18 @@ fn hook_entries(v: &dbt_yaml::Value) -> Option<Vec<String>> {
 ///
 /// A hook may be stored either as a real YAML sequence or as a single stringified list literal
 /// whose interior whitespace/indentation is not semantically meaningful. When both sides parse
-/// into hook entry lists, compare those (each entry canonicalized); otherwise fall back to the
-/// generic unrendered comparison.
+/// into hook entry lists, compare those as multisets (each entry canonicalized) rather than
+/// ordered lists: a resource can configure hooks at more than one level (schema.yml plus an
+/// inline SQL `{{ config(...) }}` call), and `canonicalize_hook_keys` merges those contributions
+/// together — but raw `unrendered_config` (particularly dbt-core's, which keeps the two spellings
+/// as separate top-level keys with no explicit relative order) carries no reliable ordering
+/// between them, only the fully-rendered/executed config does. Otherwise fall back to the generic
+/// unrendered comparison.
 fn unrendered_hook_value_eq(a: Option<&dbt_yaml::Value>, b: Option<&dbt_yaml::Value>) -> bool {
     if let (Some(va), Some(vb)) = (a, b) {
-        if let (Some(a_hooks), Some(b_hooks)) = (hook_entries(va), hook_entries(vb)) {
+        if let (Some(mut a_hooks), Some(mut b_hooks)) = (hook_entries(va), hook_entries(vb)) {
+            a_hooks.sort();
+            b_hooks.sort();
             return a_hooks == b_hooks;
         }
     }
@@ -1052,21 +1059,43 @@ impl UnrenderedKeyRelevance {
     }
 }
 
-/// Normalise hook key aliases so `pre_hook` and `pre-hook` compare as equal;
-/// they have been long-term aliases in dbt.
+/// Coerces a hook config value into its flat list of entries: a sequence's items as-is, or a
+/// single non-sequence value (e.g. a lone hook string) as a one-element list.
+fn hook_value_entries(value: dbt_yaml::Value) -> Vec<dbt_yaml::Value> {
+    match value {
+        dbt_yaml::Value::Sequence(seq, _) => seq,
+        other => vec![other],
+    }
+}
+
+/// Normalise hook key aliases so `pre_hook` and `pre-hook` compare as equal; they have been
+/// long-term aliases in dbt. Some previous-state manifests (notably dbt-core's: it only
+/// translates the alias for hooks contributed by an inline SQL `{{ config(...) }}` call, not
+/// ones contributed by a schema.yml `config:` block) carry BOTH spellings as separate keys when a
+/// resource configures hooks at more than one level — in that case the two entries are merged
+/// (concatenated, canonical-key first) rather than one silently overwriting the other.
 fn canonicalize_hook_keys(
     map: &std::collections::BTreeMap<String, dbt_yaml::Value>,
 ) -> std::collections::BTreeMap<String, dbt_yaml::Value> {
-    map.iter()
-        .map(|(k, v)| {
-            let k = match k.as_str() {
-                "pre_hook" => "pre-hook".to_string(),
-                "post_hook" => "post-hook".to_string(),
-                _ => k.clone(),
-            };
-            (k, v.clone())
-        })
-        .collect()
+    let mut out = std::collections::BTreeMap::new();
+    for (k, v) in map {
+        let k = match k.as_str() {
+            "pre_hook" => "pre-hook".to_string(),
+            "post_hook" => "post-hook".to_string(),
+            _ => k.clone(),
+        };
+        match out.remove(&k) {
+            Some(existing) => {
+                let mut entries = hook_value_entries(existing);
+                entries.extend(hook_value_entries(v.clone()));
+                out.insert(k, dbt_yaml::Value::Sequence(entries, Default::default()));
+            }
+            None => {
+                out.insert(k, v.clone());
+            }
+        }
+    }
+    out
 }
 
 /// The comparator `unrendered_configs_eq`'s loop applies to one `unrendered_config` key. Extracted
@@ -1525,6 +1554,62 @@ mod tests {
                 "snapshot.pkg.s"
             ));
         }
+    }
+
+    #[test]
+    fn canonicalize_hook_keys_merges_dash_and_underscore_spellings_instead_of_overwriting() {
+        // dbt-core's own unrendered_config keeps `pre_hook`/`post_hook` (underscore, contributed
+        // by a schema.yml `config:` block) as a SEPARATE key from `pre-hook`/`post-hook` (dash,
+        // contributed by an inline SQL `{{ config(...) }}` call) when a resource configures hooks
+        // at more than one level -- dbt-core only translates the alias for the inline-SQL source.
+        // Before the fix, renaming both to the same key via a naive `.collect()` silently
+        // overwrote one value with the other (BTreeMap iteration order sorts "post-hook" before
+        // "post_hook", so the underscore entry always won) instead of merging them.
+        let mut map = BTreeMap::new();
+        map.insert("post-hook".to_string(), yml_value(r#""DELETE FROM t""#));
+        map.insert("post_hook".to_string(), yml_value(r#""apply masking""#));
+
+        let canonicalized = canonicalize_hook_keys(&map);
+
+        assert_eq!(canonicalized.len(), 1);
+        let merged = canonicalized.get("post-hook").expect("expected post-hook");
+        let dbt_yaml::Value::Sequence(entries, _) = merged else {
+            panic!("expected a merged sequence, got {merged:?}");
+        };
+        let strings: Vec<&str> = entries.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(strings, vec!["DELETE FROM t", "apply masking"]);
+    }
+
+    #[test]
+    fn canonicalize_hook_keys_is_a_noop_when_only_one_spelling_is_present() {
+        let mut map = BTreeMap::new();
+        map.insert("pre_hook".to_string(), yml_value(r#""create masking""#));
+
+        let canonicalized = canonicalize_hook_keys(&map);
+
+        assert_eq!(canonicalized.len(), 1);
+        assert_eq!(
+            canonicalized.get("pre-hook").and_then(|v| v.as_str()),
+            Some("create masking")
+        );
+        assert!(!canonicalized.contains_key("pre_hook"));
+    }
+
+    #[test]
+    fn unrendered_hook_value_eq_ignores_order() {
+        // A merged (multi-source) hook value has no reliable relative order at the unrendered
+        // level (only the fully-rendered/executed config does) -- comparison must treat the
+        // entries as a multiset, not an ordered list.
+        let a = yml_value(r#"["DELETE FROM t", "apply masking"]"#);
+        let b = yml_value(r#"["apply masking", "DELETE FROM t"]"#);
+        assert!(unrendered_hook_value_eq(Some(&a), Some(&b)));
+    }
+
+    #[test]
+    fn unrendered_hook_value_eq_still_detects_a_genuine_difference() {
+        let a = yml_value(r#"["DELETE FROM t", "apply masking"]"#);
+        let b = yml_value(r#"["DELETE FROM t", "apply different masking"]"#);
+        assert!(!unrendered_hook_value_eq(Some(&a), Some(&b)));
     }
 
     #[test]

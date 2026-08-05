@@ -649,69 +649,118 @@ pub fn parse_unrendered_config(
     );
     let ast = parser.parse().ok()?;
 
-    fn find_config_call<'a>(stmt: &'a Stmt<'a>, snapshot: bool) -> Option<&'a Vec<CallArg<'a>>> {
+    // A SQL file may contain more than one `{{ config(...) }}` call (e.g. one for
+    // `materialized`, a separate later one for `post_hook`). dbt-core's manifest
+    // `unrendered_config` reflects every config() call actually executed during the model's
+    // Jinja render, which accumulates across all of them (later calls override earlier ones for
+    // the same key) — not just the first, so collect every call here rather than stopping at the
+    // first match.
+    fn find_config_calls<'a>(
+        stmt: &'a Stmt<'a>,
+        snapshot: bool,
+        calls: &mut Vec<&'a Vec<CallArg<'a>>>,
+    ) {
         match stmt {
-            Stmt::Template(t) => t
-                .children
-                .iter()
-                .find_map(|s| find_config_call(s, snapshot)),
+            Stmt::Template(t) => {
+                for s in &t.children {
+                    find_config_calls(s, snapshot, calls);
+                }
+            }
             Stmt::EmitExpr(e) => {
                 if let Expr::Call(call) = &e.expr {
                     if let Expr::Var(var) = &call.expr {
                         if var.id == "config" {
-                            return Some(&call.args);
+                            calls.push(&call.args);
                         }
                     }
                 }
-                None
             }
-            Stmt::Macro((macro_node, MacroKind::Snapshot, _)) if snapshot => macro_node
-                .body
-                .iter()
-                .find_map(|s| find_config_call(s, snapshot)),
+            Stmt::Macro((macro_node, MacroKind::Snapshot, _)) if snapshot => {
+                for s in &macro_node.body {
+                    find_config_calls(s, snapshot, calls);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Extracts the raw (unrendered) value of a kwarg/list-item expression. `Expr::Const` yields
+    // the parsed literal so the correct type is preserved; `Expr::List` recurses into its items
+    // (e.g. `post_hook=['a', 'b']` becomes a real two-entry sequence, matching dbt-core's
+    // behavior of fully resolving list literals rather than treating them as opaque text); any
+    // other expression preserves its raw Jinja source text as a string.
+    fn extract_value(expr: &Expr<'_>, sql_bytes: &[u8]) -> Option<dbt_yaml::Value> {
+        match expr {
+            Expr::Const(c) => match c.value.kind() {
+                ValueKind::String => c
+                    .value
+                    .as_str()
+                    .map(|s| dbt_yaml::Value::string(s.to_string())),
+                ValueKind::Bool => Some(dbt_yaml::Value::bool(c.value.is_true())),
+                ValueKind::Number => c
+                    .value
+                    .as_i64()
+                    .map(|n| dbt_yaml::Value::number(n.into()))
+                    .or_else(|| {
+                        f64::try_from(c.value.clone())
+                            .ok()
+                            .map(|f| dbt_yaml::Value::number(f.into()))
+                    }),
+                ValueKind::None => Some(dbt_yaml::Value::null()),
+                _ => None,
+            },
+            Expr::List(l) => Some(dbt_yaml::Value::Sequence(
+                l.items
+                    .iter()
+                    .map(|item| {
+                        extract_value(item, sql_bytes).unwrap_or_else(|| {
+                            expr_span(item)
+                                .and_then(|span| {
+                                    let start = span.start_offset as usize;
+                                    let end = span.end_offset as usize;
+                                    std::str::from_utf8(&sql_bytes[start..end]).ok().map(|raw| {
+                                        dbt_yaml::Value::String(
+                                            raw.trim().to_string(),
+                                            Default::default(),
+                                        )
+                                    })
+                                })
+                                .unwrap_or_else(dbt_yaml::Value::null)
+                        })
+                    })
+                    .collect(),
+                Default::default(),
+            )),
             _ => None,
         }
     }
 
-    let args = find_config_call(&ast, snapshot)?;
+    let mut calls = Vec::new();
+    find_config_calls(&ast, snapshot, &mut calls);
+    if calls.is_empty() {
+        return None;
+    }
     let sql_bytes = sql.as_bytes();
 
     let mut map = BTreeMap::new();
-    for arg in args {
-        if let CallArg::Kwarg(name, expr) = arg {
-            // For Expr::Const, use the parsed literal value so the correct type is
-            // preserved.
-            // For all other expressions, preserve the raw Jinja source text as a string.
-            let yml_val: Option<dbt_yaml::Value> = if let Expr::Const(c) = expr {
-                match c.value.kind() {
-                    ValueKind::String => c
-                        .value
-                        .as_str()
-                        .map(|s| dbt_yaml::Value::string(s.to_string())),
-                    ValueKind::Bool => Some(dbt_yaml::Value::bool(c.value.is_true())),
-                    ValueKind::Number => c
-                        .value
-                        .as_i64()
-                        .map(|n| dbt_yaml::Value::number(n.into()))
-                        .or_else(|| {
-                            f64::try_from(c.value.clone())
-                                .ok()
-                                .map(|f| dbt_yaml::Value::number(f.into()))
-                        }),
-                    ValueKind::None => Some(dbt_yaml::Value::null()),
-                    _ => None,
+    for args in calls {
+        for arg in args {
+            if let CallArg::Kwarg(name, expr) = arg {
+                let yml_val: Option<dbt_yaml::Value> =
+                    extract_value(expr, sql_bytes).or_else(|| {
+                        // Fall back to the raw Jinja source text for any expression
+                        // `extract_value` doesn't handle structurally (e.g. a function call).
+                        expr_span(expr).and_then(|span| {
+                            let start = span.start_offset as usize;
+                            let end = span.end_offset as usize;
+                            std::str::from_utf8(&sql_bytes[start..end]).ok().map(|raw| {
+                                dbt_yaml::Value::String(raw.trim().to_string(), Default::default())
+                            })
+                        })
+                    });
+                if let Some(val) = yml_val {
+                    map.insert((*name).to_string(), val);
                 }
-            } else {
-                expr_span(expr).and_then(|span| {
-                    let start = span.start_offset as usize;
-                    let end = span.end_offset as usize;
-                    std::str::from_utf8(&sql_bytes[start..end]).ok().map(|raw| {
-                        dbt_yaml::Value::String(raw.trim().to_string(), Default::default())
-                    })
-                })
-            };
-            if let Some(val) = yml_val {
-                map.insert((*name).to_string(), val);
             }
         }
     }
@@ -914,5 +963,79 @@ pub fn clear_package_diagnostics(io: &IoArgs, package: &DbtPackage) {
         if !file_paths.is_empty() {
             status_reporter.bulk_publish_empty(file_paths);
         }
+    }
+}
+
+#[cfg(test)]
+mod parse_unrendered_config_tests {
+    use super::parse_unrendered_config;
+
+    fn as_str_entries(value: &dbt_yaml::Value) -> Vec<String> {
+        value
+            .as_sequence()
+            .expect("expected a sequence")
+            .iter()
+            .map(|v| v.as_str().expect("expected a string entry").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn captures_every_config_call_in_a_model() {
+        // A model with two separate `{{ config(...) }}` calls (one for materialized, one for
+        // post_hook) -- a real-world pattern (e.g. datavault4dbt-style models). Before the fix,
+        // only the first call's kwargs were captured; `post_hook` was silently dropped.
+        let sql = r#"
+{{ config(materialized="incremental") }}
+
+{{ config(post_hook="DELETE FROM {{ this }}") }}
+
+select 1
+"#;
+        let cfg = parse_unrendered_config(sql, false).expect("expected a config map");
+        assert_eq!(
+            cfg.get("materialized").and_then(|v| v.as_str()),
+            Some("incremental")
+        );
+        assert_eq!(
+            cfg.get("post_hook").and_then(|v| v.as_str()),
+            Some("DELETE FROM {{ this }}")
+        );
+    }
+
+    #[test]
+    fn later_config_call_overrides_earlier_one_for_the_same_key() {
+        let sql = r#"
+{{ config(materialized="view") }}
+{{ config(materialized="table") }}
+select 1
+"#;
+        let cfg = parse_unrendered_config(sql, false).expect("expected a config map");
+        assert_eq!(
+            cfg.get("materialized").and_then(|v| v.as_str()),
+            Some("table")
+        );
+    }
+
+    #[test]
+    fn captures_a_list_literal_hook_as_a_real_sequence() {
+        // `post_hook=[...]` is a Jinja list literal, not a single string constant. Before the
+        // fix, any non-`Expr::Const` kwarg value (including a list) was captured as the raw,
+        // opaque Jinja source text of the whole expression -- losing its list structure, so it
+        // compared as ONE entry instead of two against dbt-core's genuinely two-item list.
+        let sql = r#"
+{{ config(post_hook=["DELETE FROM a", "DELETE FROM b"]) }}
+select 1
+"#;
+        let cfg = parse_unrendered_config(sql, false).expect("expected a config map");
+        let post_hook = cfg.get("post_hook").expect("expected post_hook key");
+        assert_eq!(
+            as_str_entries(post_hook),
+            vec!["DELETE FROM a".to_string(), "DELETE FROM b".to_string()]
+        );
+    }
+
+    #[test]
+    fn no_config_call_returns_none() {
+        assert!(parse_unrendered_config("select 1", false).is_none());
     }
 }

@@ -302,6 +302,16 @@ pub trait CliExtensionHooks: Send + Sync {
         Ok(())
     }
 
+    /// Returns a checker for verifying propagation from an alt/remote
+    /// compute target to the profile's native connection, for use during
+    /// `dbt debug`. Returning `None` (the default) means this build has no
+    /// such check available.
+    fn alt_propagation_checker(
+        &self,
+    ) -> Option<Arc<dyn dbt_tasks_core::alt_propagation::AltPropagationChecker>> {
+        None
+    }
+
     /// Called after tasks have been scheduled and run, but before manifest
     /// update and further phases.
     ///

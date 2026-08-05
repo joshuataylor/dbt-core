@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dbt_adbc::QueryCtx;
 use dbt_agate::MappedSequence;
@@ -10,6 +11,7 @@ use dbt_common::tracing::dbt_emit::emit_info_progress_message;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_compilation::core::DbtLoadedProject;
 use dbt_schemas::schemas::profiles::{DbConfig, Execute};
+use dbt_tasks_core::alt_propagation::{AltPropagationChecker, AltPropagationOutcome};
 use dbt_telemetry::ProgressMessage;
 
 // Action labels for debug command progress messages (without padding - formatter handles padding)
@@ -20,6 +22,16 @@ const ACTION_SKIPPED: &str = "Skipped";
 // dbt-core event codes for JSON compatibility
 const DBT_CORE_DEBUG_CMD_OUT: &str = "Z047";
 const DBT_CORE_DEBUG_CMD_RESULT: &str = "Z048";
+
+/// Renders `" (N.Ns)"` for a step's elapsed time, or nothing if it took
+/// under a second -- fast steps don't need their timing called out.
+fn duration_suffix(elapsed: Duration) -> String {
+    if elapsed > Duration::from_secs(1) {
+        format!(" ({:.1}s)", elapsed.as_secs_f64())
+    } else {
+        String::new()
+    }
+}
 
 /// Helper to create progress message
 fn create_progress_msg(action: &str, target: &str) -> ProgressMessage {
@@ -42,6 +54,9 @@ pub struct DebugArgs {
     pub target: Option<String>,
     pub connection: bool,
     pub local_execution_backend: LocalExecutionBackendKind,
+    /// Checker for verifying alt-compute-to-native propagation, if this
+    /// build has one registered. `None` means the check is skipped.
+    pub alt_propagation_checker: Option<Arc<dyn AltPropagationChecker>>,
 }
 
 impl DebugArgs {
@@ -51,6 +66,7 @@ impl DebugArgs {
             target: arg.target.clone(),
             connection: arg.connection,
             local_execution_backend: arg.local_execution_backend,
+            alt_propagation_checker: None,
         }
     }
 }
@@ -163,9 +179,11 @@ pub async fn debug(
 
         let sql = "select 1 as id";
         let ctx = QueryCtx::default();
+        let connection_test_started = Instant::now();
         base_adapter
             .execute_without_state(Some(&ctx), sql, false, None)
             .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the specified database.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", e))?;
+        let connection_test_elapsed = connection_test_started.elapsed();
 
         // Check for allow_id_token parameter when using Snowflake with externalbrowser
         if let DbConfig::Snowflake(db_config_inner) = &db_config
@@ -214,9 +232,27 @@ pub async fn debug(
         }
 
         emit_info_progress_message(
-            create_progress_msg(ACTION_DEBUGGING, "connection test: OK"),
+            create_progress_msg(
+                ACTION_DEBUGGING,
+                &format!(
+                    "connection test: OK{}",
+                    duration_suffix(connection_test_elapsed)
+                ),
+            ),
             arg.status_reporter.as_ref(),
         );
+    }
+
+    // Lake Compute (dbt-compute / MDLS) checks: only when the profile
+    // declares an alt/remote compute target via `x_alt_target`. Independent
+    // of whichever target is currently active/selected.
+    if let Some(alt_db_config) = loaded_project
+        .dbt_state()
+        .dbt_profile
+        .alt_target_db_config
+        .clone()
+    {
+        debug_lake_compute(arg, &db_config, &alt_db_config, loaded_project, &token).await?;
     }
 
     if all_debug_checks_passed {
@@ -227,6 +263,232 @@ pub async fn debug(
     }
 
     Ok(())
+}
+
+/// Runs the Lake Compute connectivity checks: dbt-compute auth, MDLS
+/// write/read-back, and (if a checker is registered and the project
+/// declares a catalog-linked database) native-connection propagation.
+async fn debug_lake_compute(
+    arg: &DebugArgs,
+    native_db_config: &DbConfig,
+    alt_db_config: &DbConfig,
+    loaded_project: &DbtLoadedProject,
+    token: &CancellationToken,
+) -> FsResult<()> {
+    let mut alt_mapping = alt_db_config.to_mapping().unwrap();
+    alt_mapping
+        .entry("connect_timeout".into())
+        .or_insert("1s".into());
+
+    let alt_adapter_type = alt_db_config.adapter_type();
+    let alt_adapter =
+        loaded_project.init_base_adapter(alt_adapter_type, alt_mapping, token.clone())?;
+    let ctx = QueryCtx::default();
+
+    // 1. dbt-compute auth: a cheap round trip through the alt connection.
+    let alt_connection_started = Instant::now();
+    alt_adapter
+        .execute_without_state(Some(&ctx), "select 1 as id", false, None)
+        .map_err(|e| {
+            fs_err!(
+                ErrorCode::AuthenticationFailed,
+                "dbt was unable to connect to dbt Compute using the configured `x_alt_target`.\n\
+                 The following error was returned:\n\n{}",
+                e
+            )
+        })?;
+    emit_info_progress_message(
+        create_progress_msg(
+            ACTION_DEBUGGING,
+            &format!(
+                "dbt Compute connection test: OK{}",
+                duration_suffix(alt_connection_started.elapsed())
+            ),
+        ),
+        arg.status_reporter.as_ref(),
+    );
+
+    // 2. MDLS write + read-back, in an already-authorized namespace (the alt
+    // target's configured database/schema). Namespace-level DDL is
+    // deliberately avoided: creating a new namespace is denied for the
+    // Polaris principal used here and (confirmed empirically) can hang
+    // rather than fail fast, so this only exercises table create/drop
+    // within a namespace that must already exist.
+    let probe_table = format!(
+        "__dbt_debug_probe_{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_nanos()
+    );
+    let qualified_probe = qualify_probe_name(
+        alt_db_config.get_database().map(String::as_str),
+        alt_db_config.get_schema().map(String::as_str),
+        &probe_table,
+    );
+
+    let write_started = Instant::now();
+    let write_result = alt_adapter.execute_without_state(
+        Some(&ctx),
+        &format!("create table {qualified_probe} (id integer)"),
+        false,
+        None,
+    );
+    let write_elapsed = write_started.elapsed();
+    let write_ok = write_result.is_ok();
+    if let Err(e) = write_result {
+        // Clean up is unnecessary: the create failed, so there's nothing to drop.
+        return Err(fs_err!(
+            ErrorCode::AuthenticationFailed,
+            "dbt was able to authenticate to dbt Compute, but failed to write to MDLS.\n\
+             The following error was returned:\n\n{}\n\n\
+             This commonly means the configured schema/namespace does not exist yet: dbt debug \
+             does not create one, since new-namespace creation is not supported for this \
+             credential. Check that the configured schema/namespace already exists and that the \
+             credentials are authorized to write to it.",
+            e
+        ));
+    }
+    emit_info_progress_message(
+        create_progress_msg(
+            ACTION_DEBUGGING,
+            &format!("MDLS write test: OK{}", duration_suffix(write_elapsed)),
+        ),
+        arg.status_reporter.as_ref(),
+    );
+
+    let read_started = Instant::now();
+    let read_result = alt_adapter.execute_without_state(
+        Some(&ctx),
+        &format!("select count(*) as c from {qualified_probe}"),
+        true,
+        None,
+    );
+    let read_elapsed = read_started.elapsed();
+
+    // Cleanup is unconditional and best-effort: don't let a drop failure mask
+    // the read-back result, but don't leave the probe table behind either.
+    let _ = alt_adapter.execute_without_state(
+        Some(&ctx),
+        &format!("drop table if exists {qualified_probe}"),
+        false,
+        None,
+    );
+
+    if write_ok {
+        read_result.map_err(|e| {
+            fs_err!(
+                ErrorCode::AuthenticationFailed,
+                "dbt was able to write to MDLS, but failed to read the object back.\n\
+                 The following error was returned:\n\n{}",
+                e
+            )
+        })?;
+    }
+    emit_info_progress_message(
+        create_progress_msg(
+            ACTION_DEBUGGING,
+            &format!("MDLS read-back test: OK{}", duration_suffix(read_elapsed)),
+        ),
+        arg.status_reporter.as_ref(),
+    );
+
+    // 3. Snowflake propagation / catalog-linking: only if the project
+    // declares a catalog-linked database, and a checker is registered.
+    let linked_database = loaded_project
+        .dbt_state()
+        .catalogs
+        .as_ref()
+        .and_then(|catalogs| catalogs.iceberg_rest_catalog_databases().ok())
+        .and_then(|dbs| dbs.into_iter().next())
+        .map(|(_, db)| db);
+
+    match (&linked_database, &arg.alt_propagation_checker) {
+        (None, _) => {
+            emit_info_progress_message(
+                create_progress_msg(
+                    ACTION_SKIPPED,
+                    "Snowflake propagation test (no catalog-linked database configured)",
+                ),
+                arg.status_reporter.as_ref(),
+            );
+        }
+        (Some(_), None) => {
+            emit_info_progress_message(
+                create_progress_msg(
+                    ACTION_SKIPPED,
+                    "Snowflake propagation test (unavailable in this build)",
+                ),
+                arg.status_reporter.as_ref(),
+            );
+        }
+        (Some(linked_database), Some(checker)) => {
+            emit_info_progress_message(
+                create_progress_msg(
+                    ACTION_DEBUGGING,
+                    "Snowflake propagation test (this mints a short-lived credential and waits \
+                     for dbt Compute to confirm the write is visible in Snowflake; can take up \
+                     to a minute)...",
+                ),
+                arg.status_reporter.as_ref(),
+            );
+            let propagation_started = Instant::now();
+            let outcome = checker
+                .check_alt_propagation(
+                    native_db_config,
+                    alt_db_config,
+                    linked_database,
+                    token.clone(),
+                )
+                .await?;
+            let propagation_elapsed = propagation_started.elapsed();
+            emit_info_progress_message(
+                create_progress_msg(
+                    ACTION_DEBUGGING,
+                    &format!(
+                        "{}{}",
+                        format_propagation_outcome(&outcome),
+                        duration_suffix(propagation_elapsed)
+                    ),
+                ),
+                arg.status_reporter.as_ref(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Builds a schema/database-qualified name for the MDLS probe object from
+/// the alt target's own configured database/schema.
+fn qualify_probe_name(database: Option<&str>, schema: Option<&str>, table: &str) -> String {
+    match (database, schema) {
+        (Some(db), Some(schema)) => format!("{db}.{schema}.{table}"),
+        (None, Some(schema)) => format!("{schema}.{table}"),
+        _ => table.to_string(),
+    }
+}
+
+/// Renders an [`AltPropagationOutcome`] as the `dbt debug` progress line.
+/// `NotYetVisible` is reported informationally, not as a failure, since
+/// catalog-integration propagation is inherently asynchronous.
+fn format_propagation_outcome(outcome: &AltPropagationOutcome) -> String {
+    match outcome {
+        AltPropagationOutcome::Verified => "Snowflake propagation test: OK".to_string(),
+        AltPropagationOutcome::NotYetVisible {
+            waited_secs,
+            configured_refresh_secs,
+        } => {
+            let refresh_note = configured_refresh_secs
+                .map(|s| {
+                    format!(" your catalog integration's refresh interval is configured at {s}s;")
+                })
+                .unwrap_or_default();
+            format!(
+                "Snowflake propagation test: not yet visible after {waited_secs}s.{refresh_note} this may just need more time, not necessarily a failure."
+            )
+        }
+    }
 }
 
 async fn dependency_installed(dependency: &str) -> FsResult<bool> {
@@ -245,5 +507,64 @@ mod tests {
     async fn test_dependency_not_installed() {
         let result = dependency_installed("not_installed").await.unwrap();
         assert!(!result);
+    }
+
+    #[test]
+    fn duration_suffix_hides_fast_steps() {
+        assert_eq!(duration_suffix(Duration::from_millis(500)), "");
+        assert_eq!(duration_suffix(Duration::from_secs(1)), "");
+    }
+
+    #[test]
+    fn duration_suffix_shows_slow_steps() {
+        assert_eq!(duration_suffix(Duration::from_millis(1500)), " (1.5s)");
+        assert_eq!(duration_suffix(Duration::from_secs(90)), " (90.0s)");
+    }
+
+    #[test]
+    fn qualify_probe_name_with_database_and_schema() {
+        assert_eq!(
+            qualify_probe_name(Some("db"), Some("schema"), "t"),
+            "db.schema.t"
+        );
+    }
+
+    #[test]
+    fn qualify_probe_name_with_schema_only() {
+        assert_eq!(qualify_probe_name(None, Some("schema"), "t"), "schema.t");
+    }
+
+    #[test]
+    fn qualify_probe_name_with_neither() {
+        assert_eq!(qualify_probe_name(None, None, "t"), "t");
+    }
+
+    #[test]
+    fn format_propagation_outcome_verified() {
+        assert_eq!(
+            format_propagation_outcome(&AltPropagationOutcome::Verified),
+            "Snowflake propagation test: OK"
+        );
+    }
+
+    #[test]
+    fn format_propagation_outcome_not_yet_visible_with_refresh_interval() {
+        let msg = format_propagation_outcome(&AltPropagationOutcome::NotYetVisible {
+            waited_secs: 90,
+            configured_refresh_secs: Some(3600),
+        });
+        assert!(msg.contains("not yet visible after 90s"));
+        assert!(msg.contains("refresh interval is configured at 3600s"));
+        assert!(msg.contains("not necessarily a failure"));
+    }
+
+    #[test]
+    fn format_propagation_outcome_not_yet_visible_without_refresh_interval() {
+        let msg = format_propagation_outcome(&AltPropagationOutcome::NotYetVisible {
+            waited_secs: 90,
+            configured_refresh_secs: None,
+        });
+        assert!(msg.contains("not yet visible after 90s"));
+        assert!(!msg.contains("refresh interval"));
     }
 }

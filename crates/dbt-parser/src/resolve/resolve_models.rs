@@ -32,7 +32,6 @@ use dbt_common::error::AbstractLocation;
 use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
-use dbt_common::io_utils::StatusReporter;
 use dbt_common::path::DbtPath;
 use dbt_common::tokiofs::read_to_string;
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
@@ -210,7 +209,6 @@ pub async fn resolve_models(
     let config_resolver =
         ProjectConfigResolver::build(root_project_configs.models.clone(), is_dependency, || {
             init_project_config(
-                &arg.io,
                 &package.dbt_project.models,
                 package_quoting,
                 dependency_package_name,
@@ -454,13 +452,13 @@ pub async fn resolve_models(
                 if !errors.is_empty() {
                     // Show each error individually
                     for error in errors {
-                        emit_error_log_from_fs_error(error, arg.io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(error);
                     }
                     continue;
                 }
             }
             Err(e) => {
-                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e);
 
                 continue;
             }
@@ -477,7 +475,7 @@ pub async fn resolve_models(
                 "Invalid access type '{}' — must be one of: private, protected, public",
                 raw,
             );
-            emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err);
         }
 
         // Iterate over metrics and construct the dependencies
@@ -519,7 +517,6 @@ pub async fn resolve_models(
                 format!(
                     "Constraint types are not supported for {materialized} materializations and will be ignored.  Set 'warn_unsupported: false' on this constraint to ignore this warning."
                 ),
-                arg.io.status_reporter.as_ref(),
             );
         }
 
@@ -544,7 +541,7 @@ pub async fn resolve_models(
                 "Invalid value for on_schema_change: {}. Models materialized as incremental with contracts enabled must set on_schema_change to 'append_new_columns' or 'fail'",
                 osc_str,
             );
-            emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err);
             continue;
         }
 
@@ -586,7 +583,6 @@ pub async fn resolve_models(
             arg.static_analysis,
             unique_id.as_str(),
             dependency_package_name,
-            arg.io.status_reporter.as_ref(),
         );
 
         // Hydrate time_spine from model properties
@@ -872,7 +868,7 @@ pub async fn resolve_models(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
-                emit_error_log_from_fs_error(err_with_loc, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc);
             }
         }
 
@@ -949,7 +945,7 @@ pub async fn resolve_models(
                 "Unused schema.yml entry for model '{}'",
                 model_name,
             );
-            emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*err);
         }
     }
 
@@ -974,7 +970,7 @@ pub async fn resolve_models(
             if errs.is_empty() {
                 return Err(err);
             }
-            emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err);
         }
     }
 
@@ -1196,14 +1192,14 @@ fn process_python_models(
         let stmts = match parse_python(&source, &python_asset.path) {
             Ok(stmts) => stmts,
             Err(e) => {
-                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e);
                 continue;
             }
         };
 
         // Validate Python model structure (def model(dbt, session): ...)
         if let Err(e) = validate_python_model(&python_asset.path, &stmts) {
-            emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*e);
             continue;
         }
 
@@ -1216,13 +1212,12 @@ fn process_python_models(
             &source,
             &stmts,
             checksum,
-            &arg.io,
             dependency_package_name,
             Some(python_asset.path.clone()),
         ) {
             Ok(info) => info,
             Err(e) => {
-                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e);
                 continue;
             }
         };
@@ -1245,7 +1240,7 @@ fn process_python_models(
         ) {
             Ok(config) => config,
             Err(err) => {
-                emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err);
                 continue;
             }
         };
@@ -1330,11 +1325,7 @@ fn extract_model_properties(
 }
 
 /// Warn when config.get() accesses keys that exist in config.meta
-fn check_config_get_on_meta_keys(
-    config: &ResolvedModelConfig,
-    path: &Path,
-    status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
+fn check_config_get_on_meta_keys(config: &ResolvedModelConfig, path: &Path) {
     let Some(meta) = &config.meta else {
         return;
     };
@@ -1342,18 +1333,15 @@ fn check_config_get_on_meta_keys(
         return;
     };
     for key in config_keys.iter().filter(|key| meta.contains_key(*key)) {
-        emit_warn_log_from_fs_error(
-            *fs_err!(
-                code => ErrorCode::Generic,
-                loc => path.to_path_buf(),
-                "The key '{}' was accessed using dbt.config.get('{}'), \
-                 but was detected as a custom config under 'meta'. \
-                 Please use dbt.config.meta_get('{}') instead of dbt.config.get('{}') \
-                 to access the custom config value.",
-                key, key, key, key
-            ),
-            status_reporter,
-        );
+        emit_warn_log_from_fs_error(*fs_err!(
+            code => ErrorCode::Generic,
+            loc => path.to_path_buf(),
+            "The key '{}' was accessed using dbt.config.get('{}'), \
+            but was detected as a custom config under 'meta'. \
+            Please use dbt.config.meta_get('{}') instead of dbt.config.get('{}') \
+            to access the custom config value.",
+            key, key, key, key
+        ));
     }
 }
 
@@ -1429,11 +1417,7 @@ fn merge_python_config(
     );
 
     if let Some(spanned) = pre_defaults_config.static_analysis {
-        crate::validation::warn_python_static_analysis(
-            spanned.into_inner(),
-            &unique_id,
-            arg.io.status_reporter.as_ref(),
-        );
+        crate::validation::warn_python_static_analysis(spanned.into_inner(), &unique_id);
     }
 
     check_node_static_analysis(
@@ -1441,14 +1425,9 @@ fn merge_python_config(
         arg.static_analysis,
         &unique_id,
         dependency_package_name,
-        arg.io.status_reporter.as_ref(),
     );
 
-    check_config_get_on_meta_keys(
-        &merged_config,
-        &python_asset.path,
-        arg.io.status_reporter.as_ref(),
-    );
+    check_config_get_on_meta_keys(&merged_config, &python_asset.path);
 
     let mat = merged_config.materialized.clone();
     if mat != DbtMaterialization::Table && mat != DbtMaterialization::Incremental {

@@ -275,13 +275,13 @@ pub fn register_duplicate_resource(
 }
 
 /// Trigger duplicate errors
-pub fn trigger_duplicate_errors(io: &IoArgs, duplicate_errors: &mut Vec<FsError>) -> FsResult<()> {
+pub fn trigger_duplicate_errors(duplicate_errors: &mut Vec<FsError>) -> FsResult<()> {
     if !duplicate_errors.is_empty() {
         while let Some(err) = duplicate_errors.pop() {
             if duplicate_errors.is_empty() {
                 return Err(Box::new(err));
             } else {
-                emit_error_log_from_fs_error(err, io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err);
             }
         }
     }

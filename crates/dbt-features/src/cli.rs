@@ -259,7 +259,7 @@ pub trait CliExtensionHooks: Send + Sync {
     async fn will_execute(
         &self,
         cli: &Cli,
-        eval_arg: &EvalArgs,
+        _eval_arg: &EvalArgs,
         feature_stack: &Arc<FeatureStack>,
     ) -> FsResult<()>;
 
@@ -438,7 +438,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
     async fn will_execute(
         &self,
         cli: &Cli,
-        eval_arg: &EvalArgs,
+        _eval_arg: &EvalArgs,
         _feature_stack: &Arc<FeatureStack>,
     ) -> FsResult<()> {
         use OSSExtensionCommand::*;
@@ -454,7 +454,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
              \n    brew upgrade dbt-core\
              \n    winget upgrade --id dbtLabs.dbt-core --exact"
                         );
-                        emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(*e);
                         Err(FsError::exit_with_status(1))
                     }
                     SystemCommand::Uninstall => {
@@ -466,7 +466,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
              \n    brew uninstall dbt-core\
              \n    winget uninstall --id dbtLabs.dbt-core"
                         );
-                        emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(*e);
                         Err(FsError::exit_with_status(1))
                     }
                     SystemCommand::InstallDrivers => {
@@ -474,7 +474,6 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
                             emit_error_log_message(
                                 ErrorCode::Generic,
                                 format!("Failed to install drivers: {}", install_err).as_str(),
-                                eval_arg.io.status_reporter.as_ref(),
                             );
                             FsError::exit_with_status(1)
                         })

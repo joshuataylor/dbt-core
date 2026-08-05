@@ -63,7 +63,6 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             &PathBuf::from("test"),
             &PathBuf::from("test"),
-            &IoArgs::default(),
             Some(StaticAnalysisKind::Strict),
         );
         context.insert(TARGET_PACKAGE_NAME.to_string(), Value::from("common"));
@@ -401,7 +400,6 @@ mod tests {
                 dbt_yaml::Mapping::default(),
                 DEFAULT_DBT_QUOTING,
                 Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
-                None,
                 None,
             ));
             env.add_global("adapter", adapter.as_value());

@@ -5389,7 +5389,7 @@ impl DbtModel {
 
         let breaking_change_message =
             format!("Breaking Change to Contract for model '{node_name}': {error_message}");
-        emit_error_log_message(ErrorCode::InvalidConfig, breaking_change_message, None);
+        emit_error_log_message(ErrorCode::InvalidConfig, breaking_change_message);
     }
 
     fn log_unversioned_breaking_change_warning(
@@ -5404,7 +5404,7 @@ impl DbtModel {
             \n  - {breaking_change}\n"
         );
 
-        emit_warn_log_message(ErrorCode::UnversionedBreakingChange, warning_message, None);
+        emit_warn_log_message(ErrorCode::UnversionedBreakingChange, warning_message);
     }
 }
 

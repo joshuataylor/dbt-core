@@ -1,6 +1,5 @@
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::create_relation;
-use dbt_common::io_utils::StatusReporter;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
@@ -11,7 +10,6 @@ use dbt_schemas::schemas::{
     CommonAttributes, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest, InternalDbtNode,
 };
 use dbt_yaml::{Spanned, Value as YmlValue};
-use minijinja::Environment;
 use minijinja::arg_utils::ArgParser;
 use minijinja::constants::{ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID, THREAD_ID};
 use minijinja::{
@@ -21,7 +19,6 @@ use minijinja::{
 };
 use regex::Regex;
 use serde::Deserialize;
-use std::any::Any;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -709,21 +706,6 @@ pub fn add_task_context(
         THREAD_ID.to_string(),
         MinijinjaValue::from(format!("Thread-{}", thread_id)),
     );
-}
-
-/// Set the status reporter on the environment.
-pub(crate) fn set_status_reporter(
-    env: &mut Environment,
-    status_reporter: Option<Arc<dyn StatusReporter>>,
-) {
-    env.status_reporter = status_reporter.map(|x| Arc::new(x) as Arc<dyn Any + Send + Sync>);
-}
-
-/// Get the status reporter from the environment.
-pub(crate) fn get_status_reporter<'a>(env: &'a Environment) -> Option<&'a Arc<dyn StatusReporter>> {
-    env.status_reporter
-        .as_ref()
-        .and_then(|x| x.downcast_ref::<Arc<dyn StatusReporter>>())
 }
 
 #[cfg(test)]

@@ -69,7 +69,7 @@ pub fn load_profiles(
     // Resolve the profile using dbt-profile's Jinja environment, plus the same base
     // functions as full dbt Jinja (`tojson`, `fromjson`, etc.) so profiles.yml matches dbt-core.
     let mut penv = ProfileEnvironment::new(arg.vars.clone());
-    register_base_functions(&mut penv.env, arg.io.clone(), WarnErrorOptions::default());
+    register_base_functions(&mut penv.env, WarnErrorOptions::default());
     let resolved: ResolvedProfile = resolve_with_env_ext(
         &penv,
         &profile_path,
@@ -101,8 +101,7 @@ pub fn load_profiles(
         )
     })?;
 
-    let allow_experimental_adapters =
-        experimental_adapters_allowed(arg.io.status_reporter.as_ref());
+    let allow_experimental_adapters = experimental_adapters_allowed();
     enforce_adapter_gating(db_config.adapter_type(), allow_experimental_adapters)?;
 
     // Parse the optional alternate compute target output.
@@ -128,7 +127,6 @@ pub fn load_profiles(
             "The `execute:` field in profiles.yml is no longer supported and will be ignored. \
              Use the `--compute inline|sidecar|service|remote` CLI flag instead. \
              Please remove `execute:` from your profile.",
-            arg.io.status_reporter.as_ref(),
         );
     }
 
@@ -194,7 +192,6 @@ fn get_profile_with_span(
 mod tests {
     use super::*;
 
-    use dbt_common::io_args::IoArgs;
     use dbt_common::warn_error_options::WarnErrorOptions;
     use dbt_jinja_utils::register_base_functions;
     use dbt_profile::ProfileEnvironment;
@@ -220,11 +217,7 @@ mod tests {
     #[test]
     fn loader_registers_tojson_function_on_profile_env() {
         let mut penv = ProfileEnvironment::new(Default::default());
-        register_base_functions(
-            &mut penv.env,
-            IoArgs::default(),
-            WarnErrorOptions::default(),
-        );
+        register_base_functions(&mut penv.env, WarnErrorOptions::default());
         let out = penv
             .env
             .render_str("{{ tojson({'a': 1}) }}", &penv.ctx, &[])

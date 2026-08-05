@@ -138,7 +138,7 @@ fn warn_duplicate_columns(node_id: Option<String>) -> impl FnOnce(&[RenamedColum
             write!(msg, "'{}' -> '{}'", r.original, r.renamed).unwrap();
         }
 
-        emit_warn_log_message(ErrorCode::DuplicateColumns, msg, None);
+        emit_warn_log_message(ErrorCode::DuplicateColumns, msg);
     }
 }
 
@@ -2102,7 +2102,6 @@ impl AdapterImpl {
                         name,
                         self.adapter_type()
                     ),
-                    None,
                 );
                 // None is falsy, so features should be named in such a way that
                 // `false` is the most reasonable assumption.

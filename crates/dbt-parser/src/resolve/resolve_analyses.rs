@@ -67,14 +67,7 @@ pub async fn resolve_analyses(
     let config_resolver = ProjectConfigResolver::build(
         root_project_configs.analyses.clone(),
         dependency_package_name.is_some(),
-        || {
-            init_project_config(
-                &arg.io,
-                &package.dbt_project.analyses,
-                (),
-                dependency_package_name,
-            )
-        },
+        || init_project_config(&package.dbt_project.analyses, (), dependency_package_name),
     )?;
 
     let render_ctx = RenderCtx {
@@ -308,7 +301,7 @@ pub async fn resolve_analyses(
                 "Unused schema.yml entry for analysis '{}'",
                 analysis_name,
             );
-            emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*err);
         }
     }
 

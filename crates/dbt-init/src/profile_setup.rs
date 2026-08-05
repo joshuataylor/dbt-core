@@ -87,7 +87,7 @@ impl ProjectStore {
         }
 
         let io_args = IoArgs::default();
-        let yaml_value = value_from_file(&io_args, &dbt_cloud_config_path, true, None)?;
+        let yaml_value = value_from_file(&dbt_cloud_config_path, true, None)?;
 
         let env = initialize_load_profile_jinja_environment();
         let empty_context = HashMap::<String, String>::new();
@@ -588,7 +588,6 @@ impl ProfileSetup {
                 emit_warn_log_message(
                     ErrorCode::DbtPlatformApiError,
                     format!("Failed to fetch cloud config: {e}"),
-                    None,
                 );
                 Ok(None)
             }

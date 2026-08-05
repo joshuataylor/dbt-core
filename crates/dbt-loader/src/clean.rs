@@ -13,7 +13,7 @@ use dbt_common::{
     cancellation::CancellationToken,
     constants::{DBT_PROJECT_YML, DBT_TARGET_DIR_NAME},
     err, fs_err,
-    io_args::{EvalArgs, EvalArgsBuilder, IoArgs},
+    io_args::{EvalArgs, EvalArgsBuilder},
     lease,
     path::DbtPath,
     stdfs,
@@ -111,11 +111,11 @@ pub async fn clean_project(
 
     let all_safe = paths_to_delete.iter().all(|path_to_delete| {
         // The clean command does not delete anything outside of the project directory
-        unrelated_paths(&arg.io, &arg.io.in_dir, path_to_delete)
+        unrelated_paths(&arg.io.in_dir, path_to_delete)
             // The clean command does not delete protected directories ("models", "macros", etc.)
             && protected_paths
                 .iter()
-                .all(|protected_path| unrelated_paths(&arg.io, protected_path, path_to_delete))
+                .all(|protected_path| unrelated_paths(protected_path, path_to_delete))
     });
 
     if all_safe {
@@ -187,7 +187,7 @@ pub async fn clean_project(
     Ok(())
 }
 
-fn unrelated_paths<P: AsRef<Path>, Q: AsRef<Path>>(io: &IoArgs, to: P, from: Q) -> bool {
+fn unrelated_paths<P: AsRef<Path>, Q: AsRef<Path>>(to: P, from: Q) -> bool {
     match stdfs::diff_paths(&to, &from).and_then(|diff| {
         // It is safe to delete a directory if the only way to get to a protected directory is to navigate to the parent.
         if diff.components().next() == Some(std::path::Component::ParentDir) {
@@ -202,7 +202,7 @@ fn unrelated_paths<P: AsRef<Path>, Q: AsRef<Path>>(io: &IoArgs, to: P, from: Q) 
     }) {
         Ok(_) => true,
         Err(e) => {
-            emit_error_log_from_fs_error(*e, io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*e);
             false
         }
     }

@@ -109,7 +109,7 @@ pub async fn get_or_install_packages(
     }
 
     // This gets the package entries from packages.yml or dependencies.yml
-    let (package_def, package_yml_name) = load_dbt_packages(io, &io.in_dir).await?;
+    let (package_def, package_yml_name) = load_dbt_packages(&io.in_dir).await?;
 
     let dbt_packages_lock = if let Some(ref dbt_packages) = package_def {
         deps_context.notices.collect(dbt_packages);
@@ -180,7 +180,6 @@ pub async fn get_or_install_packages(
             emit_warn_log_message(
                 ErrorCode::InvalidConfig,
                 "Cannot upgrade packages without packages.yml or dependencies.yml. Using existing package-lock.yml.",
-                io.status_reporter.as_ref(),
             );
         }
 

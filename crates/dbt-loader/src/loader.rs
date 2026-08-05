@@ -9,7 +9,6 @@ use dbt_common::constants::{
     DBT_CATALOGS_YML, DBT_DEPENDENCIES_YML, DBT_PACKAGES_LOCK_FILE, DBT_PACKAGES_YML, DBT_VARS_YML,
 };
 use dbt_common::io_args::{InternalPackageMode, ReplayMode, TimeMachineMode};
-use dbt_common::io_utils::StatusReporter;
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::path::DbtPath;
 use dbt_common::tracing::TracingConfigProvider;
@@ -58,7 +57,7 @@ use dbt_jinja_vars::DbtVars;
 use dbt_schemas::schemas::project::{self, DbtProjectSimplified, ProjectDbtCloudConfig};
 use dbt_schemas::state::{DbtAsset, DbtPackage, DbtState, ResourcePathKind};
 
-use crate::args::{IoArgs, LoadArgs};
+use crate::args::LoadArgs;
 use crate::dbt_project_yml_loader::load_project_yml;
 use crate::loader_hooks::LoaderHooks;
 use crate::utils::{collect_file_info, identify_package_dependencies};
@@ -77,7 +76,6 @@ fn warn_on_unlinked_cloud_project(
     dbt_cloud_yml: Option<&DbtCloudConfig>,
     project_dbt_cloud: Option<&ProjectDbtCloudConfig>,
     cloud_config: Option<&ResolvedCloudConfig>,
-    io: &IoArgs,
 ) {
     if cloud_config.is_some_and(|c| c.credentials.is_some()) {
         return;
@@ -97,7 +95,7 @@ fn warn_on_unlinked_cloud_project(
          one. Features that need dbt platform credentials will not work.",
         project_id
     );
-    emit_warn_log_from_fs_error(*err, io.status_reporter.as_ref());
+    emit_warn_log_from_fs_error(*err);
 }
 
 fn resolve_and_set_threads(
@@ -146,7 +144,6 @@ pub(crate) fn resolve_and_reload_weo_from_project(
     from_cli: Option<bool>,
     from_cli_or_env: Option<&WarnErrorOptions>,
     tracing_features: Option<&dyn TracingConfigProvider>,
-    status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
 ) -> FsResult<ResolvedWarnErrorOptions> {
     let (warn_error, warn_error_options) = resolve_warn_error_options(
         from_cli,
@@ -157,24 +154,16 @@ pub(crate) fn resolve_and_reload_weo_from_project(
     let (warning_messages, error_message) = warn_error_options.validation_messages();
 
     for message in warning_messages {
-        emit_warn_log_message(
-            ErrorCode::NotSupportedWarnErrorOption,
-            message,
-            status_reporter,
-        );
+        emit_warn_log_message(ErrorCode::NotSupportedWarnErrorOption, message);
     }
 
     if let Some(message) = error_message {
-        emit_error_log_message(ErrorCode::InvalidOptions, &message, status_reporter);
+        emit_error_log_message(ErrorCode::InvalidOptions, &message);
         return Err(dbt_common::FsError::exit_with_status(1));
     }
 
     if let Some(msg) = warn_error_options.deprecated_keys_message() {
-        emit_warn_log_message(
-            ErrorCode::WEOIncludeExcludeDeprecation,
-            msg,
-            status_reporter,
-        );
+        emit_warn_log_message(ErrorCode::WEOIncludeExcludeDeprecation, msg);
     }
     if let Some(tracing_handle) = tracing_features {
         tracing_handle.set_warn_error_options(warn_error_options.clone());
@@ -229,7 +218,6 @@ pub async fn load(
                         "Ignoring dbt_cloud.yml: {}. Cloud credentials will not be available.",
                         e
                     ),
-                    arg.io.status_reporter.as_ref(),
                 );
                 None
             }
@@ -241,7 +229,6 @@ pub async fn load(
                     "Could not determine dbt_cloud.yml path: {}. Cloud credentials will not be available.",
                     e
                 ),
-                arg.io.status_reporter.as_ref(),
             );
             None
         }
@@ -257,7 +244,6 @@ pub async fn load(
         dbt_cloud_yml.as_ref(),
         simplified_dbt_project.dbt_cloud.as_ref(),
         cloud_config.as_ref(),
-        &arg.io,
     );
 
     // Check if .gitignore exists and add dbt_internal_packages/ to it if not present
@@ -283,7 +269,6 @@ pub async fn load(
         arg.cli_warn_error,
         arg.cli_warn_error_options.as_ref(),
         tracing_features,
-        arg.io.status_reporter.as_ref(),
     )?;
     let mut iarg = iarg;
     if iarg.warn_error != resolved_warn_error_options.warn_error
@@ -632,7 +617,6 @@ pub async fn load_for_clean(arg: &LoadArgs) -> FsResult<DbtState> {
         arg.cli_warn_error,
         arg.cli_warn_error_options.as_ref(),
         None,
-        arg.io.status_reporter.as_ref(),
     )?;
 
     let env = initialize_load_profile_jinja_environment();
@@ -680,12 +664,7 @@ pub async fn load_catalogs(
                 .map_err(|e| yaml_to_fs_error(e, Some(&catalogs_yml_path)))?;
             let text: dbt_yaml::Value =
                 into_typed_with_jinja(&arg.io, raw_text_yml, true, env, &ctx, &[], None, true)?;
-            load_catalogs::load_catalogs(
-                text,
-                &catalogs_yml_path,
-                project_flags,
-                arg.io.status_reporter.as_ref(),
-            )
+            load_catalogs::load_catalogs(text, &catalogs_yml_path, project_flags)
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(fs_err!(
@@ -702,15 +681,12 @@ pub async fn load_catalogs(
 /// file is missing, empty, or has no top-level `vars` key. Invalid types
 /// inside `vars` (e.g. non-string keys, non-mapping `vars:`) surface as
 /// `dbt1013` YAML errors, matching how `dbt_project.yml` handles vars.
-pub fn vars_data_from_root(
-    io_args: &IoArgs,
-    project_root: &Path,
-) -> FsResult<BTreeMap<String, dbt_yaml::Value>> {
+pub fn vars_data_from_root(project_root: &Path) -> FsResult<BTreeMap<String, dbt_yaml::Value>> {
     let vars_yml_path = project_root.join(DBT_VARS_YML);
     if !vars_yml_path.exists() {
         return Ok(BTreeMap::new());
     }
-    let raw = value_from_file(io_args, &vars_yml_path, false, None)?;
+    let raw = value_from_file(&vars_yml_path, false, None)?;
     let vars_value = match raw.get("vars") {
         Some(v) if !v.is_null() => v.clone(),
         _ => return Ok(BTreeMap::new()),
@@ -789,10 +765,10 @@ pub async fn load_simplified_project_and_profiles(
     // Read the input file
     let dbt_project_path = arg.io.in_dir.join(DBT_PROJECT_YML);
 
-    let raw_dbt_project_in_val = value_from_file(&arg.io, &dbt_project_path, false, None)?;
+    let raw_dbt_project_in_val = value_from_file(&dbt_project_path, false, None)?;
 
     // Load vars.yml (if present) and validate mutual exclusivity with dbt_project.yml's vars.
-    let vars_from_file = vars_data_from_root(&arg.io, &arg.io.in_dir)?;
+    let vars_from_file = vars_data_from_root(&arg.io.in_dir)?;
     validate_vars_not_in_both(&raw_dbt_project_in_val, !vars_from_file.is_empty())?;
 
     // Merge for Jinja rendering: CLI overrides vars.yml.
@@ -1845,12 +1821,7 @@ mod tests {
         let path = tmp.path().join(DBT_VARS_YML);
         fs::write(&path, "vars: 1\n").unwrap();
 
-        let io_args = IoArgs {
-            in_dir: tmp.path().to_path_buf(),
-            ..IoArgs::default()
-        };
-        let err = vars_data_from_root(&io_args, tmp.path())
-            .expect_err("non-mapping vars value should error");
+        let err = vars_data_from_root(tmp.path()).expect_err("non-mapping vars value should error");
         let msg = format!("{err}");
         assert!(
             msg.contains("invalid type") || msg.contains("expected"),
@@ -1864,11 +1835,7 @@ mod tests {
         let path = tmp.path().join(DBT_VARS_YML);
         fs::write(&path, "other: 1\n").unwrap();
 
-        let io_args = IoArgs {
-            in_dir: tmp.path().to_path_buf(),
-            ..IoArgs::default()
-        };
-        let map = vars_data_from_root(&io_args, tmp.path()).expect("no vars key is OK");
+        let map = vars_data_from_root(tmp.path()).expect("no vars key is OK");
         assert!(map.is_empty());
     }
 }

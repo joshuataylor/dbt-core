@@ -77,14 +77,7 @@ pub fn resolve_unit_tests(
     let config_resolver = ProjectConfigResolver::build(
         root_project_configs.unit_tests.clone(),
         dependency_package_name.is_some(),
-        || {
-            init_project_config(
-                &arg.io,
-                &package.dbt_project.unit_tests,
-                (),
-                dependency_package_name,
-            )
-        },
+        || init_project_config(&package.dbt_project.unit_tests, (), dependency_package_name),
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
 
@@ -151,7 +144,6 @@ pub fn resolve_unit_tests(
             arg.static_analysis,
             &base_unique_id,
             dependency_package_name,
-            arg.io.status_reporter.as_ref(),
         );
         validate_unit_test_compute(properties_config.compute, &mpe.relative_path)?;
         // Sidecar needs a bound LP. Upgrade baseline to strict like the CLI

@@ -11,8 +11,6 @@ use indexmap::IndexMap;
 use dbt_agate::AgateTable;
 use dbt_common::{
     CodeLocationWithFile, ErrorCode, FsError, fs_err,
-    io_args::IoArgs,
-    io_utils::StatusReporter,
     tracing::dbt_emit::{emit_warn_log_from_fs_error, emit_warn_log_message},
     tracing::emit::{emit_debug_event, emit_info_event},
     warn_error_options::{WarnErrorDecision, WarnErrorOptions},
@@ -35,7 +33,7 @@ use minijinja::{
     value::{Kwargs, Object},
 };
 type YmlValue = dbt_yaml::Value;
-use crate::utils::{ENV_VARS, get_status_reporter, node_metadata_from_state};
+use crate::utils::{ENV_VARS, node_metadata_from_state};
 
 use crate::functions::contract_error::get_contract_mismatches;
 use serde::Serialize;
@@ -89,18 +87,11 @@ fn to_json_string_python_style<T: Serialize>(value: &T) -> Result<String, serde_
 pub use dbt_jinja_vars::{LookupFn, SECRET_PLACEHOLDER, Var};
 
 /// Registers all the functions shared across all contexts
-pub fn register_base_functions(
-    env: &mut Environment,
-    io_args: IoArgs,
-    warn_error_options: WarnErrorOptions,
-) {
+pub fn register_base_functions(env: &mut Environment, warn_error_options: WarnErrorOptions) {
     env.add_global("dbt_version", Value::from(crate::utils::DBT_VERSION));
     env.add_global(
         "exceptions".to_owned(),
-        Value::from_object(Exceptions {
-            io_args,
-            warn_error_options,
-        }),
+        Value::from_object(Exceptions { warn_error_options }),
     );
     // dbt-core templates commonly use Python-ish constants (capitalized).
     // In Jinja2 the canonical values are `none/true/false`, but many dbt projects
@@ -293,7 +284,6 @@ impl Object for DocMacro {
                 format!("Documentation depends on doc '{doc_name}' which was not found"),
             )),
             None => {
-                let status_reporter = get_status_reporter(state.env());
                 let current_span = state.current_span_of_context();
                 let current_file_path = state.current_path().clone();
                 if !current_file_path.as_os_str().is_empty() {
@@ -303,7 +293,7 @@ impl Object for DocMacro {
                         current_span.start_offset,
                         current_file_path,
                     );
-                    self.warn_missing_doc(&target_package, &doc_name, location, status_reporter);
+                    Self::warn_missing_doc(&target_package, &doc_name, location);
                 }
                 Ok(Value::from(Self::missing_doc_placeholder(
                     &target_package,
@@ -315,20 +305,14 @@ impl Object for DocMacro {
 }
 
 impl DocMacro {
-    fn warn_missing_doc(
-        &self,
-        package_name: &str,
-        doc_name: &str,
-        location: CodeLocationWithFile,
-        status_reporter: Option<&Arc<dyn StatusReporter>>,
-    ) {
+    fn warn_missing_doc(package_name: &str, doc_name: &str, location: CodeLocationWithFile) {
         let code = ErrorCode::InvalidConfig;
         let message = format!(
             "doc macro reference '{}' not found for package '{}'",
             doc_name, package_name
         );
         let warning = fs_err!(code, "{}", message).with_location(location);
-        emit_warn_log_from_fs_error(warning, status_reporter)
+        emit_warn_log_from_fs_error(warning)
     }
 
     fn missing_doc_placeholder(package_name: &str, doc_name: &str) -> String {
@@ -1044,7 +1028,6 @@ fn parse_dict_of_lists(dict: &Value) -> Result<IndexMap<String, Vec<String>>, Er
 /// A struct that represents the 'exceptions' object, which makes exceptions.warn() and...
 #[derive(Debug)]
 pub struct Exceptions {
-    io_args: IoArgs,
     warn_error_options: WarnErrorOptions,
 }
 
@@ -1090,7 +1073,7 @@ impl Object for Exceptions {
                     .warn_error_options
                     .decision_for_error_code(warning.code)
                     == WarnErrorDecision::UpgradeToError;
-                emit_warn_log_from_fs_error(*warning, self.io_args.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(*warning);
 
                 if warn_error_decision {
                     return Err(Error::new(ErrorKind::ExitWithStatus, warn_string));
@@ -1292,11 +1275,7 @@ impl Object for Exceptions {
                     "Data type of {name_part} timestamp columns ({snapshot_time_data_type}) does not match derived column 'updated_at' ({updated_at_data_type}). Please update snapshot config 'updated_at'.{location_hint}"
                 );
 
-                emit_warn_log_message(
-                    ErrorCode::SnapshotTimestampMismatch,
-                    warning,
-                    self.io_args.status_reporter.as_ref(),
-                );
+                emit_warn_log_message(ErrorCode::SnapshotTimestampMismatch, warning);
 
                 Ok(Value::UNDEFINED)
             }

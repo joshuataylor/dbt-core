@@ -14,9 +14,7 @@ use chrono::TimeZone;
 use chrono_tz::{Europe::London, Tz};
 use dbt_adapter::{cast_util::THIS_RELATION_KEY, load_store::ResultStore};
 use dbt_common::{
-    io_args::{IoArgs, StaticAnalysisKind},
-    path::DbtPath,
-    serde_utils::convert_yml_to_value_map,
+    io_args::StaticAnalysisKind, path::DbtPath, serde_utils::convert_yml_to_value_map,
 };
 use dbt_frontend_common::error::CodeLocation;
 use dbt_schemas::schemas::{
@@ -73,7 +71,6 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     execute_exists: Arc<AtomicBool>,
     display_path: &Path,
     model_path: &Path,
-    io_args: &IoArgs,
     global_static_analysis: Option<StaticAnalysisKind>,
 ) -> BTreeMap<String, MinijinjaValue> {
     // Create a relation for 'this' using config values
@@ -178,7 +175,6 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     let config_value = MinijinjaValue::from_object(ParseConfig {
         enabled: is_enabled,
         sql_resources: sql_resources.clone(),
-        io_args: io_args.clone().into(),
         package_dependency: package_dependency.clone(),
         error_path: Some(display_path.to_path_buf()),
     });
@@ -187,7 +183,6 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         MinijinjaValue::from_object(ParseConfig {
             enabled: is_enabled,
             sql_resources,
-            io_args: io_args.clone().into(),
             package_dependency,
             error_path: Some(display_path.to_path_buf()),
         }),
@@ -643,8 +638,6 @@ pub struct ParseConfig<T: ResolvableConfig<T> + 'static> {
     pub sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
     /// Whether the model is enabled (based on upstream config)
     pub enabled: bool,
-    /// IoArgs to be used for error reporting
-    pub io_args: Arc<IoArgs>,
     // Current package name
     pub package_dependency: Option<String>,
     /// Error path to be used for error reporting
@@ -726,7 +719,6 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
 
         let yaml_value = dbt_yaml::Value::Mapping(mapping, span);
         let config: T = into_typed_with_error(
-            &self.io_args,
             yaml_value,
             true,
             self.package_dependency.as_deref(),
@@ -970,7 +962,6 @@ mod test {
         ParseConfig {
             sql_resources: Arc::new(Mutex::new(Vec::new())),
             enabled: true,
-            io_args: Arc::new(IoArgs::default()),
             package_dependency: None,
             error_path: None,
         }

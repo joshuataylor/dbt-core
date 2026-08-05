@@ -360,7 +360,6 @@ impl StateArtifacts {
                         "The state and target directories are the same: '{}'. This could lead to missing changes due to overwritten state.",
                         state_path.display()
                     ),
-                    None,
                 );
             }
         }
@@ -413,7 +412,6 @@ impl StateArtifacts {
                                 state_path.display(),
                                 e
                             ),
-                            None,
                         );
                     }
                     OnManifestLoadFailure::Ignore => {}

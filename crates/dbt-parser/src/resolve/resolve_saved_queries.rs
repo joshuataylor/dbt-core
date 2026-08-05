@@ -85,7 +85,6 @@ pub async fn resolve_saved_queries(
         is_dependency,
         || {
             init_project_config(
-                &arg.io,
                 &package.dbt_project.saved_queries,
                 (),
                 dependency_package_name,
@@ -106,7 +105,7 @@ pub async fn resolve_saved_queries(
                     "Saved query name '{}' can only contain letters, numbers, and underscores.",
                     saved_query_name
                 );
-                emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e);
 
                 continue;
             }

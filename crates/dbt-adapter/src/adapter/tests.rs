@@ -35,7 +35,6 @@ fn make_duckdb_parse_adapter() -> Arc<Adapter> {
         DEFAULT_DBT_QUOTING,
         Arc::new(DefaultTypeOps::new(AdapterType::DuckDB)),
         None,
-        None,
     );
     Arc::new(adapter)
 }

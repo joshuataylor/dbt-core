@@ -125,14 +125,7 @@ pub fn resolve_nested_model_metrics(
     let config_resolver = ProjectConfigResolver::build(
         root_project_configs.metrics.clone(),
         dependency_package_name.is_some(),
-        || {
-            init_project_config(
-                &arg.io,
-                &package.dbt_project.metrics,
-                (),
-                dependency_package_name,
-            )
-        },
+        || init_project_config(&package.dbt_project.metrics, (), dependency_package_name),
     )?;
 
     for (model_name, model_props) in typed_models_properties.iter() {
@@ -167,7 +160,7 @@ pub fn resolve_nested_model_metrics(
 
                 // Validate metric (name and window)
                 if let Err(e) = validate_metric(metric_props) {
-                    emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+                    emit_error_log_from_fs_error(*e);
 
                     continue;
                 }
@@ -180,7 +173,6 @@ pub fn resolve_nested_model_metrics(
                             "Duplicate metric name '{}' found in package '{}'",
                             metric_name, package_name
                         ),
-                        arg.io.status_reporter.as_ref(),
                     );
                     continue;
                 }
@@ -351,14 +343,7 @@ pub fn resolve_top_level_metrics(
     let config_resolver = ProjectConfigResolver::build(
         root_project_configs.metrics.clone(),
         dependency_package_name.is_some(),
-        || {
-            init_project_config(
-                &arg.io,
-                &package.dbt_project.metrics,
-                (),
-                dependency_package_name,
-            )
-        },
+        || init_project_config(&package.dbt_project.metrics, (), dependency_package_name),
     )?;
 
     for (metric_name, mpe) in minimal_metric_properties.iter() {
@@ -402,7 +387,7 @@ pub fn resolve_top_level_metrics(
 
         // Validate metric (name and window)
         if let Err(e) = validate_metric(&metric_props) {
-            emit_error_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*e);
 
             continue;
         }
@@ -415,7 +400,6 @@ pub fn resolve_top_level_metrics(
                     "Duplicate metric name '{}' found in package '{}'",
                     metric_name, package_name
                 ),
-                arg.io.status_reporter.as_ref(),
             );
             continue;
         }

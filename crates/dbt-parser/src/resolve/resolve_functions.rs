@@ -88,7 +88,6 @@ pub async fn resolve_functions(
         dependency_package_name.is_some(),
         || {
             init_project_config(
-                &arg.io,
                 &package.dbt_project.functions,
                 package_quoting,
                 dependency_package_name,
@@ -286,14 +285,9 @@ pub async fn resolve_functions(
                         unique_id: unique_id.as_str(),
                     },
                     dependency_package_name,
-                    arg.io.status_reporter.as_ref(),
                 );
                 if dbt_asset.is_python() {
-                    crate::validation::warn_python_static_analysis(
-                        kind,
-                        unique_id.as_str(),
-                        arg.io.status_reporter.as_ref(),
-                    );
+                    crate::validation::warn_python_static_analysis(kind, unique_id.as_str());
                 }
             }
         }
@@ -483,7 +477,7 @@ pub async fn resolve_functions(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
-                emit_error_log_from_fs_error(err_with_loc, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc);
             }
         }
 

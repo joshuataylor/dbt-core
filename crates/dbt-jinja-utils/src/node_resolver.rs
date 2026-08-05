@@ -12,7 +12,6 @@ use dbt_adapter::relation::{
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
     CodeLocationWithFile, ErrorCode, FsError, FsResult, err, fs_err,
-    io_args::IoArgs,
     tracing::dbt_emit::{
         emit_error_log_from_fs_error, emit_warn_log_from_fs_error, emit_warn_log_message,
     },
@@ -841,7 +840,6 @@ impl NodeResolverTracker for NodeResolver {
 /// Returns a set of node unique_ids that had resolution errors
 #[allow(clippy::cognitive_complexity)]
 pub fn resolve_dependencies(
-    io: &IoArgs,
     nodes: &mut Nodes,
     disabled_nodes: &mut Nodes,
     operations: &mut dbt_schemas::state::Operations,
@@ -902,7 +900,7 @@ pub fn resolve_dependencies(
                             name
                         )
                         .with_location(location);
-                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc);
                     } else {
                         if !node_base.depends_on.nodes.contains(&dependency_id) {
                             node_base.depends_on.nodes.push(dependency_id.clone());
@@ -923,12 +921,12 @@ pub fn resolve_dependencies(
                         // excluded — dbt-core issues NodeNotFoundOrDisabled in both cases and
                         // never executes the test.
                         has_disabled_or_missing_dependency = disable;
-                        emit_warn_log_from_fs_error(warning, io.status_reporter.as_ref());
+                        emit_warn_log_from_fs_error(warning);
                     } else {
                         // Track this node as having an error (unresolved ref/source)
                         nodes_with_errors.insert(node_unique_id.clone());
                         let err_with_loc = e.with_location(location);
-                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc);
                     }
                 }
             };
@@ -968,12 +966,12 @@ pub fn resolve_dependencies(
                         // excluded — dbt-core issues NodeNotFoundOrDisabled in both cases and
                         // never executes the test.
                         has_disabled_or_missing_dependency = disable;
-                        emit_warn_log_from_fs_error(warning, io.status_reporter.as_ref());
+                        emit_warn_log_from_fs_error(warning);
                     } else {
                         // Track this node as having an error (unresolved ref/source)
                         nodes_with_errors.insert(node_unique_id.clone());
                         let err_with_loc = e.with_location(location);
-                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc);
                     }
                 }
             };
@@ -1010,12 +1008,12 @@ pub fn resolve_dependencies(
                     if (is_test || is_exposure) && e.code == ErrorCode::DisabledDependency {
                         has_disabled_or_missing_dependency = true;
                         let err_with_loc = e.with_location(location);
-                        emit_warn_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
+                        emit_warn_log_from_fs_error(err_with_loc);
                     } else {
                         // Track this node as having an error (unresolved function)
                         nodes_with_errors.insert(node_unique_id.clone());
                         let err_with_loc = e.with_location(location);
-                        emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(err_with_loc);
                     }
                 }
             };
@@ -1090,7 +1088,7 @@ pub fn resolve_dependencies(
                         Err(e) => {
                             nodes_with_errors.insert(operation_unique_id.clone());
                             let err_with_loc = e.with_location(location);
-                            emit_error_log_from_fs_error(err_with_loc, io.status_reporter.as_ref());
+                            emit_error_log_from_fs_error(err_with_loc);
                         }
                     }
                 });
@@ -1131,10 +1129,7 @@ pub fn resolve_dependencies(
                             Err(e) => {
                                 nodes_with_errors.insert(operation_unique_id.clone());
                                 let err_with_loc = e.with_location(location);
-                                emit_error_log_from_fs_error(
-                                    err_with_loc,
-                                    io.status_reporter.as_ref(),
-                                );
+                                emit_error_log_from_fs_error(err_with_loc);
                             }
                         }
                     });
@@ -1164,7 +1159,7 @@ struct DeprecatedModelInfo {
 /// 1. DeprecatedModel (I065): Model's own deprecation_date is in the past
 /// 2. UpcomingReferenceDeprecation (I066): A model references another model with a future deprecation_date
 /// 3. DeprecatedReference (I067): A model references another model with a past deprecation_date
-pub fn check_for_model_deprecations(io: &IoArgs, nodes: &Nodes) {
+pub fn check_for_model_deprecations(nodes: &Nodes) {
     let mut deprecated_models: BTreeMap<String, DeprecatedModelInfo> = BTreeMap::new();
 
     for (uid, model) in &nodes.models {
@@ -1202,7 +1197,7 @@ pub fn check_for_model_deprecations(io: &IoArgs, nodes: &Nodes) {
                  This model should be disabled or removed.",
                 info.name, version_str, info.deprecation_date
             );
-            emit_warn_log_message(ErrorCode::DeprecatedModel, msg, io.status_reporter.as_ref());
+            emit_warn_log_message(ErrorCode::DeprecatedModel, msg);
         }
     }
 
@@ -1240,11 +1235,7 @@ pub fn check_for_model_deprecations(io: &IoArgs, nodes: &Nodes) {
                             ));
                         }
                     }
-                    emit_warn_log_message(
-                        ErrorCode::DeprecatedReference,
-                        msg,
-                        io.status_reporter.as_ref(),
-                    );
+                    emit_warn_log_message(ErrorCode::DeprecatedReference, msg);
                 } else {
                     // Case 3: UpcomingReferenceDeprecation (I066)
                     let mut msg = format!(
@@ -1268,11 +1259,7 @@ pub fn check_for_model_deprecations(io: &IoArgs, nodes: &Nodes) {
                             ));
                         }
                     }
-                    emit_warn_log_message(
-                        ErrorCode::UpcomingReferenceDeprecation,
-                        msg,
-                        io.status_reporter.as_ref(),
-                    );
+                    emit_warn_log_message(ErrorCode::UpcomingReferenceDeprecation, msg);
                 }
             }
         }
@@ -1301,7 +1288,6 @@ pub fn create_function_object_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_common::io_args::IoArgs;
     use dbt_schemas::schemas::common::NodeDependsOn;
     use dbt_schemas::schemas::nodes::{
         CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
@@ -1336,10 +1322,6 @@ mod tests {
             },
             ..Default::default()
         })
-    }
-
-    fn make_io() -> IoArgs {
-        IoArgs::default()
     }
 
     #[test]
@@ -1401,8 +1383,7 @@ mod tests {
         );
 
         // This should not panic and should emit a warning
-        let io = make_io();
-        check_for_model_deprecations(&io, &nodes);
+        check_for_model_deprecations(&nodes);
         // If we get here without panic, the function executed successfully.
         // The warning was emitted via the tracing system.
     }
@@ -1432,8 +1413,7 @@ mod tests {
             ),
         );
 
-        let io = make_io();
-        check_for_model_deprecations(&io, &nodes);
+        check_for_model_deprecations(&nodes);
     }
 
     #[test]
@@ -1461,8 +1441,7 @@ mod tests {
             ),
         );
 
-        let io = make_io();
-        check_for_model_deprecations(&io, &nodes);
+        check_for_model_deprecations(&nodes);
     }
 
     #[test]
@@ -1474,8 +1453,7 @@ mod tests {
             make_model("model.test.my_model", "my_model", "test", None, vec![]),
         );
 
-        let io = make_io();
-        check_for_model_deprecations(&io, &nodes);
+        check_for_model_deprecations(&nodes);
     }
 
     // Regression test for https://github.com/dbt-labs/fs/issues/11382:

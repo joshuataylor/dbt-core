@@ -136,7 +136,6 @@ pub(crate) fn write_runtime_results_parquet(stats: &Stats, arg: &EvalArgs) {
         emit_warn_log_message(
             ErrorCode::IoError,
             format!("Failed to write runtime results parquet: {e}"),
-            arg.io.status_reporter.as_ref(),
         );
     }
 }
@@ -202,7 +201,6 @@ pub(crate) async fn write_catalog_stats_parquet(
         emit_warn_log_message(
             ErrorCode::IoError,
             format!("Failed to write catalog stats parquet: {e}"),
-            arg.io.status_reporter.as_ref(),
         );
     }
 }

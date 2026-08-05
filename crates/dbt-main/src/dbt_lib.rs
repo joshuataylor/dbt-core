@@ -13,7 +13,7 @@ use dbt_clap_core::{
     InternalCommand, LoginSubcommand, ProjectTemplate, ShowArgs, StateSubcommand,
 };
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::io_utils::{StatusReporter, determine_project_dir};
+use dbt_common::io_utils::determine_project_dir;
 use dbt_common::{
     ErrorCode, FsResult,
     artifact_io::write_artifact_to_file,
@@ -22,7 +22,7 @@ use dbt_common::{
         INSTALLING, VALIDATING,
     },
     create_root_info_span, fs_err,
-    io_args::{DisplayFormat, EvalArgs, IoArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
+    io_args::{DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
     node_selector::IndirectSelection,
     path::get_target_write_path,
     pretty_string::{GREEN, RED, color_quotes},
@@ -330,7 +330,7 @@ async fn do_execute_fs(
 ) -> FsResult<()> {
     use CoreCommand::*;
 
-    warn_unused_engine_env_vars(eval_arg.io.status_reporter.as_ref());
+    warn_unused_engine_env_vars();
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -354,7 +354,7 @@ async fn do_execute_fs(
                 ErrorCode::InvalidArgument,
                 "`dbt state explain` does not support --selector. Use --select and --exclude to filter explain output."
             );
-            emit_error_log_from_fs_error(*err, eval_arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*err);
             return Err(FsError::exit_with_status(1));
         }
         let project_dir = state_args
@@ -384,7 +384,7 @@ async fn do_execute_fs(
             Ok(()) => Ok(()),
             Err(err) if err.exit_status().is_some() => Err(err),
             Err(err) => {
-                emit_error_log_from_fs_error(*err, eval_arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err);
                 Err(FsError::exit_with_status(1))
             }
         };
@@ -418,7 +418,6 @@ async fn do_execute_fs(
                 run_docs_serve(
                     serve_args.clone(),
                     &feature_stack,
-                    eval_arg.io.status_reporter.as_ref(),
                     &eval_arg.io.in_dir,
                     &cli.common_args(),
                 )
@@ -431,7 +430,6 @@ async fn do_execute_fs(
                     catalog.json. To host docs locally, use the dbt Core index.html with catalog.json \
                     and manifest.json in the same directory: \
                     https://github.com/dbt-labs/dbt-core/blob/main/core/dbt/task/docs/index.html",
-                    eval_arg.io.status_reporter.as_ref(),
                 );
                 Ok(())
             }
@@ -487,7 +485,7 @@ async fn do_execute_fs(
             }
             Err(e) => {
                 let code = e.exit_status().unwrap_or(1);
-                emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e);
                 return Err(FsError::exit_with_status(code));
             }
         }
@@ -513,7 +511,7 @@ async fn do_execute_fs(
             Ok(()) => Ok(()),
             Err(e) if e.exit_status().is_some() => Err(e),
             Err(e) => {
-                emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*e);
                 Err(FsError::exit_with_status(1))
             }
         };
@@ -556,9 +554,9 @@ pub async fn execute_setup_and_all_phases(
         feature_stack.tracing.config_provider.get_command_name(),
     )?;
 
-    check_options(&eval_arg.io, cli);
+    check_options(cli);
     if let Err(e) = validate_engine_env_vars() {
-        emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
+        emit_error_log_from_fs_error(*e);
         return Err(FsError::exit_with_status(1));
     }
 
@@ -576,7 +574,7 @@ pub async fn execute_setup_and_all_phases(
             // Keep the rendered message for embedders: flattening below drops it,
             // and `exit_with_status` carries no context of its own.
             executor.captured_artifacts.error_message = Some(e.pretty());
-            emit_error_log_from_fs_error(*e, eval_arg.io.status_reporter.as_ref());
+            emit_error_log_from_fs_error(*e);
             Err(FsError::exit_with_status(1))
         }
     };
@@ -1108,7 +1106,6 @@ impl<'a> AllPhasesExecutor<'a> {
             emit_warn_log_message(
                 ErrorCode::Generic,
                 "--write-index: column schemas will not be populated without `--static-analysis strict`; add `--write-lineage` to also write column-level lineage.",
-                self.arg.io.status_reporter.as_ref(),
             );
         } else if self.arg.write_metadata
             && matches!(
@@ -1124,7 +1121,6 @@ impl<'a> AllPhasesExecutor<'a> {
             emit_warn_log_message(
                 ErrorCode::Generic,
                 "--write-index: add `--write-lineage` to write column-level lineage into compile/cll parquet.",
-                self.arg.io.status_reporter.as_ref(),
             );
         }
 
@@ -1479,7 +1475,6 @@ impl<'a> AllPhasesExecutor<'a> {
                             emit_warn_log_message(
                                 ErrorCode::Generic,
                                 "--lineage requires --static-analysis strict; no column lineage written.",
-                                self.arg.io.status_reporter.as_ref(),
                             );
                         }
                         write_metadata_parquet(
@@ -1501,7 +1496,6 @@ impl<'a> AllPhasesExecutor<'a> {
                         emit_warn_log_message(
                             ErrorCode::Generic,
                             format!("dbt-index: column_lineage: {e}"),
-                            self.arg.io.status_reporter.as_ref(),
                         );
                         let empty_targets: HashSet<String> = HashSet::new();
                         write_metadata_parquet(
@@ -1540,11 +1534,7 @@ impl<'a> AllPhasesExecutor<'a> {
                             emit_info_log_message("Successfully wrote catalog.json");
                         }
                         Err(e) => {
-                            emit_warn_log_message(
-                                ErrorCode::Generic,
-                                format!("catalog: {e}"),
-                                self.arg.io.status_reporter.as_ref(),
-                            );
+                            emit_warn_log_message(ErrorCode::Generic, format!("catalog: {e}"));
                         }
                     }
                 }
@@ -1569,14 +1559,12 @@ impl<'a> AllPhasesExecutor<'a> {
                             emit_warn_log_message(
                                 ErrorCode::Generic,
                                 format!("dbt-index: save_artifact_meta: {e}"),
-                                self.arg.io.status_reporter.as_ref(),
                             );
                         }
                     }
                     Err(e) => emit_warn_log_message(
                         ErrorCode::Generic,
                         format!("dbt-index: write-index: {e}"),
-                        self.arg.io.status_reporter.as_ref(),
                     ),
                 }
 
@@ -1724,7 +1712,6 @@ impl<'a> AllPhasesExecutor<'a> {
 async fn run_docs_serve(
     serve_args: ClapDocsServeArgs,
     feature_stack: &Arc<FeatureStack>,
-    status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
     project_dir: &std::path::Path,
     common_args: &dbt_clap_core::CommonArgs,
 ) -> FsResult<()> {
@@ -1757,7 +1744,6 @@ async fn run_docs_serve(
                  or pass `--target-path <DIR>` pointing at a directory whose `index/` subdirectory contains them.",
                 index_dir.display(),
             ),
-            status_reporter,
         );
         return Err(FsError::exit_with_status(1));
     }
@@ -1769,7 +1755,6 @@ async fn run_docs_serve(
                 emit_warn_log_message(
                     ErrorCode::Generic,
                     format!("dbt docs serve: failed to ingest metadata: {err}"),
-                    None,
                 );
             }
         }
@@ -1778,11 +1763,7 @@ async fn run_docs_serve(
     let backend: Arc<dyn Backend> = Arc::new(match DuckDbViewsBackend::open(&index_dir) {
         Ok(b) => b,
         Err(err) => {
-            emit_error_log_message(
-                ErrorCode::Generic,
-                format!("dbt docs serve: {err}"),
-                status_reporter,
-            );
+            emit_error_log_message(ErrorCode::Generic, format!("dbt docs serve: {err}"));
             return Err(FsError::exit_with_status(1));
         }
     });
@@ -1791,27 +1772,25 @@ async fn run_docs_serve(
     dbt_docs_server::run_with_args(Arc::new(args), providers)
         .await
         .map_err(|err| {
-            emit_error_log_message(ErrorCode::Generic, err.to_string(), status_reporter);
+            emit_error_log_message(ErrorCode::Generic, err.to_string());
             FsError::exit_with_status(1)
         })
 }
 
 #[allow(clippy::cognitive_complexity)]
-pub fn check_options(io_args: &IoArgs, cli: &Cli) {
+pub fn check_options(cli: &Cli) {
     let common_args = cli.common_args();
 
     if common_args.no_debug {
         emit_warn_log_message(
             ErrorCode::NotYetSupportedOption,
             "--no-debug is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.cache_selected_only || common_args.no_cache_selected_only {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--cache-selected is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
 
@@ -1819,7 +1798,6 @@ pub fn check_options(io_args: &IoArgs, cli: &Cli) {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--skip-write-msgpack-if-exist is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
 
@@ -1827,14 +1805,12 @@ pub fn check_options(io_args: &IoArgs, cli: &Cli) {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--log-cache-events is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.macro_debugging || common_args.no_macro_debugging {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--macro-debugging is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
 
@@ -1842,77 +1818,66 @@ pub fn check_options(io_args: &IoArgs, cli: &Cli) {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--partial-parse-file-diff is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.partial_parse_file_path.is_some() {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--partial-parse-file-path is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.populate_cache || common_args.no_populate_cache {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--populate-cache is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.print || common_args.no_print {
         emit_warn_log_message(
             ErrorCode::NotYetSupportedOption,
             "--print is not supported yet",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.printer_width != 120 {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--printer-width is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.record_timing_info.is_some() {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--record-timing-info is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.static_parser || common_args.no_static_parser {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--static_parser is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.use_colors || common_args.no_use_colors {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--use-colors is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.use_colors_file || common_args.no_use_colors_file {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--use-colors-file is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.use_experimental_parser || common_args.no_use_experimental_parser {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--use-experimental-parser is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
     if common_args.use_fast_test_edges || common_args.no_use_fast_test_edges {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
             "--use-fast-test-edges is no longer supported",
-            io_args.status_reporter.as_ref(),
         );
     }
 }
@@ -1952,7 +1917,6 @@ async fn try_fetch_catalog(
             emit_warn_log_message(
                 ErrorCode::Generic,
                 format!("Failed to fetch catalog data: {e}"),
-                arg.io.status_reporter.as_ref(),
             );
             None
         }
@@ -2296,7 +2260,6 @@ fn write_catalog_columns_epoch(catalog: &DbtCatalog, arg: &EvalArgs) {
         emit_warn_log_message(
             ErrorCode::Generic,
             format!("metadata: catalog_columns: {e}"),
-            arg.io.status_reporter.as_ref(),
         );
     }
 }

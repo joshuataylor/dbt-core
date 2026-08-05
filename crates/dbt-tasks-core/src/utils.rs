@@ -97,7 +97,6 @@ pub fn write_run_results_json_or_warn(run_results_artifact: &RunResultsArtifact,
         emit_warn_log_message(
             ErrorCode::IoError,
             format!("Failed to write run_results.json: {e}"),
-            arg.io.status_reporter.as_ref(),
         );
     }
 }

@@ -100,7 +100,6 @@ async fn initialize_run_cache_service(
                     "dbt State service config failed: {}; executing normally",
                     format_error_chain(&err)
                 ),
-                None,
             );
             return Ok(RunCacheServiceLifecycle {
                 requested: true,
@@ -158,7 +157,6 @@ async fn initialize_run_cache_service(
                         "dbt State service client initialization failed: {}; executing normally",
                         format_error_chain(&err)
                     ),
-                    None,
                 );
                 return Ok(disconnected_run_cache_service(config));
             }
@@ -191,7 +189,6 @@ async fn initialize_run_cache_service(
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,
                 "dbt State service does not support this client version; executing normally",
-                None,
             );
             Ok(RunCacheServiceLifecycle {
                 requested: true,
@@ -209,7 +206,6 @@ async fn initialize_run_cache_service(
                 emit_warn_log_message(
                     ErrorCode::StateServiceWarn,
                     "dbt State service validation was skipped; executing normally",
-                    None,
                 );
             }
             Ok(RunCacheServiceLifecycle {

@@ -189,7 +189,6 @@ impl Task for RunTask {
                                             "Failed to resolve microbatch window for node {}: {e}; executing without dbt State",
                                             self.node.unique_id()
                                         ),
-                                        None,
                                     );
                                     None
                                 }
@@ -310,7 +309,6 @@ impl Task for RunTask {
                                                 "dbt State service clone failed for node {}: {err}; executing normally",
                                                 self.node.unique_id()
                                             ),
-                                            None,
                                         );
                                         clone
                                             .fallback_confirmation()
@@ -569,7 +567,7 @@ impl Task for RunTask {
                             | RunExecutionPath::SideCar
                             | RunExecutionPath::AltCompute
                     ) {
-                        emit_error_log_from_fs_error(*e, ctx.inner.arg.io.status_reporter.as_ref());
+                        emit_error_log_from_fs_error(*e);
                     }
 
                     // Insert stats for the error case so it appears in run_results.json

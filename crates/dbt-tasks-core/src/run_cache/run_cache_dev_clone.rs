@@ -51,7 +51,6 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
                 format!(
                     "dbt State dev clone request preparation failed for node {node_id}: {err}; executing normally"
                 ),
-                None,
             );
             return;
         }
@@ -66,7 +65,6 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
                 format!(
                     "dbt State dev clone registration failed for node {node_id}: {err}; executing normally"
                 ),
-                None,
             );
             return;
         }
@@ -139,7 +137,6 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
                 format!(
                     "dbt State dev clone SQL failed for node {node_id}: {err}; executing normally"
                 ),
-                None,
             );
         }
     }

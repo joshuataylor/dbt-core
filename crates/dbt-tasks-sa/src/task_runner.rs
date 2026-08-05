@@ -203,7 +203,6 @@ impl TaskRunner {
 
     async fn register_schemas(
         &self,
-        run_task_args: &RunTasksArgs,
         schedule: &Schedule<String>,
         base_context: BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()> {
@@ -215,13 +214,7 @@ impl TaskRunner {
         let catalog_schemas_to_register =
             filter_missing_schemas(&self.adapter, &state, &selected_catalog_schemas)?;
 
-        register_catalog_schemas_remote(
-            &run_task_args.io,
-            &self.adapter,
-            &state,
-            catalog_schemas_to_register,
-        )
-        .await
+        register_catalog_schemas_remote(&self.adapter, &state, catalog_schemas_to_register).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -239,8 +232,7 @@ impl TaskRunner {
         self.hooks.will_run(&run_task_args, &schedule);
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref()) {
-            self.register_schemas(run_task_args.as_ref(), &schedule, base_context)
-                .await?;
+            self.register_schemas(&schedule, base_context).await?;
             true
         } else {
             false
@@ -467,10 +459,7 @@ impl TaskRunner {
                             // execution failure is handled (see visitor.rs): emit it so it
                             // prints and drives a non-zero exit code, without unwinding out
                             // of `run()` and discarding the per-model stats.
-                            emit_error_log_from_fs_error(
-                                *e,
-                                run_task_args.io.status_reporter.as_ref(),
-                            );
+                            emit_error_log_from_fs_error(*e);
                             hook_failed = true;
                         }
                     }

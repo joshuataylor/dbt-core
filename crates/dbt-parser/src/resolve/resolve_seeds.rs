@@ -113,7 +113,6 @@ pub async fn resolve_seeds(
     let config_resolver =
         ProjectConfigResolver::build(root_project_configs.seeds.clone(), is_dependency, || {
             init_project_config(
-                io_args,
                 &package.dbt_project.seeds,
                 package_quoting,
                 dependency_package_name,
@@ -240,7 +239,6 @@ pub async fn resolve_seeds(
             arg.static_analysis,
             seed_name,
             dependency_package_name,
-            arg.io.status_reporter.as_ref(),
         );
 
         // XXX: normalize column_types to uppercase if it is snowflake
@@ -394,7 +392,7 @@ pub async fn resolve_seeds(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());
-                emit_error_log_from_fs_error(err_with_loc, io_args.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc);
             }
         }
 
@@ -430,10 +428,10 @@ pub async fn resolve_seeds(
                 "Unused schema.yml entry for seed '{}'",
                 seed_name,
             );
-            emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*err);
         }
     }
 
-    trigger_duplicate_errors(io_args, &mut duplicate_errors)?;
+    trigger_duplicate_errors(&mut duplicate_errors)?;
     Ok((seeds, disabled_seeds))
 }

@@ -382,7 +382,6 @@ where
         execute_exists.clone(),
         &display_path,
         &model_path,
-        &args.io,
         args.static_analysis,
     ));
 
@@ -588,19 +587,13 @@ where
                     ErrorCode::DisabledModel => ModelStatus::Disabled,
                     ErrorCode::MacroSyntaxInvalid => {
                         let err_with_loc = err.with_location(display_path.clone());
-                        emit_error_log_from_fs_error(
-                            err_with_loc,
-                            args.io.status_reporter.as_ref(),
-                        );
+                        emit_error_log_from_fs_error(err_with_loc);
                         ModelStatus::ParsingFailed
                     }
                     _ => {
                         if was_enabled {
                             let err_with_loc = err.with_location(display_path.clone());
-                            emit_error_log_from_fs_error(
-                                err_with_loc,
-                                args.io.status_reporter.as_ref(),
-                            );
+                            emit_error_log_from_fs_error(err_with_loc);
                             ModelStatus::ParsingFailed
                         } else {
                             ModelStatus::Disabled
@@ -727,7 +720,6 @@ pub async fn render_unresolved_sql_files<
         })
         .collect();
 
-    let io = &render_ctx.inner.args.io;
     let render_ctx = Arc::new(render_ctx.clone());
     let token = token.clone();
 
@@ -775,7 +767,7 @@ pub async fn render_unresolved_sql_files<
         node_properties.extend(chunk_node_properties);
     }
 
-    trigger_duplicate_errors(io, &mut duplicate_errors)?;
+    trigger_duplicate_errors(&mut duplicate_errors)?;
     Ok(results)
 }
 
@@ -1045,7 +1037,7 @@ pub fn collect_hook_dependencies_from_config(
                     err.to_string()
                 )
                 .with_location(resource_path.to_path_buf());
-                emit_warn_log_from_fs_error(err, io.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(err);
 
                 Ok(()) // Return Ok to avoid breaking the build
             }

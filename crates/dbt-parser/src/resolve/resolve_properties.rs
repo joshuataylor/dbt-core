@@ -201,7 +201,6 @@ impl MinimalProperties {
                                     properties_path.display(),
                                     existing_entry.relative_path.display()
                                 ),
-                                io_args.status_reporter.as_ref(),
                             );
                         } else {
                             self.source_tables.insert(
@@ -226,7 +225,6 @@ impl MinimalProperties {
                             source.name,
                             properties_path.display()
                         ),
-                        io_args.status_reporter.as_ref(),
                     );
                 }
             }
@@ -620,7 +618,6 @@ pub fn resolve_minimal_properties(
         is_dependency,
         || {
             init_project_config(
-                &arg.io,
                 &package.dbt_project.semantic_models,
                 (),
                 Some(package.dbt_project.name.as_str()),
@@ -656,7 +653,6 @@ pub fn resolve_minimal_properties(
             let input = try_read_yml_to_str(&absolute_path)?;
 
             let result = match from_yaml_raw::<DbtPropertiesFileValues>(
-                &arg.io,
                 &input,
                 Some(&absolute_path),
                 true,
@@ -691,7 +687,6 @@ pub fn resolve_minimal_properties(
                                     "The package '{}' defines semantic models and metrics using the legacy YAML. Please migrate to the new YAML to use the semantic layer with dbt Fusion.",
                                     &package.dbt_project.name,
                                 ),
-                                arg.io.status_reporter.as_ref(),
                             );
 
                             minimal_resolved_properties.semantic_layer_spec_is_legacy = true;
@@ -707,7 +702,7 @@ pub fn resolve_minimal_properties(
             // regardless of outcome.
             let _ = result.as_ref().record_status(&span);
             if let Err(e) = result {
-                emit_strict_parse_error(*e, dependency_package_name, &arg.io);
+                emit_strict_parse_error(*e, dependency_package_name);
             }
         }
     }

@@ -466,7 +466,6 @@ pub fn insert_compiled_view_definition(
                 "Skipping compiled view definition insert for node {}: canonical FQN unavailable; cannot determine deferral status",
                 node.unique_id()
             ),
-            None,
         );
         return;
     };
@@ -820,7 +819,6 @@ fn maybe_warn_slow_metadata_prefetch(ctx: &TaskRunnerCtx, elapsed: std::time::Du
              contention, resulting in these queries being executed significantly faster.",
             elapsed.as_secs_f64()
         ),
-        None,
     );
 }
 
@@ -972,7 +970,6 @@ async fn prefetch_last_modified_for_schema_group(
                      caching unknown freshness for {} relations",
                     semantic_to_name.len()
                 ),
-                None,
             );
             for name in semantic_to_name.values() {
                 ctx.inner
@@ -1009,7 +1006,6 @@ async fn prefetch_last_modified_for_schema_group(
                  falling back to per-node warehouse queries for {} relations",
                 semantic_to_name.len()
             ),
-            None,
         );
         let empty_overrides = BTreeMap::new();
         let freshness = metadata_adapter
@@ -1083,7 +1079,6 @@ pub async fn run_cache_service_before_run(ctx: &TaskRunnerCtx) -> AdapterResult<
                     "dbt State dependency last-modified prefetch failed: {err}; \
                      falling back to per-node freshness lookups"
                 ),
-                None,
             );
         }
         prefetch_ctx.inner.run_cache_ctx.prefetch.mark_done();
@@ -1124,7 +1119,6 @@ async fn await_prefetch(ctx: &TaskRunnerCtx) {
                 "dbt State dependency last-modified prefetch task did not complete cleanly: {err}; \
                  continuing"
             ),
-            None,
         );
     }
     prefetch.mark_done();
@@ -1423,7 +1417,6 @@ pub async fn run_cache_service_before_execution(
                 "dbt State service hook reached while service mode is disabled for node {}; executing normally",
                 node.unique_id()
             ),
-            None,
         );
         write_state_explain_node(ctx, node, None);
         return RunCacheServiceDecision::execute_without_confirmation();
@@ -1436,7 +1429,6 @@ pub async fn run_cache_service_before_execution(
                 "dbt State service was requested but no validated client is available for node {}; executing normally",
                 node.unique_id()
             ),
-            None,
         );
         write_state_explain_node(ctx, node, None);
         return RunCacheServiceDecision::execute_without_confirmation();
@@ -1468,7 +1460,6 @@ pub async fn run_cache_service_before_execution(
                         "dbt State service record preparation failed for node {}: {err}; executing normally",
                         node.unique_id()
                     ),
-                    None,
                 );
                 RunCacheServiceDecision::execute_without_confirmation()
             }
@@ -1556,7 +1547,6 @@ pub async fn run_cache_service_before_execution(
                     "dbt State service submit failed for node {}: {err}; executing normally",
                     node.unique_id()
                 ),
-                None,
             );
             write_state_explain_node(ctx, node, None);
             // The request failed, so the node rebuilds without tracking; its
@@ -1589,7 +1579,6 @@ fn write_state_explain_node(
         emit_warn_log_message(
             ErrorCode::StateServiceWarn,
             format!("Failed to write dbt State explain node record: {err}"),
-            None,
         );
     }
 }
@@ -1746,7 +1735,6 @@ pub async fn confirm_run_cache_service_execution(
                         "dbt State service final metadata lookup failed for node {}: {err}; command remains successful",
                         node.unique_id()
                     ),
-                    None,
                 );
                 return;
             }
@@ -1761,7 +1749,6 @@ pub async fn confirm_run_cache_service_execution(
                 node.unique_id(),
                 confirmation.request_id
             ),
-            None,
         );
         return;
     };
@@ -1778,7 +1765,6 @@ pub async fn confirm_run_cache_service_execution(
                     "dbt State service confirmation metadata lookup failed for node {}: {err}; command remains successful",
                     node.unique_id()
                 ),
-                None,
             );
             return;
         }
@@ -1802,7 +1788,6 @@ pub async fn confirm_run_cache_service_execution(
                     format!(
                         "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
                     ),
-                    None,
                 );
             }
         }
@@ -1838,7 +1823,6 @@ pub async fn record_run_cache_service_execution(
                 "dbt State service record skipped for node {} because no validated client is available",
                 node.unique_id()
             ),
-            None,
         );
         return;
     };
@@ -1855,7 +1839,6 @@ pub async fn record_run_cache_service_execution(
                     "dbt State service record metadata lookup failed for node {}: {err}; command remains successful",
                     node.unique_id()
                 ),
-                None,
             );
             return;
         }
@@ -1878,7 +1861,6 @@ pub async fn record_run_cache_service_execution(
                     format!(
                         "dbt State service record failed for node {unique_id}: {err}; command remains successful"
                     ),
-                    None,
                 );
             }
         }
@@ -3159,7 +3141,6 @@ fn resolve_tolerate_nondeterminism(
             "Ignoring meta.{KEY} on node {}: value is not a bool, int, or recognized string",
             node.unique_id()
         ),
-        None,
     );
     service_default
 }
@@ -3503,7 +3484,6 @@ fn apply_unresolvable_last_modified_overrides(
             "Could not determine freshness for {}; treating as modified. Configure loaded_at_field or loaded_at_query to set freshness timestamp.",
             unresolvable_without_override.join(", ")
         ),
-        None,
     );
 
     let now_ms = clock.now_ms();
@@ -3659,7 +3639,6 @@ async fn prefetch_last_modified_epochs(
             misses.len(),
             misses.keys().cloned().collect::<Vec<_>>().join(", ")
         ),
-        None,
     );
     let refresh_result =
         refresh_planned_last_modified_misses(ctx, &misses, overrides, ctx.adapter_type()).await;

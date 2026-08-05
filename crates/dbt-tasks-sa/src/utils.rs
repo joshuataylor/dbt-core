@@ -105,7 +105,6 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
             let columns = update_node_columns(
                 resolved_state.adapter_type,
                 type_ops_factory,
-                io,
                 &model.__common_attr__,
                 &model.__base_attr__.columns,
                 entry.inner(),
@@ -171,7 +170,6 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
             let columns = update_node_columns(
                 resolved_state.adapter_type,
                 type_ops_factory,
-                io,
                 &seed.__common_attr__,
                 &seed.__base_attr__.columns,
                 entry.inner(),
@@ -190,7 +188,6 @@ fn update_resolved_states_manifest_with_schemas_and_compiled_sql_core(
             let columns = update_node_columns(
                 resolved_state.adapter_type,
                 type_ops_factory,
-                io,
                 &source.__common_attr__,
                 &source.__base_attr__.columns,
                 entry.inner(),
@@ -366,7 +363,6 @@ pub fn update_resolved_state_node_columns(
 pub fn update_node_columns(
     adapter_type: AdapterType,
     type_ops_factory: &dyn TypeOpsFactory,
-    io: &IoArgs,
     common_attr: &CommonAttributes,
     columns: &[DbtColumnRef],
     schema: &SchemaRef,
@@ -412,7 +408,6 @@ pub fn update_node_columns(
                             "Column '{}' in node '{}' has a type mismatch. Overriding '{}' with '{}'.",
                             column_name, common_attr.unique_id, existing_type, column_type
                         ),
-                        io.status_reporter.as_ref(),
                     );
                 }
             }
@@ -503,7 +498,6 @@ pub fn get_catalog_schemas(
 
 /// Registers the schemas in the database.
 pub async fn register_catalog_schemas_remote(
-    io: &IoArgs,
     adapter: &Arc<Adapter>,
     state: &State<'_, '_>,
     catalog_schemas: Vec<(String, String, String)>,
@@ -517,7 +511,6 @@ pub async fn register_catalog_schemas_remote(
                 "Cannot register databases or schemas in the remote. Adapter '{}' does not support metadata operations.",
                 adapter.adapter_type()
             ),
-            io.status_reporter.as_ref(),
         );
         return Ok(());
     };
@@ -529,11 +522,7 @@ pub async fn register_catalog_schemas_remote(
                 "Failed to create schema '{schema}' in database '{catalog}' in remote for {unique_id}: {e}"
             );
 
-            emit_warn_log_message(
-                ErrorCode::FailedToCreateDatabase,
-                err_string,
-                io.status_reporter.as_ref(),
-            );
+            emit_warn_log_message(ErrorCode::FailedToCreateDatabase, err_string);
         }
     }
 

@@ -407,7 +407,6 @@ impl GrpcRunCacheServiceClient {
                             "dbt State service disabled: {}; executing normally",
                             format_error_chain(&err)
                         ),
-                        None,
                     );
                 }
                 Err(RunCacheServiceError::Disabled)
@@ -580,7 +579,6 @@ where
                     "dbt State client validation failed: {}; executing normally",
                     format_error_chain(&err)
                 ),
-                None,
             );
             Ok(ClientVersionStatus::Skipped)
         }

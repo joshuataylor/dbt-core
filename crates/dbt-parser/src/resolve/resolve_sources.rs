@@ -235,12 +235,7 @@ pub async fn resolve_sources(
 
     let config_resolver =
         ProjectConfigResolver::build(root_project_configs.sources.clone(), is_dependency, || {
-            init_project_config(
-                io_args,
-                &package.dbt_project.sources,
-                (),
-                dependency_package_name,
-            )
+            init_project_config(&package.dbt_project.sources, (), dependency_package_name)
         })?
         .with_resolve_defaults((
             arg.static_analysis.unwrap_or_default(),
@@ -342,7 +337,6 @@ pub async fn resolve_sources(
             arg.static_analysis,
             &unique_id,
             dependency_package_name,
-            arg.io.status_reporter.as_ref(),
         );
 
         // `user_quoting` is the raw source+table YAML merge (no defaults). It is
@@ -428,10 +422,10 @@ pub async fn resolve_sources(
             // when the rule is consumed. F1 (fully-empty rule) is already
             // accepted silently by `FreshnessRules::validate`.
             if let Err(err) = FreshnessRules::validate(freshness.error_after.as_ref()) {
-                emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(*err);
             }
             if let Err(err) = FreshnessRules::validate(freshness.warn_after.as_ref()) {
-                emit_warn_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+                emit_warn_log_from_fs_error(*err);
             }
         }
 
@@ -525,7 +519,7 @@ pub async fn resolve_sources(
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(mpe.relative_path.clone());
-                emit_error_log_from_fs_error(err_with_loc, io_args.status_reporter.as_ref());
+                emit_error_log_from_fs_error(err_with_loc);
             }
         }
 

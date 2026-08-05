@@ -92,7 +92,6 @@ pub async fn resolve_semantic_models(
         is_dependency,
         || {
             init_project_config(
-                &args.io,
                 &package.dbt_project.semantic_models,
                 (),
                 dependency_package_name,
@@ -136,7 +135,6 @@ pub async fn resolve_semantic_models(
                 format!(
                     "Cannot find resolved model '{model_unique_id}' referenced by semantic_model in package '{package_name}'"
                 ),
-                args.io.status_reporter.as_ref(),
             );
             continue;
         };

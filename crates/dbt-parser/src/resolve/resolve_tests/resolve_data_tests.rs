@@ -389,12 +389,7 @@ pub async fn resolve_data_tests(
                 (None, Some(data_tests)) => Some(data_tests),
                 (None, None) => None,
             };
-            init_project_config(
-                &arg.io,
-                &tests_config,
-                package_quoting,
-                dependency_package_name,
-            )
+            init_project_config(&tests_config, package_quoting, dependency_package_name)
         })?
         .with_resolve_defaults((arg.static_analysis.unwrap_or_default(), arg.store_failures));
 
@@ -534,7 +529,6 @@ pub async fn resolve_data_tests(
             arg.static_analysis,
             unique_id.as_str(),
             dependency_package_name,
-            arg.io.status_reporter.as_ref(),
         );
         validate_compute(test_config.compute, &dbt_asset.path)?;
 

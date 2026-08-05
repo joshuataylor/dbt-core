@@ -271,7 +271,6 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 static_analysis,
                 StaticAnalysisDeprecationOrigin::CliArg,
                 None,
-                self.arg.io.status_reporter.as_ref(),
             );
         }
         self.token.check_cancellation()?;
@@ -366,7 +365,6 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 emit_warn_log_message(
                     ErrorCode::Generic,
                     "verify-partial-parse: round-trip FAILED — deserialization did not reconstruct valid state",
-                    self.arg.io.status_reporter.as_ref(),
                 );
             }
         }
@@ -500,19 +498,16 @@ impl<'a> CompilationPhasesExecutor<'a> {
                             emit_warn_log_message(
                                 ErrorCode::Generic,
                                 format!("dbt-index: save_artifact_meta: {e}"),
-                                self.arg.io.status_reporter.as_ref(),
                             );
                         }
                         emit_warn_log_message(
                             ErrorCode::Generic,
                             "--write-index: the index produced by `parse` is incomplete; column schemas and column-level lineage are only written by `compile`, `run`, or `build`.",
-                            self.arg.io.status_reporter.as_ref(),
                         );
                     }
                     Err(e) => emit_warn_log_message(
                         ErrorCode::Generic,
                         format!("dbt-index: write-index: {e}"),
-                        self.arg.io.status_reporter.as_ref(),
                     ),
                 }
             }
@@ -1594,14 +1589,12 @@ impl DbtProjectCompilation {
                             "The selection criterion '{}' does not match any enabled nodes",
                             select_expr
                         ),
-                        None,
                     );
                 }
 
                 emit_warn_log_message(
                     ErrorCode::NoNodesSelected,
                     "Nothing to do. Try checking your model configs and model specification args",
-                    None,
                 );
             }
         }
@@ -1659,7 +1652,6 @@ impl DbtProjectCompilation {
                                 arg.format,
                                 ListOutputFormat::supported_formats_display()
                             ),
-                            None,
                         );
                     }
                     ListOutputFormat::Selector

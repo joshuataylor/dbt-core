@@ -223,7 +223,6 @@ impl AdbcEngine {
                 dbt_common::tracing::dbt_emit::emit_warn_log_message(
                     dbt_common::ErrorCode::InvalidConfig,
                     warning,
-                    None,
                 );
             }
 

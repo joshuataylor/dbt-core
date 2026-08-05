@@ -1,6 +1,4 @@
-use crate::{
-    functions::register_base_functions, jinja_environment::JinjaEnv, utils::set_status_reporter,
-};
+use crate::{functions::register_base_functions, jinja_environment::JinjaEnv};
 use dbt_adapter::Adapter;
 use dbt_common::{
     ErrorCode, FsError, FsResult, fs_err, io_args::IoArgs, unexpected_fs_err,
@@ -407,8 +405,6 @@ impl JinjaEnvBuilder {
 
     /// Build the Minijinja Environment with all configured settings.
     pub fn build(mut self) -> JinjaEnv {
-        let status_reporter = self.io_args.status_reporter.as_ref().map(|x| x.clone());
-
         // Register filters (as_bool, as_number, as_native, as_text)
         // These are used to convert values to the appropriate type that might be
         // expected by the jinja template.
@@ -423,7 +419,7 @@ impl JinjaEnvBuilder {
         let function_registry = self.register_filter_types();
 
         // Register "base" dbt style functions.
-        register_base_functions(&mut self.env, self.io_args, self.warn_error_options);
+        register_base_functions(&mut self.env, self.warn_error_options);
 
         // Register all configured global values.
         // TODO (Ani) type the globals struct to validate we recieve all the globals we need
@@ -439,8 +435,6 @@ impl JinjaEnvBuilder {
         // Pull in the pycompat methods
         self.env
             .set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
-
-        set_status_reporter(&mut self.env, status_reporter);
 
         let mut jinja_env = JinjaEnv::new(self.env);
         if let Some(adapter) = self.adapter {
@@ -620,7 +614,6 @@ all okay!");
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
             None,
-            None,
         );
         let builder: JinjaEnvBuilder = JinjaEnvBuilder::new()
             .with_adapter(Arc::new(adapter) as Arc<Adapter>)
@@ -708,7 +701,6 @@ all okay!");
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
             None,
-            None,
         );
         let builder: JinjaEnvBuilder = JinjaEnvBuilder::new()
             .with_adapter(Arc::new(adapter) as Arc<Adapter>)
@@ -770,7 +762,6 @@ all okay!");
             dbt_yaml::Mapping::default(),
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
-            None,
             None,
         );
         let env = JinjaEnvBuilder::new()
@@ -920,7 +911,6 @@ all okay!");
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
             None,
-            None,
         );
 
         // Root package has no macros
@@ -972,7 +962,6 @@ all okay!");
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
             None,
-            None,
         );
 
         let globals = BTreeMap::from([(
@@ -1017,7 +1006,6 @@ all okay!");
             dbt_yaml::Mapping::default(),
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
-            None,
             None,
         );
 
@@ -1079,7 +1067,6 @@ all okay!");
             dbt_yaml::Mapping::default(),
             DEFAULT_DBT_QUOTING,
             Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
-            None,
             None,
         );
 

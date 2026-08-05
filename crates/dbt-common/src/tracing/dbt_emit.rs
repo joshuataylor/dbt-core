@@ -6,7 +6,7 @@ use dbt_error::{ErrorCode, FsError};
 use dbt_telemetry::{LogMessage, ProgressMessage};
 
 use super::fs_error_log::FsErrorLog;
-use crate::{io_args::IoArgs, io_utils::StatusReporter};
+use crate::io_utils::StatusReporter;
 
 use dbt_tracing::emit::{
     emit_debug_event, emit_error_event, emit_info_event, emit_trace_event, emit_warn_event,
@@ -48,11 +48,7 @@ pub fn emit_trace_log_message(message: impl FnOnce() -> String) {
 
 /// Emit a log message event at ERROR level with the given code and message.
 #[track_caller]
-pub fn emit_error_log_message(
-    code: ErrorCode,
-    message: impl AsRef<str>,
-    _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
+pub fn emit_error_log_message(code: ErrorCode, message: impl AsRef<str>) {
     emit_error_event(
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::ERROR),
         Some(message.as_ref()),
@@ -65,7 +61,6 @@ pub fn emit_error_log_message_package_scoped(
     code: ErrorCode,
     message: impl AsRef<str>,
     package_name: &str,
-    _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
 ) {
     let mut log_message =
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::ERROR);
@@ -75,10 +70,7 @@ pub fn emit_error_log_message_package_scoped(
 
 /// Emit a log message event at ERROR level based on the given FsError.
 #[track_caller]
-pub fn emit_error_log_from_fs_error(
-    error: FsError,
-    _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
+pub fn emit_error_log_from_fs_error(error: FsError) {
     let message = error.message();
     emit_error_event(
         FsErrorLog::new(error, tracing::Level::ERROR),
@@ -88,11 +80,7 @@ pub fn emit_error_log_from_fs_error(
 
 /// Emit a log message event at WARN level with the given code and message.
 #[track_caller]
-pub fn emit_warn_log_message(
-    code: ErrorCode,
-    message: impl AsRef<str>,
-    _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
+pub fn emit_warn_log_message(code: ErrorCode, message: impl AsRef<str>) {
     emit_warn_event(
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::WARN),
         Some(message.as_ref()),
@@ -105,7 +93,6 @@ pub fn emit_warn_log_message_package_scoped(
     code: ErrorCode,
     message: impl AsRef<str>,
     package_name: &str,
-    _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
 ) {
     let mut log_message =
         LogMessage::new_from_level_and_code(code as u32, code.name(), tracing::Level::WARN);
@@ -115,10 +102,7 @@ pub fn emit_warn_log_message_package_scoped(
 
 /// Emit a log message event at WARN level based on the given FsError.
 #[track_caller]
-pub fn emit_warn_log_from_fs_error(
-    warning: FsError,
-    _status_reporter: Option<&Arc<dyn StatusReporter + 'static>>,
-) {
+pub fn emit_warn_log_from_fs_error(warning: FsError) {
     let message = warning.message();
     emit_warn_event(
         FsErrorLog::new(warning, tracing::Level::WARN),
@@ -129,11 +113,7 @@ pub fn emit_warn_log_from_fs_error(
 /// Emit a log message related to parsing error based on the given FsError.
 ///
 #[track_caller]
-pub fn emit_strict_parse_error(
-    error: FsError,
-    package_name: Option<impl AsRef<str>>,
-    _io: &IoArgs,
-) {
+pub fn emit_strict_parse_error(error: FsError, package_name: Option<impl AsRef<str>>) {
     let message = error.message();
     let package_name = package_name.as_ref().map(|name| name.as_ref().to_string());
     let event = FsErrorLog::new(error, tracing::Level::ERROR)

@@ -1212,7 +1212,6 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
                     format!(
                         "Skipping view definition: could not parse `View Catalog and Namespace` ({catalog_and_ns:?}) or fqn ({fqn})"
                     ),
-                    None,
                 );
                 return Ok(());
             };

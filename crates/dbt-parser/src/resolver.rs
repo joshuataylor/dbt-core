@@ -198,7 +198,7 @@ pub async fn resolve(
     let mut disabled_nodes = disabled_nodes;
     resolver_hooks.pre_resolve(&arg.io, adapter_type, &mut nodes, root_project_quoting)?;
     let root_project_configs =
-        build_root_project_configs(arg, dbt_state.root_project(), root_project_quoting)?;
+        build_root_project_configs(dbt_state.root_project(), root_project_quoting)?;
     let root_project_configs = Arc::new(root_project_configs);
     // Process packages in topological order
 
@@ -306,7 +306,7 @@ pub async fn resolve(
     match nodes.warn_on_microbatch(adapter_type) {
         Ok(_) => {}
         Err(e) => {
-            emit_warn_log_from_fs_error(*e, arg.io.status_reporter.as_ref());
+            emit_warn_log_from_fs_error(*e);
         }
     }
 
@@ -342,7 +342,6 @@ pub async fn resolve(
             &package.package_root_path,
             &arg.io.in_dir,
             &jinja_env,
-            &arg.io,
             arg.static_analysis,
             adapter_type,
             &dbt_state.dbt_profile.database,
@@ -362,21 +361,19 @@ pub async fn resolve(
     // take refs and sources, resolve them to a unique_id and put in depends_on
     // This returns a set of node IDs that had resolution errors (unresolved refs/sources)
     let nodes_with_resolution_errors = resolve_dependencies(
-        &arg.io,
         &mut nodes,
         &mut disabled_nodes,
         &mut operations,
         &node_resolver,
     );
     for warning in microbatch_model_no_event_time_inputs_warnings(&nodes) {
-        emit_warn_log_from_fs_error(warning, arg.io.status_reporter.as_ref());
+        emit_warn_log_from_fs_error(warning);
     }
 
     // Check for model deprecation warnings
-    check_for_model_deprecations(&arg.io, &nodes);
+    check_for_model_deprecations(&nodes);
 
     check_unused_resource_config_paths(
-        &arg.io,
         &dbt_state.root_package().package_root_path,
         &nodes,
         &disabled_nodes,
@@ -388,11 +385,11 @@ pub async fn resolve(
     check_compute_platform_upstreams(&nodes)?;
 
     // Check access
-    let nodes_with_access_errors = check_access(arg, &nodes, &all_runtime_configs);
+    let nodes_with_access_errors = check_access(&nodes, &all_runtime_configs);
 
     // Validate function configuration against per-adapter capabilities:
     // JS UDF language support, JS-aggregate restrictions, default arguments.
-    validate_function_config(arg, &nodes, adapter_type);
+    validate_function_config(&nodes, adapter_type);
 
     resolver_hooks.post_resolve(
         &arg.io,
@@ -453,7 +450,6 @@ pub async fn resolve(
 // Check that models accessing other models (dependecies) can do so.
 // Returns the set of unique_ids that have access violations.
 fn check_access(
-    arg: &ResolveArgs,
     nodes: &Nodes,
     all_runtime_configs: &BTreeMap<String, Arc<DbtRuntimeConfig>>,
 ) -> HashSet<String> {
@@ -462,7 +458,6 @@ fn check_access(
     // Check access for models
     for (unique_id, node) in nodes.models.iter() {
         if check_node_access(
-            arg,
             unique_id,
             &node.base().depends_on.nodes_with_ref_location,
             &node.common().package_name,
@@ -480,7 +475,6 @@ fn check_access(
     // Check access for exposures
     for (unique_id, node) in nodes.exposures.iter() {
         if check_node_access(
-            arg,
             unique_id,
             &node.base().depends_on.nodes_with_ref_location,
             &node.common().package_name,
@@ -506,9 +500,8 @@ fn check_access(
 ///   arguments must form a trailing suffix of the argument list (mirrors
 ///   `expand_default_fields` in the SQL binder, which only peels trailing
 ///   defaults when expanding `CREATE FUNCTION` into candidate arities).
-fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: AdapterType) {
+fn validate_function_config(nodes: &Nodes, adapter_type: AdapterType) {
     use AdapterType::*;
-    let status_reporter = arg.io.status_reporter.as_ref();
     for function in nodes.functions.values() {
         let name = &function.__common_attr__.name;
         let language = function.__function_attr__.language.as_deref();
@@ -525,7 +518,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                         name,
                         adapter_type,
                     );
-                    emit_error_log_from_fs_error(*err, status_reporter);
+                    emit_error_log_from_fs_error(*err);
                     continue;
                 }
             }
@@ -536,7 +529,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                     name,
                     adapter_type,
                 );
-                emit_error_log_from_fs_error(*err, status_reporter);
+                emit_error_log_from_fs_error(*err);
                 continue;
             }
             // SQL / Python / unspecified: no per-adapter restrictions today.
@@ -561,7 +554,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                             "Function '{}' has arguments with 'default_value' that are not at the end of the argument list. Defaulted arguments must form a trailing suffix.",
                             name,
                         );
-                        emit_error_log_from_fs_error(*err, status_reporter);
+                        emit_error_log_from_fs_error(*err);
                     }
                 }
                 _ => {
@@ -571,7 +564,7 @@ fn validate_function_config(arg: &ResolveArgs, nodes: &Nodes, adapter_type: Adap
                         name,
                         adapter_type,
                     );
-                    emit_error_log_from_fs_error(*err, status_reporter);
+                    emit_error_log_from_fs_error(*err);
                 }
             }
         }
@@ -611,7 +604,6 @@ fn has_event_time_input(nodes: &Nodes, model: &dyn InternalDbtNode) -> bool {
 /// Helper function to check access for a node referencing other models.
 /// Returns true if any access violation was found.
 fn check_node_access<F>(
-    arg: &ResolveArgs,
     unique_id: &str,
     node_dependencies: &[(String, dbt_common::CodeLocationWithFile)],
     node_package_name: &str,
@@ -643,7 +635,7 @@ where
                     target_unique_id,
                     target_node.__model_attr__.group.as_deref().unwrap_or(""),
                 );
-                emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err);
                 had_violation = true;
             } else if target_node.__model_attr__.access == Access::Protected && diffent_packages {
                 let err = fs_err!(
@@ -654,7 +646,7 @@ where
                     target_unique_id,
                     target_node.common().package_name,
                 );
-                emit_error_log_from_fs_error(*err, arg.io.status_reporter.as_ref());
+                emit_error_log_from_fs_error(*err);
                 had_violation = true;
             }
         }

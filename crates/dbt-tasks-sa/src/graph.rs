@@ -4,7 +4,6 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
 use dbt_dag::deps_mgmt::{find_all_upstream_deps, restrict_with_transitive};
 use dbt_dag::schedule::Schedule;
-use dbt_loader::args::IoArgs;
 use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::schemas::IntrospectionKind;
 use dbt_schemas::schemas::Nodes;
@@ -131,10 +130,7 @@ impl GraphBuilder {
 
         let (graph, nodes_with_no_tasks) = {
             match self.arg.command {
-                FsCommand::Clone => (
-                    build_clone_task_graph(&self.arg.io, schedule, nodes),
-                    BTreeSet::new(),
-                ),
+                FsCommand::Clone => (build_clone_task_graph(schedule, nodes), BTreeSet::new()),
                 FsCommand::Extension("compare") => (
                     self.compare_task_graph_builder
                         .as_ref()
@@ -175,7 +171,6 @@ impl GraphBuilder {
                             emit_warn_log_message(
                                 ErrorCode::Unexpected,
                                 format!("Unhandled command: {:?}", cmd),
-                                self.arg.io.status_reporter.as_ref(),
                             );
                         }
                         (Graph::new(), BTreeSet::new())
@@ -558,7 +553,6 @@ fn create_aggregated_schedule_and_nodes(
 }
 
 fn build_clone_task_graph(
-    io: &IoArgs,
     schedule: &Schedule<String>,
     nodes: &Nodes,
 ) -> DiGraph<Arc<dyn Task>, ()> {
@@ -582,7 +576,6 @@ fn build_clone_task_graph(
             emit_warn_log_message(
                 ErrorCode::Unexpected,
                 format!("Node '{}' is not cloneable. Skipping", unique_id),
-                io.status_reporter.as_ref(),
             );
         }
     }

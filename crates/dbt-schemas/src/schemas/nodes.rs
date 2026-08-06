@@ -346,6 +346,14 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
         }
     }
 
+    /// The kind of path to cite when this node errors during `phase`.
+    ///
+    /// Defaults to the definition path for every phase. Node types whose reporting is
+    /// phase-accurate override this and opt in per phase.
+    fn error_path_kind(&self, _phase: ExecutionPhase) -> NodePathKind {
+        NodePathKind::Definition
+    }
+
     /// Constructs the absolute path for the requested kind.
     ///
     /// `get_node_path` applies node-kind fallback for display/reporting paths. This lower-level
@@ -7069,6 +7077,11 @@ impl InternalDbtNode for DbtAnalysis {
 
     fn resource_type(&self) -> NodeType {
         NodeType::Analysis
+    }
+
+    /// Analysis-phase errors on an analysis cite its compiled SQL under `target/compiled/`.
+    fn error_path_kind(&self, phase: ExecutionPhase) -> NodePathKind {
+        phase.into()
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -27,6 +27,7 @@ members = [
   "crates/dbt-index-core",
   "crates/dbt-lineage-core",
   "crates/dbt-error",
+  "crates/dbt-freshness",
   "crates/dbt-frontend-common",
   "crates/dbt-jinja/minijinja",
   "crates/minijinja-typecheck-builtins",
@@ -248,6 +249,7 @@ dbt-env = { path = "crates/dbt-env" }
 dbt-error = { path = "crates/dbt-error" }
 dbt-feature-gating = { path = "crates/dbt-feature-gating" }
 dbt-features = { path = "crates/dbt-features" }
+dbt-freshness = { path = "crates/dbt-freshness" }
 dbt-frontend-common = { path = "crates/dbt-frontend-common" }
 dbt-goldie = { path = "crates/dbt-goldie" }
 dbt-handles = { path = "crates/dbt-handles" }

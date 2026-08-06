@@ -7,6 +7,7 @@ pub mod dbt_lib;
 pub mod driver;
 pub use driver::{DbtCompilationDriver, DbtTaskExecutionDriver};
 pub mod retry;
+pub mod source_freshness;
 pub mod vars;
 
 pub mod install_method;

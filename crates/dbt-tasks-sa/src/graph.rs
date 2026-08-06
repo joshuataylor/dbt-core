@@ -166,8 +166,11 @@ impl GraphBuilder {
                             self.arg.infer_schemas,
                         )
                     } else {
-                        // Handle unknown commands
-                        if self.arg.command != FsCommand::Extension("jinja-check") {
+                        // Handle unknown commands. `Source` (freshness) and
+                        // `jinja-check` legitimately produce an empty task graph.
+                        if self.arg.command != FsCommand::Extension("jinja-check")
+                            && self.arg.command != FsCommand::Source
+                        {
                             emit_warn_log_message(
                                 ErrorCode::Unexpected,
                                 format!("Unhandled command: {:?}", cmd),

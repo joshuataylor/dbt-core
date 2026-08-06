@@ -1,3 +1,4 @@
+use crate::source_freshness::run_source_freshness;
 use crate::{dbt_lib::write_catalog_json, version_check};
 use arrow::datatypes::SchemaRef;
 use dbt_adapter::{
@@ -1985,6 +1986,21 @@ impl DbtProjectCompilation {
             )
             .await?;
         token.check_cancellation()?;
+
+        // FEATURES: cmd_source_freshness on_run_hooks artifact_output
+        let freshness_results = if arg.command == FsCommand::Source {
+            run_source_freshness(
+                arg,
+                &jinja_env,
+                &resolved_state,
+                &schedule,
+                Arc::clone(&adapter),
+                &base_context,
+            )
+            .await?
+        } else {
+            freshness_results
+        };
 
         feature_stack
             .cli

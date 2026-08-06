@@ -28,8 +28,11 @@ static INSTALLABLE_DRIVERS: &[Backend; 12] = &[
 ];
 
 /// Linux drivers are labelled with the manylinux image they were built in,
-/// so the label is not the same for every driver.
+/// so the label is not the same for every driver. Only `OS_ALTERNATES` and the
+/// tests read these, so off Linux they are dead code outside `cfg(test)`.
+#[cfg(any(target_os = "linux", test))]
 const MANYLINUX_2_17_TARGET_OS: &str = "manylinux_2_17-linux-gnu";
+#[cfg(any(target_os = "linux", test))]
 const MANYLINUX_2_28_TARGET_OS: &str = "manylinux_2_28-linux-gnu";
 const MACOS_TARGET_OS: &str = "apple-darwin";
 const WINDOWS_TARGET_OS: &str = "pc-windows-msvc";

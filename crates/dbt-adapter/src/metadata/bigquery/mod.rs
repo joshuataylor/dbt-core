@@ -6,11 +6,10 @@ use crate::metadata::freshness_overrides::{
     FreshnessTask, FreshnessTaskResult, apply_freshness_task_result, run_override_query,
 };
 use crate::metadata::*;
-use crate::record_batch::RecordBatchExt;
+use crate::record_batch::{RecordBatchExt, StructArrayExt};
 use crate::relation::Relation;
 use crate::{AdapterEngine, AdapterResult};
 
-use arrow_array::cast::AsArray;
 use arrow_array::*;
 use arrow_schema::*;
 use dbt_adapter_core::AdapterType;
@@ -157,15 +156,7 @@ pub fn list_relations_via_adbc(
     //   - table_type: utf8
     //   - table_columns: list
     //   - table_constraints: list
-    let db_schema_tables = schemas_struct
-        .column_by_name("db_schema_tables")
-        .and_then(|c| c.as_any().downcast_ref::<ListArray>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'db_schema_tables' column",
-            )
-        })?;
+    let db_schema_tables = schemas_struct.column_as::<ListArray>("db_schema_tables")?;
 
     let tables_struct = db_schema_tables
         .values()
@@ -178,24 +169,8 @@ pub fn list_relations_via_adbc(
             )
         })?;
 
-    let table_names = tables_struct
-        .column_by_name("table_name")
-        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'table_name' column",
-            )
-        })?;
-    let table_types = tables_struct
-        .column_by_name("table_type")
-        .and_then(|c| c.as_string_opt::<i32>())
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::UnexpectedResult,
-                "Missing or invalid 'table_type' column",
-            )
-        })?;
+    let table_names = tables_struct.column_as::<StringArray>("table_name")?;
+    let table_types = tables_struct.column_as::<StringArray>("table_type")?;
 
     let mut result = Vec::with_capacity(tables_struct.len());
     for j in 0..tables_struct.len() {

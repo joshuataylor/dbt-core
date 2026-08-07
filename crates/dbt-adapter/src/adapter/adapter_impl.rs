@@ -30,7 +30,7 @@ use crate::metadata::salesforce::SalesforceMetadataAdapter;
 use crate::metadata::snowflake::SnowflakeMetadataAdapter;
 use crate::metadata::{self, CatalogAndSchema, MetadataAdapter};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
-use crate::record_batch::{RecordBatchExt, RenamedColumn};
+use crate::record_batch::{RecordBatchExt, RenamedColumn, StructArrayExt};
 use crate::relation::Relation;
 use crate::relation::RelationObject;
 use crate::relation::config_v2::{ComponentConfigLoader, RelationConfig};
@@ -1508,18 +1508,18 @@ impl AdapterImpl {
                 )
             })?;
 
-        let db_schema_names = catalog_db_schemas
+        let schemas_struct = catalog_db_schemas
             .values()
             .as_any()
             .downcast_ref::<arrow::array::StructArray>()
-            .and_then(|s| s.column_by_name("db_schema_name"))
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
             .ok_or_else(|| {
                 AdapterError::new(
                     AdapterErrorKind::UnexpectedResult,
-                    "Missing or invalid 'db_schema_name' column",
+                    "Missing or invalid 'catalog_db_schemas' values",
                 )
-            })?
+            })?;
+        let db_schema_names = schemas_struct
+            .column_as::<StringArray>("db_schema_name")?
             .iter()
             .flatten();
 

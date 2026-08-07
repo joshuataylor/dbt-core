@@ -239,6 +239,25 @@ impl RecordBatchExt for RecordBatch {
     }
 }
 
+pub trait StructArrayExt {
+    /// Looks up a named field in the struct and returns it as a typed array `T`.
+    /// Errors if the field is absent or is not of type `T`.
+    fn column_as<T: 'static>(&self, name: &str) -> AdapterResult<&T>;
+}
+
+impl StructArrayExt for StructArray {
+    fn column_as<T: 'static>(&self, name: &str) -> AdapterResult<&T> {
+        self.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<T>())
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::UnexpectedResult,
+                    format!("Missing or invalid '{name}' column"),
+                )
+            })
+    }
+}
+
 pub trait SchemaExt {
     fn has_dml_columns(&self, adapter_type: AdapterType) -> bool;
 }
@@ -641,6 +660,61 @@ mod tests {
         assert!(error.message().contains(
             "arrow_array::array::primitive_array::PrimitiveArray<arrow_array::types::Int32Type>"
         ));
+    }
+
+    fn string_struct() -> StructArray {
+        StructArray::from(vec![(
+            Arc::new(Field::new("col", DataType::Utf8, false)),
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+        )])
+    }
+
+    #[test]
+    fn column_as_success() {
+        let s = string_struct();
+        let col = s.column_as::<StringArray>("col").unwrap();
+        assert_eq!(col.value(0), "a");
+        assert_eq!(col.value(1), "b");
+    }
+
+    #[test]
+    fn column_as_missing_column() {
+        let s = string_struct();
+        let error = s.column_as::<StringArray>("missing").unwrap_err();
+        assert_eq!(error.kind(), AdapterErrorKind::UnexpectedResult);
+        assert_eq!(error.message(), "Missing or invalid 'missing' column");
+    }
+
+    #[test]
+    fn column_as_wrong_type() {
+        let s = string_struct();
+        let error = s.column_as::<Int32Array>("col").unwrap_err();
+        assert_eq!(error.kind(), AdapterErrorKind::UnexpectedResult);
+        assert_eq!(error.message(), "Missing or invalid 'col' column");
+    }
+
+    #[test]
+    fn column_as_nested_struct() {
+        let inner = string_struct();
+        let outer = StructArray::from(vec![(
+            Arc::new(Field::new("inner", inner.data_type().clone(), false)),
+            Arc::new(inner) as ArrayRef,
+        )]);
+        let got_inner = outer.column_as::<StructArray>("inner").unwrap();
+        let col = got_inner.column_as::<StringArray>("col").unwrap();
+        assert_eq!(col.value(0), "a");
+        assert_eq!(col.value(1), "b");
+    }
+
+    #[test]
+    fn column_as_i32() {
+        let s = StructArray::from(vec![(
+            Arc::new(Field::new("col", DataType::Int32, false)),
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+        )]);
+        let col = s.column_as::<Int32Array>("col").unwrap();
+        assert_eq!(col.value(0), 1);
+        assert_eq!(col.value(1), 2);
     }
 
     #[test]

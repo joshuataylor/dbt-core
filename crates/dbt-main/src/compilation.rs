@@ -97,7 +97,7 @@ use dbt_telemetry::{ExecutionPhase, PhaseExecuted, ShowResult};
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::OnceLock,
 };
@@ -115,7 +115,6 @@ use dbt_tasks_sa::debug::DebugArgs;
 
 use dbt_telemetry::{ArtifactType, ListItemOutput};
 
-use std::collections::BTreeSet;
 use std::{sync::Arc, time::SystemTime};
 
 use serde_json::to_string_pretty;
@@ -555,13 +554,19 @@ impl<'a> CompilationPhasesExecutor<'a> {
                     if self.arg.write_json {
                         write_run_results_json_or_warn(
                             // TODO: should also be captured by the caller?
-                            &build_run_results_artifact(&error_stats, self.arg.as_ref()),
+                            &build_run_results_artifact(
+                                &error_stats,
+                                // Adapter responses are not available during parse phase.
+                                &HashMap::new(),
+                                self.arg.as_ref(),
+                            ),
                             self.arg.as_ref(),
                         );
                     }
                     if self.arg.write_metadata {
                         crate::utils::write_runtime_results_parquet(
                             &error_stats,
+                            &HashMap::new(),
                             self.arg.as_ref(),
                         );
                     }
@@ -2065,7 +2070,17 @@ impl DbtProjectCompilation {
             };
             if arg.write_json {
                 // TODO: should also be captured by the caller?
-                write_run_results_json(&build_run_results_artifact(&run_stats, arg), arg)?;
+                write_run_results_json(
+                    &build_run_results_artifact(
+                        &run_stats,
+                        // NOTE: dbt Core v1 does not populate AdapterResponse on `dbt run-operation`.
+                        // However we technically could pull the adapter responses from the macro
+                        // execution and add them here. We just have to wire it up.
+                        &HashMap::new(),
+                        arg,
+                    ),
+                    arg,
+                )?;
             }
 
             return Err(return_exit_code_from_error_counter());

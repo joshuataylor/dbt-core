@@ -412,7 +412,7 @@ fn populate_schema_from_empty_relation(
         )
     })?;
 
-    let mut run_context = build_run_node_context(
+    let (mut run_context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         ctx.adapter_type(),

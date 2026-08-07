@@ -22,6 +22,16 @@ impl ResultStore {
         results.clear();
     }
 
+    /// Read the `main` statement's [`AdapterResponse`] without consuming it.
+    ///
+    /// `main` is exempt from the load-once rule in [`Self::load_result`], so
+    /// reading it here cannot make a later `load_result('main')` fail.
+    pub fn main_adapter_response(&self) -> Option<AdapterResponse> {
+        let results = self.results.lock().unwrap();
+        let result = results.get("main")?.downcast_object::<ResultObject>()?;
+        Some(result.response.clone())
+    }
+
     /// https://github.com/dbt-labs/dbt-core/blob/34bb3f94dde716a3f9c36481d2ead85c211075dd/core/dbt/context/providers.py#L1043
     pub fn store_result(
         &self,

@@ -131,17 +131,20 @@ pub fn prepare_microbatch_batches(
 
     let event_time_mapping = Arc::new(build_event_time_mapping(model, ctx.nodes()));
 
-    let run_node_context = Arc::new(build_run_node_context(
-        model,
-        &model.deprecated_config,
-        ctx.adapter_type(),
-        None,
-        &base_context,
-        &ctx.inner.arg.io,
-        ExecutionPhase::Run,
-        sql_header,
-        ctx.runtime_config().dependencies.keys().cloned().collect(),
-    ));
+    let run_node_context = Arc::new(
+        build_run_node_context(
+            model,
+            &model.deprecated_config,
+            ctx.adapter_type(),
+            None,
+            &base_context,
+            &ctx.inner.arg.io,
+            ExecutionPhase::Run,
+            sql_header,
+            ctx.runtime_config().dependencies.keys().cloned().collect(),
+        )
+        .0,
+    );
 
     // Group batches: [[first], [mid1, mid2, ...], [last]]
     let concurrent = model.deprecated_config.concurrent_batches.unwrap_or(false);
@@ -220,7 +223,7 @@ pub fn execute_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
     // are cloned (Arc) into every batch; with concurrent_batches the batches
     // interleave store/load for the same statement name (e.g.
     // get_columns_in_relation) and collide with MacroResultAlreadyLoadedError.
-    reset_result_store(&mut ctx_for_batch);
+    let result_store = reset_result_store(&mut ctx_for_batch);
 
     if !mb_unit.batch_ctx.is_first() || mb_unit.is_incremental {
         ctx_for_batch.insert(
@@ -247,6 +250,11 @@ pub fn execute_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         &ctx.inner.arg.io,
     ) {
         Ok(relations_map) => {
+            if let Some(main_response) = result_store.main_adapter_response() {
+                ctx.inner
+                    .main_adapter_responses
+                    .insert(model.__common_attr__.unique_id.clone(), main_response);
+            }
             let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
             Ok(())
         }
@@ -287,7 +295,12 @@ pub fn execute_model_remote(
         &ctx.inner.arg.io,
         sql_header,
     ) {
-        Ok(relations_map) => {
+        Ok((relations_map, main_response)) => {
+            if let Some(main_response) = main_response {
+                ctx.inner
+                    .main_adapter_responses
+                    .insert(model.__common_attr__.unique_id.clone(), main_response);
+            }
             let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
         }
         Err(e) => {

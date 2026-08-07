@@ -26,6 +26,7 @@ use dbt_adapter::Adapter;
 use dbt_adapter::adapter::NodeOverride;
 use dbt_adapter::connection::drop_thread_local_connection;
 use dbt_adapter::relation::{RelationObject, do_create_relation};
+use dbt_adapter::response::AdapterResponse;
 use dbt_adapter_core::AdapterType;
 use dbt_agate::{AgateTable, MappedSequence, Tuple};
 use dbt_common::{
@@ -297,7 +298,7 @@ pub fn execute_node_hooks<S: serde::Serialize>(
     error_path_kind: NodePathKind,
     phase: NodeHookPhase,
 ) -> FsResult<()> {
-    let mut context = build_run_node_context(
+    let (mut context, _result_store) = build_run_node_context(
         node,
         deprecated_config,
         adapter_type,
@@ -458,7 +459,7 @@ pub fn materialize_clone<S: serde::Serialize>(
     io_args: &IoArgs,
     custom_warehouse: Option<String>,
 ) -> FsResult<Value> {
-    let mut context = build_run_node_context(
+    let (mut context, _result_store) = build_run_node_context(
         node,
         &deprecated_config,
         adapter_type,
@@ -541,10 +542,10 @@ pub fn materialize_seed(
     base_context: &BTreeMap<String, Value>,
     agate_table: AgateTable,
     io_args: &IoArgs,
-) -> FsResult<Value> {
+) -> FsResult<(Value, Option<AdapterResponse>)> {
     let macro_name = materialization_resolver.find_materialization_macro_by_name("seed")?;
 
-    let mut context = build_run_node_context(
+    let (mut context, result_store) = build_run_node_context(
         seed,
         &seed.deprecated_config,
         adapter_type,
@@ -569,6 +570,7 @@ pub fn materialize_seed(
         &seed.__base_attr__.alias,
         run_path,
     )
+    .map(|value| (value, result_store.main_adapter_response()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -582,9 +584,9 @@ pub fn materialize_model(
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
     sql_header: Option<Value>,
-) -> FsResult<Value> {
+) -> FsResult<(Value, Option<AdapterResponse>)> {
     // get materialization
-    let mut context = build_run_node_context(
+    let (mut context, result_store) = build_run_node_context(
         model,
         &model.deprecated_config,
         adapter_type,
@@ -641,7 +643,7 @@ pub fn materialize_model(
     );
 
     reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
-    result
+    result.map(|value| (value, result_store.main_adapter_response()))
 }
 
 /// Checks whether the latest version pointer should be created for this model.
@@ -749,7 +751,7 @@ pub fn materialize_latest_version_pointer(
     io_args: &IoArgs,
 ) -> FsResult<Value> {
     // Build a context from the original model first so macros can access `model`
-    let mut resolve_context = build_run_node_context(
+    let (mut resolve_context, _result_store) = build_run_node_context(
         model,
         &model.deprecated_config,
         adapter_type,
@@ -852,7 +854,7 @@ pub fn materialize_latest_version_pointer(
         pointer_identifier, model_alias, model.__common_attr__.unique_id
     );
 
-    let mut context = build_run_node_context(
+    let (mut context, _result_store) = build_run_node_context(
         &pointer_model,
         &pointer_model.deprecated_config,
         adapter_type,
@@ -987,13 +989,13 @@ pub fn materialize_snapshot(
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
-) -> FsResult<Value> {
+) -> FsResult<(Value, Option<AdapterResponse>)> {
     // get materialization
     let mut snapshot = snapshot.clone();
     snapshot.compiled = Some(true);
     snapshot.compiled_code = Some(sql.to_string());
 
-    let mut context = build_run_node_context(
+    let (mut context, result_store) = build_run_node_context(
         &snapshot,
         &snapshot.serialized_config(),
         adapter_type,
@@ -1049,7 +1051,7 @@ pub fn materialize_snapshot(
     );
 
     reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
-    result
+    result.map(|value| (value, result_store.main_adapter_response()))
 }
 
 pub fn materialize_unit_test(
@@ -1062,7 +1064,7 @@ pub fn materialize_unit_test(
     io_args: &IoArgs,
 ) -> FsResult<bool> {
     let adapter_type = resolver_state.adapter_type;
-    let mut context = build_run_node_context(
+    let (mut context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         adapter_type,
@@ -1149,7 +1151,7 @@ pub fn materialize_unit_test_fast_pass(
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
 ) -> FsResult<(bool, usize, String)> {
-    let mut context = build_run_node_context(
+    let (mut context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         adapter_type,
@@ -1355,9 +1357,13 @@ pub fn materialize_test(
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
-) -> FsResult<(Vec<TestResult>, Option<RecordBatch>)> {
+) -> FsResult<(
+    Vec<TestResult>,
+    Option<RecordBatch>,
+    Option<AdapterResponse>,
+)> {
     let packages = runtime_config.dependencies.keys().cloned().collect();
-    let mut context = build_run_node_context(
+    let (mut context, result_store) = build_run_node_context(
         test,
         &test.deprecated_config,
         adapter_type,
@@ -1463,7 +1469,7 @@ pub fn materialize_test(
         .unwrap();
 
     let test_results = get_test_results(&table)?;
-    Ok((test_results, None))
+    Ok((test_results, None, result_store.main_adapter_response()))
 }
 
 pub fn compare_record_batches(
@@ -1660,7 +1666,7 @@ pub fn materialize_function(
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
 ) -> FsResult<Value> {
-    let mut context = build_run_node_context(
+    let (mut context, _result_store) = build_run_node_context(
         function,
         &function.deprecated_config,
         adapter_type,

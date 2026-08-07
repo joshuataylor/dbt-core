@@ -1,12 +1,44 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use chrono::{DateTime, Utc};
+use dbt_adapter::response::AdapterResponse;
 use dbt_common::stats::Stat;
-use dbt_schemas::schemas::nodes::Nodes;
 use dbt_schemas::schemas::{ContextRunResult, TimingInfo};
 use dbt_schemas::stats::Stats;
 
-pub fn stats_to_results(stat: &Stat, stats: &Stats) -> ContextRunResult {
+type YmlValue = dbt_yaml::Value;
+
+/// Flatten a captured `store_result('main')` response into the flat
+/// `adapter_response` map `run_results.json` expects, falling back to the
+/// rows-affected-only map for nodes that never stored a main result.
+fn adapter_response_map(
+    stat: &Stat,
+    adapter_responses: &HashMap<String, AdapterResponse>,
+) -> BTreeMap<String, YmlValue> {
+    if let Some(response) = adapter_responses.get(&stat.unique_id)
+        && let Ok(value) = dbt_yaml::to_value(response)
+        && let Some(mapping) = value.as_mapping()
+    {
+        return mapping
+            .iter()
+            .filter_map(|(key, value)| key.as_str().map(|key| (key.to_string(), value.clone())))
+            .collect();
+    }
+
+    let mut map = BTreeMap::new();
+    if let Some(rows_affected) = stat.rows_affected
+        && let Ok(value) = dbt_yaml::to_value(rows_affected)
+    {
+        map.insert("rows_affected".to_string(), value);
+    }
+    map
+}
+
+pub fn generate_run_results(
+    stat: &Stat,
+    stats: &Stats,
+    adapter_responses: &HashMap<String, AdapterResponse>,
+) -> ContextRunResult {
     let status = stat.result_status_string();
     let execution_time = stat.get_duration().as_secs_f64();
     let started_at: DateTime<Utc> = DateTime::from(stat.start_time);
@@ -52,15 +84,7 @@ pub fn stats_to_results(stat: &Stat, stats: &Stats) -> ContextRunResult {
         timing,
         thread_id: stat.thread_id.clone(),
         execution_time,
-        adapter_response: {
-            let mut map = BTreeMap::new();
-            if let Some(ra) = stat.rows_affected {
-                if let Ok(v) = dbt_yaml::to_value(ra) {
-                    map.insert("rows_affected".to_string(), v);
-                }
-            }
-            map
-        },
+        adapter_response: adapter_response_map(stat, adapter_responses),
         message: stat.message.clone(),
         failures,
         node: node_arc,
@@ -68,14 +92,4 @@ pub fn stats_to_results(stat: &Stat, stats: &Stats) -> ContextRunResult {
         batch_results,
         static_analysis_off_reason,
     }
-}
-
-/// Simplified version for contexts that don't have full Stats (e.g., parquet metadata).
-pub fn stat_to_result(stat: &Stat, nodes: &Nodes) -> ContextRunResult {
-    let stats = Stats {
-        stats: vec![],
-        nodes: Some(nodes.clone()),
-        batch_results: Default::default(),
-    };
-    stats_to_results(stat, &stats)
 }

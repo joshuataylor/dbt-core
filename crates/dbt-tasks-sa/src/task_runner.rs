@@ -1,8 +1,9 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use dbt_adapter::Adapter;
+use dbt_adapter::response::AdapterResponse;
 use dbt_common::FsError;
 use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
@@ -112,6 +113,7 @@ impl TaskRunner {
                 compile: Stats::default(),
                 run: Stats::default(),
             },
+            adapter_responses: HashMap::new(),
             storeables: Vec::new(),
             showables: Vec::new(),
             jinja_env: self.jinja_env,
@@ -335,7 +337,13 @@ impl TaskRunner {
             .await?;
 
         let mut stats = summarize_task_runner_stats(&ctx, &schedule, self.resolved_state.as_ref());
-        let results = stats.collect_as_results();
+        let adapter_responses: HashMap<String, AdapterResponse> = ctx
+            .inner
+            .main_adapter_responses
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+        let results = stats.collect_as_results(&adapter_responses);
         let successful_relational_nodes =
             stats.collect_successful_relational_nodes(&self.resolved_state);
 
@@ -489,6 +497,7 @@ impl TaskRunner {
 
         Ok(RunTaskResults {
             stats,
+            adapter_responses,
             storeables,
             showables,
             jinja_env: self.jinja_env,

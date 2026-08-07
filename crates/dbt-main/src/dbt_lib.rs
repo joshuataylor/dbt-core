@@ -1205,8 +1205,12 @@ impl<'a> AllPhasesExecutor<'a> {
                             };
 
                             // Prepare artifact
-                            let run_results_artifact =
-                                build_run_results_artifact(&error_stats, self.arg.as_ref());
+                            let run_results_artifact = build_run_results_artifact(
+                                &error_stats,
+                                // Adapter responses not available since we errored at compilation
+                                &HashMap::new(),
+                                self.arg.as_ref(),
+                            );
 
                             write_run_results_json_or_warn(
                                 &run_results_artifact,
@@ -1217,7 +1221,11 @@ impl<'a> AllPhasesExecutor<'a> {
                             self.captured_artifacts.run_results = Some(run_results_artifact);
 
                             if self.arg.write_metadata {
-                                write_runtime_results_parquet(&error_stats, self.arg.as_ref());
+                                write_runtime_results_parquet(
+                                    &error_stats,
+                                    &HashMap::new(),
+                                    self.arg.as_ref(),
+                                );
                             }
                         }
 
@@ -1242,8 +1250,11 @@ impl<'a> AllPhasesExecutor<'a> {
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
         // Prepare artifact
-        let run_results_artifact =
-            build_run_results_artifact(&run_task_results.stats.run, self.arg.as_ref());
+        let run_results_artifact = build_run_results_artifact(
+            &run_task_results.stats.run,
+            &run_task_results.adapter_responses,
+            self.arg.as_ref(),
+        );
 
         // Write run_results.json eagerly from real stats so that it persists
         // even if post-execution steps (did_run_tasks, update_manifest,
@@ -1256,7 +1267,11 @@ impl<'a> AllPhasesExecutor<'a> {
         self.captured_artifacts.run_results = Some(run_results_artifact);
 
         if self.arg.write_metadata {
-            write_runtime_results_parquet(&run_task_results.stats.run, self.arg.as_ref());
+            write_runtime_results_parquet(
+                &run_task_results.stats.run,
+                &run_task_results.adapter_responses,
+                self.arg.as_ref(),
+            );
         }
 
         for s in &run_task_results.storeables {

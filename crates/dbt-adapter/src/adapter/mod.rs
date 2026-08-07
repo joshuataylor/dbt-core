@@ -41,6 +41,7 @@ use minijinja::arg_utils::ArgsIter;
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::dispatch_object::DispatchObject;
 use minijinja::listener::RenderingEventListener;
+use minijinja::value::mutable_vec::MutableVec;
 use minijinja::value::{Object, ValueKind};
 use minijinja::{State, Value};
 use serde::Deserialize;
@@ -1598,9 +1599,9 @@ impl Adapter {
                 iter.finish()?;
 
                 let result = adapter.get_missing_columns(state, &from_relation, &to_relation)?;
-                Ok(Value::from_object(result))
+                Ok(Value::from(MutableVec::from(result)))
             }
-            Parse(_) => Ok(empty_vec_value()),
+            Parse(_) => Ok(empty_mutable_vec_value()),
         }
     }
 
@@ -1629,14 +1630,14 @@ impl Adapter {
                         cached,
                     )
                 } else {
-                    Ok(Value::from(
+                    Ok(Value::from(MutableVec::from(
                         adapter.get_columns_in_relation(state, relation)?,
-                    ))
+                    )))
                 }
             }
             Parse(parse_adapter_state) => {
                 parse_adapter_state.record_get_columns_in_relation_call(state, relation)?;
-                Ok(empty_vec_value())
+                Ok(empty_mutable_vec_value())
             }
         }
     }

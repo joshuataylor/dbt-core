@@ -59,6 +59,14 @@ impl RelationObject {
         self.relation.clone()
     }
 
+    /// Whether this relation is the placeholder returned during parsing.
+    pub fn is_parse_time(&self) -> bool {
+        self.relation
+            .as_any()
+            .downcast_ref::<Relation>()
+            .is_some_and(|relation| relation.is_parse_time)
+    }
+
     /// Create a new RelationObject with a run filter applied.
     ///
     /// This is used for microbatch execution to filter refs by event_time.
@@ -176,6 +184,10 @@ impl From<Box<dyn BaseRelation>> for RelationObject {
 }
 
 impl Object for RelationObject {
+    fn is_true(self: &Arc<Self>) -> bool {
+        !self.is_parse_time()
+    }
+
     fn call_method(
         self: &Arc<Self>,
         _state: &State,
@@ -405,6 +417,13 @@ impl Object for RelationObject {
 
         write!(f, "{}", jinja_render)
     }
+}
+
+/// Whether a Jinja value contains a parse-time relation placeholder.
+pub fn is_parse_time_relation(value: &Value) -> bool {
+    value
+        .downcast_object_ref::<RelationObject>()
+        .is_some_and(RelationObject::is_parse_time)
 }
 
 /// Creates a relation based on the adapter type

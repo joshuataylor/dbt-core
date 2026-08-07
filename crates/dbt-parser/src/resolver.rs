@@ -279,7 +279,6 @@ pub async fn resolve(
                 &jinja_env,
             )?;
             apply_macro_patches(
-                &arg.io,
                 &mut macros.macros,
                 &macro_properties,
                 &package_name,
@@ -745,7 +744,6 @@ pub async fn resolve_inner(
         }
 
         let typed_model_props: ModelProperties = into_typed_with_jinja(
-            &arg.io,
             model_yml,
             false,
             &jinja_env,
@@ -830,7 +828,6 @@ pub async fn resolve_inner(
     disabled_nodes.snapshots.extend(disabled_snapshots);
 
     let (groups, disabled_groups) = resolve_groups(
-        arg,
         &mut min_properties.groups,
         package_name,
         &jinja_env,

@@ -361,7 +361,6 @@ pub fn resolve_top_level_metrics(
 
         // Parse the metric properties from YAML
         let metric_props: MetricsProperties = into_typed_with_jinja(
-            &arg.io,
             mpe.schema_value.clone(),
             false,
             env,

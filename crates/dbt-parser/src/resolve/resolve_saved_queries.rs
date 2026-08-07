@@ -130,7 +130,6 @@ pub async fn resolve_saved_queries(
 
             // Parse the saved query properties from YAML
             let saved_query_props: SavedQueriesProperties = into_typed_with_jinja(
-                &arg.io,
                 schema_value,
                 false,
                 &env,

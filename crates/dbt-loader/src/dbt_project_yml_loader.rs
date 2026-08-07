@@ -1,6 +1,5 @@
 use dbt_common::FsResult;
 use dbt_common::constants::DBT_PROJECT_YML;
-use dbt_common::io_args::IoArgs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{ErrorCode, fs_err};
 use dbt_jinja_utils::serde::{into_typed_with_jinja, value_from_file};
@@ -114,7 +113,6 @@ fn prune_unexpected_nulls_in_section<T>(
 }
 
 pub fn load_project_yml(
-    io_args: &IoArgs,
     env: &JinjaEnv,
     dbt_project_path: &Path,
     dependency_package_name: Option<&str>,
@@ -140,7 +138,6 @@ pub fn load_project_yml(
 
     // Parse the template without vars using Jinja
     let mut dbt_project: DbtProject = into_typed_with_jinja(
-        io_args,
         raw_yml.clone(),
         false,
         env,

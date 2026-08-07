@@ -268,7 +268,6 @@ pub async fn resolve_sources(
             .unwrap_or_default();
 
         let source: SourceProperties = into_typed_with_jinja(
-            io_args,
             mpe.schema_value,
             false,
             jinja_env,
@@ -279,7 +278,6 @@ pub async fn resolve_sources(
         )?;
 
         let table: Tables = into_typed_with_jinja(
-            io_args,
             mpe.table_value.unwrap(),
             false,
             jinja_env,

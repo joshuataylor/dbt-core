@@ -95,7 +95,6 @@ pub fn resolve_unit_tests(
         });
 
         let unit_test = into_typed_with_jinja::<UnitTestProperties, _>(
-            &arg.io,
             mpe.schema_value,
             false,
             jinja_env,

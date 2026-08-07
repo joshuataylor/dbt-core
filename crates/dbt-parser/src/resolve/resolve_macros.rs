@@ -394,7 +394,6 @@ pub fn is_valid_macro_arg_type(s: &str) -> bool {
 /// - Warns when YAML argument `type` values use unsupported or malformed type syntax
 /// - Infers undocumented parameters from the Jinja definition and adds them to `arguments`
 pub fn apply_macro_patches(
-    io: &IoArgs,
     macros: &mut BTreeMap<String, DbtMacro>,
     macro_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     package_name: &str,
@@ -411,7 +410,6 @@ pub fn apply_macro_patches(
         if let Some(dbt_macro) = macros.get_mut(&unique_id) {
             // Parse the macro properties with Jinja rendering (for doc blocks)
             let macro_props: MacrosProperties = into_typed_with_jinja(
-                io,
                 props_entry.schema_value.clone(),
                 false,
                 jinja_env,
@@ -902,9 +900,7 @@ select 1 as id, current_timestamp as updated_at
         };
         let macro_properties = BTreeMap::from([("my_macro".to_string(), props_entry)]);
 
-        let io = IoArgs::default();
         apply_macro_patches(
-            &io,
             &mut macros,
             &macro_properties,
             "test_pkg",

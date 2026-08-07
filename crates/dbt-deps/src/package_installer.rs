@@ -299,8 +299,7 @@ impl PackageInstaller for TarballUnpinnedPackage {
         }
 
         let dbt_project =
-            read_and_validate_dbt_project(ctx.io, &extract_path, false, ctx.jinja_env, ctx.vars)
-                .await?;
+            read_and_validate_dbt_project(&extract_path, false, ctx.jinja_env, ctx.vars).await?;
         let project_name = dbt_project.name;
         out.name = Some(project_name.clone());
         out.version = Some("tarball".to_string());
@@ -329,8 +328,7 @@ async fn install_git_like(
 
     // Warnings already emitted during resolve; suppress here.
     let dbt_project =
-        read_and_validate_dbt_project(ctx.io, &checkout_path, false, ctx.jinja_env, ctx.vars)
-            .await?;
+        read_and_validate_dbt_project(&checkout_path, false, ctx.jinja_env, ctx.vars).await?;
     out.name = Some(dbt_project.name.clone());
     move_dir(&checkout_path, &dest.join(&dbt_project.name)).await?;
     drop(tmp_dir);

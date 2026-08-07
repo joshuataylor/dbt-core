@@ -132,14 +132,7 @@ mod tests {
         let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
 
         let cfg: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
-            &IoArgs::default(),
-            val,
-            false,
-            &env,
-            &ctx,
-            &listeners,
-            None,
-            true,
+            val, false, &env, &ctx, &listeners, None, true,
         )
         .unwrap();
 
@@ -175,14 +168,7 @@ mod tests {
         let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
 
         let freshness: FreshnessDefinition = dbt_jinja_utils::serde::into_typed_with_jinja(
-            &IoArgs::default(),
-            val,
-            false,
-            &env,
-            &ctx,
-            &listeners,
-            None,
-            true,
+            val, false, &env, &ctx, &listeners, None, true,
         )
         .unwrap();
 
@@ -216,14 +202,7 @@ mod tests {
         let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
 
         let freshness: FreshnessDefinition = dbt_jinja_utils::serde::into_typed_with_jinja(
-            &IoArgs::default(),
-            val,
-            false,
-            &env,
-            &ctx,
-            &listeners,
-            None,
-            true,
+            val, false, &env, &ctx, &listeners, None, true,
         )
         .unwrap();
 
@@ -1229,14 +1208,7 @@ mod tests {
         let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
 
         let pmc: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
-            &IoArgs::default(),
-            val,
-            false,
-            &env,
-            &ctx,
-            &listeners,
-            None,
-            true,
+            val, false, &env, &ctx, &listeners, None, true,
         )
         .unwrap();
 
@@ -1286,14 +1258,7 @@ mod tests {
         let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
 
         let pmc: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
-            &IoArgs::default(),
-            val,
-            false,
-            &env,
-            &ctx,
-            &listeners,
-            None,
-            true,
+            val, false, &env, &ctx, &listeners, None, true,
         )
         .unwrap();
 
@@ -1435,14 +1400,7 @@ mod tests {
         let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
 
         let psc: ProjectSnapshotConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
-            &IoArgs::default(),
-            val,
-            false,
-            &env,
-            &ctx,
-            &listeners,
-            None,
-            true,
+            val, false, &env, &ctx, &listeners, None, true,
         )
         .unwrap();
 

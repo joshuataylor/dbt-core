@@ -376,7 +376,7 @@ pub async fn load(
             if DISPATCH_CONFIG.get().is_none() {
                 let dbt_project_path = arg.io.in_dir.join(DBT_PROJECT_YML);
                 if let Ok((proj, _)) =
-                    load_project_yml(&arg.io, &env, &dbt_project_path, None, arg.vars.clone())
+                    load_project_yml(&env, &dbt_project_path, None, arg.vars.clone())
                 {
                     let map = proj.dispatch.as_ref().map_or_else(BTreeMap::new, |d| {
                         d.iter()
@@ -663,7 +663,7 @@ pub async fn load_catalogs(
             let raw_text_yml: dbt_yaml::Value = dbt_yaml::from_str(&raw_text)
                 .map_err(|e| yaml_to_fs_error(e, Some(&catalogs_yml_path)))?;
             let text: dbt_yaml::Value =
-                into_typed_with_jinja(&arg.io, raw_text_yml, true, env, &ctx, &[], None, true)?;
+                into_typed_with_jinja(raw_text_yml, true, env, &ctx, &[], None, true)?;
             load_catalogs::load_catalogs(text, &catalogs_yml_path, project_flags)
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -798,16 +798,8 @@ pub async fn load_simplified_project_and_profiles(
         ),
     ]);
 
-    let simplified_dbt_project: DbtProjectSimplified = into_typed_with_jinja(
-        &arg.io,
-        raw_dbt_project_in_val,
-        true,
-        &env,
-        &ctx,
-        &[],
-        None,
-        true,
-    )?;
+    let simplified_dbt_project: DbtProjectSimplified =
+        into_typed_with_jinja(raw_dbt_project_in_val, true, &env, &ctx, &[], None, true)?;
 
     if simplified_dbt_project.data_paths.is_some() {
         return err!(
@@ -883,7 +875,6 @@ pub async fn load_inner(
     };
 
     let (dbt_project, raw_project_yml) = load_project_yml(
-        &arg.io,
         env,
         &dbt_project_path,
         dependency_package_name.as_deref(),

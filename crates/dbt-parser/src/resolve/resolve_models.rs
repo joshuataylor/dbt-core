@@ -1226,7 +1226,7 @@ fn process_python_models(
         // Extract and parse properties from YAML if they exist
         let ref_name = python_asset.path.file_stem().unwrap().to_str().unwrap();
         let (maybe_properties, patch_path) =
-            extract_model_properties(arg, env, base_ctx, models_properties, ref_name)?;
+            extract_model_properties(env, base_ctx, models_properties, ref_name)?;
 
         // Merge Python model config with project config and schema.yml properties
         let merged_config = match merge_python_config(
@@ -1293,7 +1293,6 @@ fn process_python_models(
 /// Consumes the schema_value from models_properties to mark it as "used"
 /// and prevent "Unused schema.yml entry" warnings
 fn extract_model_properties(
-    arg: &ResolveArgs,
     env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
@@ -1311,7 +1310,6 @@ fn extract_model_properties(
             minijinja::Value::from(mpe.relative_path.to_string_lossy().to_string()),
         );
         let properties = dbt_jinja_utils::serde::into_typed_with_jinja::<ModelProperties, _>(
-            &arg.io,
             schema_value,
             false,
             env,

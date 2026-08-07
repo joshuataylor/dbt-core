@@ -211,7 +211,6 @@ pub async fn resolve_snapshots(
             let raw_description =
                 yaml_field_utils::detach_field_from_mapping(&mut schema_value, "description");
             let mut snapshot: SnapshotProperties = into_typed_with_jinja(
-                &arg.io,
                 schema_value,
                 false,
                 &jinja_env,

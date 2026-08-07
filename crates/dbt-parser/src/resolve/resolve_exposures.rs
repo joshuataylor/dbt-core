@@ -100,7 +100,6 @@ pub async fn resolve_exposures(
             let raw_properties_yml_config = extract_config_map(&schema_value);
             // ExposureProperties is for the yaml schema
             let exposure: ExposureProperties = into_typed_with_jinja(
-                &args.io,
                 schema_value,
                 false,
                 env,

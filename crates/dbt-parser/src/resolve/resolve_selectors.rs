@@ -164,7 +164,6 @@ fn load_and_parse_selectors_file(
     );
 
     let yaml: SelectorFile = match dbt_jinja_utils::serde::into_typed_with_jinja(
-        &arg.io,
         raw_selectors,
         false,
         jinja_env,

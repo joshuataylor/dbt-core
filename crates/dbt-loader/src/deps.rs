@@ -110,7 +110,7 @@ fn load_simplified_project_only(arg: &LoadArgs) -> FsResult<DbtProjectSimplified
     ]);
 
     let simplified_dbt_project: DbtProjectSimplified =
-        into_typed_with_jinja(&arg.io, raw, true, &env, &ctx, &[], None, true)?;
+        into_typed_with_jinja(raw, true, &env, &ctx, &[], None, true)?;
 
     if simplified_dbt_project.data_paths.is_some() {
         return Err(fs_err!(

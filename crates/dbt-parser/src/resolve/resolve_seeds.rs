@@ -216,7 +216,6 @@ pub async fn resolve_seeds(
             }
             (
                 into_typed_with_jinja::<SeedProperties, _>(
-                    io_args,
                     mpe.schema_value,
                     false,
                     jinja_env,

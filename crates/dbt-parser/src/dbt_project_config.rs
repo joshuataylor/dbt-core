@@ -60,13 +60,25 @@ impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
                 } else {
                     None
                 };
+                let err_msg = variant
+                    .as_err_msg()
+                    .expect("Error message always present on ShouldBe::ButIsnt variant");
+                // An unknown key produces the error message `expected struct <SelfType>` due to
+                // the recursive type. Catch the error here to inject a more descriptive error.
+                let self_type = std::any::type_name::<S>()
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or_default();
+                let detail = if err_msg.contains(&format!("expected struct {self_type}")) {
+                    format!("unrecognized key `{key_path}`. Custom keys must go under `+meta`.")
+                } else {
+                    err_msg.to_string()
+                };
                 let fs_err = yaml_to_fs_error(err, filename).with_context(format!(
                     "Invalid {} definition `{}`: {}",
                     S::type_name(),
                     key_path,
-                    variant
-                        .as_err_msg()
-                        .expect("Error message always present on ShouldBe::ButIsnt variant")
+                    detail
                 ));
                 emit_strict_parse_error(fs_err, dependency_package_name);
             }

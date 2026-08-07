@@ -271,7 +271,7 @@ impl<'a> PackageListing<'a> {
                     UnpinnedPackage::Private(PrivateUnpinnedPackage {
                         private: private_package_url,
                         name: None,
-                        provider: private_package.provider.clone(),
+                        provider: private_package.provider,
                         warn_unpinned: private_package.warn_unpinned,
                         revisions: private_package
                             .revision

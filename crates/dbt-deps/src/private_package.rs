@@ -1,8 +1,8 @@
 use dbt_common::{ErrorCode, FsResult, err};
 use dbt_schemas::schemas::ResolvedCloudConfig;
-use dbt_schemas::schemas::packages::PrivatePackage;
+use dbt_schemas::schemas::packages::{PrivatePackage, PrivatePackageProvider};
 use percent_encoding::percent_decode_str;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json;
 use std::ops::Deref;
 use url::Url;
@@ -13,7 +13,20 @@ pub struct ProviderDetail {
     url: String,
     token: String,
     org: String,
-    provider: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_known_provider")]
+    provider: Option<PrivatePackageProvider>,
+}
+
+/// The platform supplies this JSON, so a provider name this build does not know
+/// must not fail the whole parse. Such an entry simply matches nothing.
+fn deserialize_known_provider<'de, D>(
+    deserializer: D,
+) -> Result<Option<PrivatePackageProvider>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(PrivatePackageProvider::deserialize(value).ok())
 }
 
 impl ProviderDetail {
@@ -33,11 +46,11 @@ impl ProviderDetail {
     }
 
     fn is_ado(&self) -> bool {
-        self.provider.as_deref() == Some("ado")
+        self.provider == Some(PrivatePackageProvider::Ado)
     }
 
     fn is_azure_active_directory(&self) -> bool {
-        self.provider.as_deref() == Some("azure_active_directory")
+        self.provider == Some(PrivatePackageProvider::AzureActiveDirectory)
     }
 
     fn is_azure_devops(&self) -> bool {
@@ -47,12 +60,12 @@ impl ProviderDetail {
     fn matches_private_definition(
         &self,
         private_def: &PrivateDefinition,
-        provider: Option<&str>,
+        provider: Option<PrivatePackageProvider>,
     ) -> bool {
         // Check if provider matches (if specified)
         // "ado" and "azure_active_directory" are distinct providers with different path requirements
         if let Some(requested_provider) = provider
-            && self.provider.as_deref() != Some(requested_provider)
+            && self.provider != Some(requested_provider)
         {
             return false;
         }
@@ -305,13 +318,13 @@ pub fn get_resolved_url(
 
     // Iterate over all providers and try to match each one
     for provider in provider_info {
-        if provider.matches_private_definition(&private_def, private_package.provider.as_deref()) {
+        if provider.matches_private_definition(&private_def, private_package.provider) {
             private_package_usage_event(
                 cloud_config,
                 private_package.private.deref(),
-                private_package.provider.as_deref(),
+                private_package.provider.map(PrivatePackageProvider::as_str),
                 true,
-                provider.provider.as_deref(),
+                provider.provider.map(PrivatePackageProvider::as_str),
             );
             return Ok(provider.resolved_url(&private_def));
         }
@@ -321,7 +334,7 @@ pub fn get_resolved_url(
     private_package_usage_event(
         cloud_config,
         private_package.private.deref(),
-        private_package.provider.as_deref(),
+        private_package.provider.map(PrivatePackageProvider::as_str),
         false,
         None,
     );
@@ -335,23 +348,26 @@ pub fn get_resolved_url(
 
 fn get_local_resolved_url(private_package: &PrivatePackage) -> FsResult<String> {
     // Default to "github" when provider is unspecified, matching dbt-core's behavior
-    match private_package.provider.as_deref().unwrap_or("github") {
-        "github" => Ok(format!(
+    let provider = private_package
+        .provider
+        .unwrap_or(PrivatePackageProvider::Github);
+    match provider {
+        PrivatePackageProvider::Github => Ok(format!(
             "git@github.com:{}.git",
             private_package.private.deref()
         )),
-        "gitlab" => Ok(format!(
+        PrivatePackageProvider::Gitlab => Ok(format!(
             "git@gitlab.com:{}.git",
             private_package.private.deref()
         )),
-        "ado" | "azure_devops" => {
+        PrivatePackageProvider::Ado => {
             // "ado"/"azure_devops" requires 3-part names: org/project/repo
             let def = PrivateDefinition::build(private_package.private.deref());
             if def.groups.is_empty() {
                 return err!(
                     ErrorCode::InvalidConfig,
                     "The '{}' provider requires org/project/repo format (3 parts), got: '{}'",
-                    private_package.provider.as_deref().unwrap_or_default(),
+                    provider.as_str(),
                     private_package.private.deref()
                 );
             }
@@ -360,13 +376,11 @@ fn get_local_resolved_url(private_package: &PrivatePackage) -> FsResult<String> 
                 private_package.private.deref()
             ))
         }
-        _ => {
-            err!(
-                ErrorCode::InvalidConfig,
-                r#"Invalid private package configuration: '{}' provider: '{}'. Valid providers are: github, gitlab, ado, azure_active_directory"#,
-                private_package.private.deref(),
-                private_package.provider.as_deref().unwrap_or_default()
-            )
-        }
+        PrivatePackageProvider::AzureActiveDirectory => err!(
+            ErrorCode::InvalidConfig,
+            r#"Invalid private package configuration: '{}' provider: '{}'. Valid providers for local resolution are: github, gitlab, ado, azure_devops"#,
+            private_package.private.deref(),
+            provider.as_str()
+        ),
     }
 }

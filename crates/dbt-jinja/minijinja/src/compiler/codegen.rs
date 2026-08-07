@@ -1368,11 +1368,22 @@ impl<'source> CodeGenerator<'source> {
                     Some(identifier_span) => identifier_span,
                     _ => span, // fallback to span
                 };
+                // Remember the receiver's name for plain variable receivers, so that
+                // calling a method on an undefined receiver can report which variable
+                // was undefined rather than just the method name. Only `Var` is
+                // captured: it is the common case and the only receiver whose written
+                // form is a single identifier, so there is no risk of naming a
+                // sub-expression the author did not write.
+                let receiver_name = match expr {
+                    ast::Expr::Var(var) => Some(var.id),
+                    _ => None,
+                };
                 self.add(Instruction::CallMethod(
                     name,
                     arg_count,
                     identifier_span.into(),
                     span.into(),
+                    receiver_name,
                 ));
             }
             ast::CallType::Object(expr) => {

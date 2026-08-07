@@ -169,6 +169,40 @@ fn call_wrapper(
     rv
 }
 
+/// Rewrites an "unknown method" error so it names the undefined receiver.
+///
+/// `Value::call_method` only has the receiver's *value*, so its fallback detail can
+/// say no more than `undefined has no method named meta_get` — which reads as though
+/// the method were unsupported, when the real problem is that the receiver was never
+/// defined.
+///
+/// Two sources for the name, preferred in this order:
+///
+/// 1. The value's own recorded origin ([`Value::undefined_name`]), set where the
+///    failed lookup happened. This is the identifier the author wrote, and it holds
+///    even when the value has since been passed into a macro and rebound to a
+///    parameter — which is the name dbt Core reports.
+/// 2. `receiver_name`, the identifier as written at this call site, when the receiver
+///    is a plain variable (see `Instruction::CallMethod`). Covers undefined values
+///    that did not come from a variable lookup.
+///
+/// Still best-effort: with neither available, the original detail is left unchanged.
+fn name_undefined_receiver(
+    mut err: Error,
+    receiver: &Value,
+    receiver_name: Option<&str>,
+    method: &str,
+) -> Error {
+    if err.kind() == ErrorKind::UnknownMethod && receiver.is_undefined() {
+        if let Some(name) = receiver.undefined_name().or(receiver_name) {
+            err.set_detail(format!(
+                "`{name}` is undefined, so it has no method named `{method}`"
+            ));
+        }
+    }
+    err
+}
+
 impl<'env> Vm<'env> {
     /// Creates a new VM.
     pub fn new(env: &'env Environment<'env>) -> Vm<'env> {
@@ -513,7 +547,15 @@ impl<'env> Vm<'env> {
                     }
                 }
                 Instruction::Lookup(name, _) => {
-                    stack.push(state.lookup(name, listeners).unwrap_or(Value::UNDEFINED))
+                    // Remember which identifier failed to resolve. The name travels
+                    // with the value, so an error raised after it has been passed
+                    // somewhere else — into a macro, say — can still report the
+                    // variable the author actually wrote.
+                    stack.push(
+                        state
+                            .lookup(name, listeners)
+                            .unwrap_or_else(|| Value::undefined_named(*name)),
+                    )
                 }
                 Instruction::GetAttr(name, span) => {
                     let a = stack.pop();
@@ -1104,7 +1146,7 @@ impl<'env> Vm<'env> {
                     stack.drop_top(arg_count);
                     stack.push(rv);
                 }
-                Instruction::CallMethod(name, arg_count, _, this_span) => {
+                Instruction::CallMethod(name, arg_count, _, this_span, receiver_name) => {
                     let args = stack.get_call_args(*arg_count);
                     let arg_count = args.len();
 
@@ -1139,7 +1181,15 @@ impl<'env> Vm<'env> {
                                     })
                                     .map_err(|e| state.with_span_error(e, this_span))?
                                 } else {
-                                    return Err(state.with_span_error(err, this_span));
+                                    return Err(state.with_span_error(
+                                        name_undefined_receiver(
+                                            err,
+                                            &args[0],
+                                            *receiver_name,
+                                            name,
+                                        ),
+                                        this_span,
+                                    ));
                                 }
                             }
                         }

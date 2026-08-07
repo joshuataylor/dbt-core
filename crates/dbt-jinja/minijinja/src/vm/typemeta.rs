@@ -1678,7 +1678,7 @@ impl<'src> TypeChecker<'src> {
                         typestate.stack.push(Type::Any { hard: false });
                     }
                 }
-                Instruction::CallMethod(name, arg_count, identifier_span, span) => {
+                Instruction::CallMethod(name, arg_count, identifier_span, span, _) => {
                     // TYPECHECK: NO? (Maybe add method check later)
                     listener.set_span(span);
 

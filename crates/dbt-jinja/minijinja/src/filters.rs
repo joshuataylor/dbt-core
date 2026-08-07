@@ -716,7 +716,7 @@ mod builtins {
         let base = arg_parser.get_optional("base").unwrap_or(10);
 
         match &value.0 {
-            ValueRepr::Undefined => Err(Error::from(ErrorKind::UndefinedError)),
+            ValueRepr::Undefined(_) => Err(Error::from(ErrorKind::UndefinedError)),
             ValueRepr::None => Ok(Value::from(default)),
             ValueRepr::Bool(x) => Ok(Value::from(*x as u64)),
             ValueRepr::U64(_) | ValueRepr::I64(_) | ValueRepr::U128(_) | ValueRepr::I128(_) => {
@@ -764,7 +764,7 @@ mod builtins {
     #[cfg_attr(docsrs, doc(cfg(feature = "builtins")))]
     pub fn float(value: &Value) -> Result<Value, Error> {
         match &value.0 {
-            ValueRepr::Undefined | ValueRepr::None => Ok(Value::from(0.0)),
+            ValueRepr::Undefined(_) | ValueRepr::None => Ok(Value::from(0.0)),
             ValueRepr::Bool(x) => Ok(Value::from(*x as u64 as f64)),
             ValueRepr::String(..) | ValueRepr::SmallStr(_) => value
                 .as_str()
@@ -1471,7 +1471,7 @@ mod builtins {
             Ok(rv)
         } else {
             match &value.0 {
-                ValueRepr::None | ValueRepr::Undefined => Ok("".into()),
+                ValueRepr::None | ValueRepr::Undefined(_) => Ok("".into()),
                 ValueRepr::Bytes(b) => Ok(percent_encoding::percent_encode(b, SET).to_string()),
                 ValueRepr::String(..) | ValueRepr::SmallStr(_) => Ok(
                     percent_encoding::utf8_percent_encode(value.as_str().unwrap(), SET).to_string(),

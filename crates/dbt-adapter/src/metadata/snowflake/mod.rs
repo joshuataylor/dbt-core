@@ -10,6 +10,7 @@ use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
 use crate::sql_types::{TypeOps, make_arrow_field};
 use crate::{AdapterEngine, AdapterResult, AdapterType};
+use dbt_adapter_sql::ident::{escape_string_literal, quote_identifier};
 
 use arrow_array::{
     Array, BooleanArray, Decimal128Array, RecordBatch, StringArray, TimestampMillisecondArray,
@@ -193,6 +194,25 @@ fn require_snowflake_metadata_component<'a>(
              Configure a {component} value on the Snowflake target, model, or source."
         ),
     ))
+}
+
+/// Render a schema name as a single-quoted SQL string literal, escaping embedded
+/// single quotes so a schema containing `'` stays well-formed.
+fn snowflake_schema_literal(schema: &str) -> String {
+    format!(
+        "'{}'",
+        escape_string_literal(schema, AdapterType::Snowflake)
+    )
+}
+
+/// Build the constant-cost schema-count probe for a database. The database is
+/// rendered as a quoted identifier (embedded quotes escaped) so a name
+/// containing `"` stays a single well-formed identifier.
+fn snowflake_schema_count_sql(database: &str, limit: usize) -> String {
+    format!(
+        "SHOW TERSE SCHEMAS IN DATABASE {} LIMIT {limit}",
+        quote_identifier(database, AdapterType::Snowflake)
+    )
 }
 
 fn snowflake_freshness_sql(database: &str, where_clauses: &[String]) -> AdapterResult<String> {
@@ -1358,6 +1378,156 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         map_reduce.run(Arc::new(vec![()]), token)
     }
 
+    fn freshness_all_in_schemas<'a>(
+        &'a self,
+        database: &'a str,
+        relations: &'a [Arc<dyn BaseRelation>],
+        options: &'a MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        // This scan reads a single `{database}.INFORMATION_SCHEMA.TABLES`, and
+        // `find_matching_relation` keys results by schema + table only (it does
+        // not compare database). Restrict to relations that actually resolve to
+        // this database so a same-`schema.table` relation in another database can
+        // never be keyed to a row from this one. Callers group by database before
+        // building the broad group, so in practice this keeps every relation;
+        // it just makes the method correct regardless of how it is called.
+        let relations: Vec<Arc<dyn BaseRelation>> = relations
+            .iter()
+            .filter(|relation| {
+                relation.database_as_resolved_str().ok().as_deref() == Some(database)
+            })
+            .cloned()
+            .collect();
+        if relations.is_empty() {
+            return Box::pin(async move { Ok(BTreeMap::new()) });
+        }
+
+        // Broad multi-schema `table_schema IN (...)` scan — one query for the
+        // whole database. The schemas are derived from the relations themselves
+        // (via the same `schema_as_resolved_str` resolution `find_matching_relation`
+        // uses to key results), deduplicated and validated non-empty, so the
+        // predicate can never scope a different set of schemas than the results
+        // are matched against.
+        let quoted_schemas: Result<BTreeSet<String>, AdapterError> = relations
+            .iter()
+            .map(|relation| {
+                let schema = relation.schema_as_resolved_str().map_err(|_| {
+                    AdapterError::new(
+                        AdapterErrorKind::UnexpectedResult,
+                        "relation schema should not be None",
+                    )
+                })?;
+                require_snowflake_metadata_component("schema", &schema)
+                    .map(snowflake_schema_literal)
+            })
+            .collect();
+        let quoted_schemas = match quoted_schemas {
+            Ok(quoted_schemas) => quoted_schemas,
+            Err(e) => {
+                let future = async move { Err(Cancellable::Error(e)) };
+                return Box::pin(future);
+            }
+        };
+        let where_clause = format!(
+            "table_schema IN ({})",
+            quoted_schemas.into_iter().collect::<Vec<_>>().join(", ")
+        );
+        let sql = match snowflake_freshness_sql(database, &[where_clause]) {
+            Ok(sql) => sql,
+            Err(e) => {
+                let future = async move { Err(Cancellable::Error(e)) };
+                return Box::pin(future);
+            }
+        };
+        let adapter = self.adapter.clone();
+        let metadata_warehouse = options.warehouse.clone();
+        let token_clone = token.clone();
+
+        let factory = Box::new(MetadataWarehouseConnectionFactory::new(
+            adapter.clone(),
+            metadata_warehouse.clone(),
+            token_clone.clone(),
+            Box::new(AdapterConnectionFactory::new(
+                adapter.engine().clone(),
+                adapter.engine().threads(),
+            )),
+        ));
+        type Acc = BTreeMap<String, MetadataFreshness>;
+
+        let map_f = move |conn: &'_ mut dyn Connection,
+                          _: &()|
+              -> AdapterResult<Arc<RecordBatch>> {
+            let plan = snowflake_metadata_query_plan(&sql, metadata_warehouse.as_deref());
+            let metadata_sql = plan
+                .statements
+                .last()
+                .expect("metadata query plan always includes metadata SQL");
+            let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
+            let (_resp, agate_table) =
+                adapter.query(&ctx, conn, metadata_sql, None, token_clone.clone())?;
+            Ok(agate_table.original_record_batch())
+        };
+
+        let reduce_f = move |acc: &mut Acc, _: (), batch_res: AdapterResult<Arc<RecordBatch>>| {
+            let batch = batch_res?;
+            let schemas = batch.column_values::<StringArray>("TABLE_SCHEMA")?;
+            let tables = batch.column_values::<StringArray>("TABLE_NAME")?;
+            let timestamps = batch.column_values::<TimestampMillisecondArray>("LAST_ALTERED")?;
+            let is_views = batch.column_values::<BooleanArray>("IS_VIEW")?;
+            for i in 0..batch.num_rows() {
+                for fqn in find_matching_relation(schemas.value(i), tables.value(i), &relations)? {
+                    acc.insert(
+                        fqn,
+                        MetadataFreshness::from_millis(timestamps.value(i), is_views.value(i))?,
+                    );
+                }
+            }
+            Ok(())
+        };
+
+        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
+        map_reduce.run(Arc::new(vec![()]), token)
+    }
+
+    fn count_schemas_up_to<'a>(
+        &'a self,
+        database: &'a str,
+        limit: usize,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, usize> {
+        let sql = snowflake_schema_count_sql(database, limit);
+        let adapter = self.adapter.clone();
+        let token_clone = token.clone();
+
+        // Runs on the default connection (no metadata warehouse): the adaptive
+        // prefetch only probes on the no-metadata-warehouse path.
+        let factory = Box::new(MetadataWarehouseConnectionFactory::new(
+            adapter.clone(),
+            None,
+            token_clone.clone(),
+            Box::new(AdapterConnectionFactory::new(
+                adapter.engine().clone(),
+                adapter.engine().threads(),
+            )),
+        ));
+
+        let map_f = move |conn: &'_ mut dyn Connection, _: &()| -> AdapterResult<usize> {
+            let ctx = QueryCtx::default().with_desc("dbt State schema-count probe");
+            let (_resp, agate_table) =
+                adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            Ok(agate_table.original_record_batch().num_rows())
+        };
+
+        let reduce_f = move |acc: &mut usize, _: (), res: AdapterResult<usize>| {
+            *acc = res?;
+            Ok(())
+        };
+
+        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
+        map_reduce.run(Arc::new(vec![()]), token)
+    }
+
     /// Reference: https://github.com/dbt-labs/dbt-adapters/blob/f492c919d3bd415bf5065b3cd8cd1af23562feb0/dbt-snowflake/src/dbt/include/snowflake/macros/metadata/list_relations_without_caching.sql
     fn list_relations_in_parallel_inner(
         &self,
@@ -1829,6 +1999,40 @@ mod tests {
             snowflake_freshness_sql(" RAW ", &["table_schema = 'PUBLIC'".to_string()]).unwrap();
 
         assert!(sql.contains("FROM RAW.INFORMATION_SCHEMA.TABLES"));
+    }
+
+    #[test]
+    fn snowflake_freshness_sql_builds_broad_in_scan() {
+        // Mirrors how `freshness_all_in_schemas` composes the broad multi-schema
+        // predicate for a small database.
+        let sql =
+            snowflake_freshness_sql("RAW", &["table_schema IN ('S0', 'S1', 'S2')".to_string()])
+                .unwrap();
+
+        assert!(sql.contains("FROM RAW.INFORMATION_SCHEMA.TABLES"));
+        assert!(sql.contains("WHERE table_schema IN ('S0', 'S1', 'S2')"));
+    }
+
+    #[test]
+    fn snowflake_schema_literal_escapes_single_quotes() {
+        assert_eq!(snowflake_schema_literal("PUBLIC"), "'PUBLIC'");
+        // A schema name containing `'` is escaped by doubling so the string
+        // literal stays well-formed.
+        assert_eq!(snowflake_schema_literal("o'brien"), "'o''brien'");
+    }
+
+    #[test]
+    fn snowflake_schema_count_sql_escapes_double_quotes() {
+        assert_eq!(
+            snowflake_schema_count_sql("DB", 1420),
+            r#"SHOW TERSE SCHEMAS IN DATABASE "DB" LIMIT 1420"#
+        );
+        // A database name containing `"` is escaped by doubling so the identifier
+        // stays well-formed.
+        assert_eq!(
+            snowflake_schema_count_sql(r#"a"b"#, 100),
+            r#"SHOW TERSE SCHEMAS IN DATABASE "a""b" LIMIT 100"#
+        );
     }
 
     #[test]

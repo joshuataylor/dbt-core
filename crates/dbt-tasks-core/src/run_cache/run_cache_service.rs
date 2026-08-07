@@ -32,7 +32,9 @@ use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::io_args::RunCacheMode;
 use dbt_common::stats::NodeStatus;
-use dbt_common::tracing::dbt_emit::{emit_trace_log_message, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_debug_log_message, emit_trace_log_message, emit_warn_log_message,
+};
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_frontend_common::ident::FullyQualifiedName;
 use dbt_frontend_common::named_reference::NamedReference;
@@ -786,6 +788,129 @@ fn should_fan_out_schema_prefetch(options: &MetadataQueryOptions) -> bool {
 const SLOW_METADATA_PREFETCH_WARN_THRESHOLD: std::time::Duration =
     std::time::Duration::from_secs(15);
 
+// When prefetching last-modified metadata across several schemas we can either issue one broad
+// `table_schema IN (...)` scan or one pruned `table_schema = 'S'` point query per schema. A
+// `table_schema IN (...)` predicate loses single-schema pruning and forces a full scan of the whole
+// database, so its cost grows with the DB's *schema count* (not the
+// number of schemas we asked for), while each single-eq point query prunes and stays flat regardless
+// of DB size. The two measured curves are:
+//   - POINT_QUERY_SECONDS: one pruned `table_schema = 'S'` query is ~0.71s, flat at any DB size.
+//   - IN_SCAN_SECONDS_PER_1000_SCHEMAS: the broad `IN (...)` full scan grows ~2.5s per 1,000 schemas
+//     present in the database.
+// Fetching D schemas one-by-one costs ~D * POINT_QUERY_SECONDS, so it beats the single `IN` scan once
+// the database holds more than ~(POINT_QUERY_SECONDS / IN_SCAN_SECONDS_PER_SCHEMA) schemas per fetched
+// schema. That per-fetched-schema crossover is CROSSOVER_N_PER_FETCHED_SCHEMA (~284); the probe simply
+// asks "does this database have at least CROSSOVER_N_PER_FETCHED_SCHEMA * D schemas?".
+const POINT_QUERY_SECONDS: f64 = 0.71; // measured: one `table_schema = 'S'` query, flat
+const IN_SCAN_SECONDS_PER_1000_SCHEMAS: f64 = 2.5; // measured: broad `IN (...)` scan slope, per 1,000 schemas
+const IN_SCAN_SECONDS_PER_SCHEMA: f64 = IN_SCAN_SECONDS_PER_1000_SCHEMAS / 1000.0;
+const CROSSOVER_N_PER_FETCHED_SCHEMA: usize =
+    (POINT_QUERY_SECONDS / IN_SCAN_SECONDS_PER_SCHEMA + 0.5) as usize; // 284
+const MAX_SHOW_LIMIT: usize = 10000; // Snowflake hard cap on SHOW ... LIMIT
+// At or below this many fetched schemas, D point queries cost at most ~D * POINT_QUERY_SECONDS (a
+// few seconds) — cheap and bounded — so we always fetch sequentially and skip the schema-count probe
+// entirely, sidestepping both the probe round-trip and any risk of a broad IN scan on a large DB.
+const ALWAYS_SEQUENTIAL_MAX_SCHEMAS: usize = 4;
+
+fn schema_probe_limit(num_schemas: usize) -> usize {
+    (CROSSOVER_N_PER_FETCHED_SCHEMA * num_schemas).min(MAX_SHOW_LIMIT)
+}
+
+/// Whether the adaptive metadata fetch is enabled for this run.
+///
+/// Mirrors `metadata_warehouse`: read from the Snowflake target config
+/// (`ctx.dbt_profile().db_config`), defaulting to `true` (adaptive on) when
+/// unset. Non-Snowflake adapters never consult this — the schema-count probe is
+/// Snowflake syntax — so their value is immaterial.
+fn run_cache_adaptive_metadata_fetch(ctx: &TaskRunnerCtx) -> bool {
+    match &ctx.dbt_profile().db_config {
+        DbConfig::Snowflake(config) => config.adaptive_metadata_fetch.unwrap_or(true),
+        _ => true,
+    }
+}
+
+/// Decide whether to run per-schema point queries sequentially instead of one broad IN scan.
+///
+/// Runs `SHOW TERSE SCHEMAS IN DATABASE "<database>" LIMIT T` (T = `schema_probe_limit`).
+/// Returns `true` when the probe returns exactly `T` rows (the database has `N >= T` schemas, so
+/// sequential point queries are expected to be cheaper); returns `false` otherwise. On any
+/// error, returns `false` (fall back to the IN scan). Emits one debug log describing the
+/// decision (sequential / IN / probe-failed) including `num_schemas`, `T`, and the observed row
+/// count. Returns `true` without probing when `num_schemas <= ALWAYS_SEQUENTIAL_MAX_SCHEMAS`.
+async fn should_fetch_schemas_sequentially(
+    ctx: &TaskRunnerCtx,
+    database: &str,
+    num_schemas: usize,
+) -> bool {
+    if num_schemas <= ALWAYS_SEQUENTIAL_MAX_SCHEMAS {
+        return true;
+    }
+
+    let threshold = schema_probe_limit(num_schemas);
+    let observed = probe_schema_count(ctx, database, threshold).await;
+    let sequential = schema_probe_decision(num_schemas, observed);
+    match observed {
+        None => emit_debug_log_message(format!(
+            "Schema-count probe failed for catalog {database} (fetching {num_schemas} schemas, \
+             threshold {threshold}); falling back to a single IN scan"
+        )),
+        Some(observed) => emit_debug_log_message(format!(
+            "Schema-count probe for catalog {database} (fetching {num_schemas} schemas, threshold \
+             {threshold}) observed {observed} schemas; using {} strategy",
+            if sequential {
+                "sequential point-query"
+            } else {
+                "single IN scan"
+            }
+        )),
+    }
+    sequential
+}
+
+/// Pure strategy decision from a probe result, split out from
+/// `should_fetch_schemas_sequentially` so the edge cases are unit-testable
+/// without a live adapter. `observed` is the row count the
+/// `SHOW TERSE SCHEMAS ... LIMIT T` probe returned, or `None` if the probe
+/// failed. Returns `true` to fetch per-schema sequentially, `false` to use one
+/// broad `IN (...)` scan.
+///
+/// Cap behavior: when `CROSSOVER_N_PER_FETCHED_SCHEMA * num_schemas` exceeds
+/// `MAX_SHOW_LIMIT` (num_schemas above ~35), `threshold` is clamped to
+/// `MAX_SHOW_LIMIT`, so a saturated probe only proves the database has
+/// `>= MAX_SHOW_LIMIT` schemas — not the full
+/// `CROSSOVER_N_PER_FETCHED_SCHEMA * num_schemas` crossover. We deliberately
+/// still choose sequential there: the database is very large and its true schema
+/// count is unknown, so the broad IN scan's cost grows without bound in that
+/// count while sequential stays bounded at `~POINT_QUERY_SECONDS * num_schemas`.
+/// In the narrow band where N sits between `MAX_SHOW_LIMIT` and the true
+/// crossover this can pick sequential when a scan would have been marginally
+/// cheaper, but that overpay is bounded and small next to the unbounded cost of
+/// scanning a genuinely huge database.
+fn schema_probe_decision(num_schemas: usize, observed: Option<usize>) -> bool {
+    if num_schemas <= ALWAYS_SEQUENTIAL_MAX_SCHEMAS {
+        return true;
+    }
+    match observed {
+        // Probe failed -> fall back to the broad IN scan.
+        None => false,
+        Some(observed) => observed == schema_probe_limit(num_schemas),
+    }
+}
+
+/// Run the schema-count probe via the metadata adapter and return the observed
+/// count (capped at `limit`), or `None` if the adapter is unavailable or the
+/// probe fails. The engine-specific probe query lives behind
+/// `MetadataAdapter::count_schemas_up_to`; this keeps the run-cache layer free of
+/// warehouse SQL.
+async fn probe_schema_count(ctx: &TaskRunnerCtx, database: &str, limit: usize) -> Option<usize> {
+    let adapter = ctx.env.get_adapter_ref()?;
+    let metadata_adapter = adapter.metadata_adapter()?;
+    metadata_adapter
+        .count_schemas_up_to(database, limit, adapter.cancellation_token())
+        .await
+        .ok()
+}
+
 /// Whether the slow-metadata-prefetch hint should fire.
 ///
 /// The `metadata_warehouse` config (and this INFORMATION_SCHEMA-based fetch) is
@@ -876,28 +1001,46 @@ async fn bulk_prefetch_last_modified_by_schema(
         return Ok(());
     }
 
-    let groups: Vec<SchemaPrefetchGroup> = group_relations_by_database_and_schema(&bulk_relations)
-        .into_iter()
-        .map(|((database, schema), grouped)| {
-            let semantic_to_name = grouped
-                .iter()
-                .map(|(name, rel)| (rel.semantic_fqn(), name.clone()))
-                .collect();
-            let relation_values = grouped.values().cloned().collect();
-            SchemaPrefetchGroup {
-                database: database.unwrap_or_default(),
-                schema: schema.unwrap_or_default(),
-                semantic_to_name,
-                relation_values,
-            }
-        })
-        .collect();
+    let schema_groups: Vec<SchemaPrefetchGroup> =
+        group_relations_by_database_and_schema(&bulk_relations)
+            .into_iter()
+            .map(|((database, schema), grouped)| {
+                let semantic_to_name = grouped
+                    .iter()
+                    .map(|(name, rel)| (rel.semantic_fqn(), name.clone()))
+                    .collect();
+                let relation_values = grouped.values().cloned().collect();
+                SchemaPrefetchGroup {
+                    database: database.unwrap_or_default(),
+                    schema: schema.unwrap_or_default(),
+                    semantic_to_name,
+                    relation_values,
+                }
+            })
+            .collect();
+
+    let has_metadata_warehouse = should_fan_out_schema_prefetch(&metadata_options);
+
+    // The adaptive broad-vs-sequential heuristic applies only to the Snowflake
+    // no-metadata-warehouse path: the schema-count probe is Snowflake syntax, and
+    // with a metadata warehouse the per-schema dumps already fan out on an isolated
+    // warehouse (so a broad scan buys nothing). Everywhere else, keep one pruned
+    // point query per (database, schema).
+    let tasks: Vec<PrefetchTask> =
+        if has_metadata_warehouse || ctx.adapter_type() != AdapterType::Snowflake {
+            schema_groups
+                .into_iter()
+                .map(PrefetchTask::Schema)
+                .collect()
+        } else {
+            build_adaptive_prefetch_tasks(ctx, schema_groups).await
+        };
 
     // Sequential when no metadata warehouse is set (fan-out width 1); otherwise
     // keep up to `fan_out` schema dumps in flight at once so many schemas don't
     // open an unbounded number of connections. A sliding window (rather than
     // fixed batches) means a slow schema never leaves the other slots idle.
-    let fan_out = if should_fan_out_schema_prefetch(&metadata_options) {
+    let fan_out = if has_metadata_warehouse {
         adapter
             .engine()
             .threads()
@@ -907,23 +1050,137 @@ async fn bulk_prefetch_last_modified_by_schema(
         1
     };
 
-    let mut group_futures = Vec::with_capacity(groups.len());
-    for group in &groups {
-        group_futures.push(prefetch_last_modified_for_schema_group(
+    let mut task_futures = Vec::with_capacity(tasks.len());
+    for task in &tasks {
+        task_futures.push(prefetch_last_modified_for_task(
             ctx,
             adapter,
             metadata_adapter.as_ref(),
             &metadata_options,
-            group,
+            task,
         ));
     }
 
-    futures::stream::iter(group_futures)
+    futures::stream::iter(task_futures)
         .buffer_unordered(fan_out)
         .try_collect::<Vec<()>>()
         .await?;
 
     Ok(())
+}
+
+/// A unit of prefetch work: either one pruned per-schema point query, or one
+/// broad `table_schema IN (...)` scan covering all fetched schemas of a database.
+enum PrefetchTask {
+    Schema(SchemaPrefetchGroup),
+    Broad(BroadPrefetchGroup),
+}
+
+/// Per-database inputs for the broad `table_schema IN (...)` scan, produced by
+/// merging the per-schema groups of a database whose schema count is low enough
+/// that one broad scan beats N sequential point queries.
+///
+/// The schemas to scan are not carried here: `freshness_all_in_schemas` derives
+/// them from `relation_values` (via `schema_as_resolved_str`) so the predicate
+/// and result matching stay in lockstep.
+struct BroadPrefetchGroup {
+    database: String,
+    /// Union across all schemas of `semantic_fqn → rendered relation name`.
+    semantic_to_name: BTreeMap<String, String>,
+    relation_values: Vec<Arc<dyn BaseRelation>>,
+}
+
+/// Merge a database's per-schema groups into a single broad-scan group.
+fn merge_schema_groups_into_broad(
+    database: String,
+    groups: Vec<SchemaPrefetchGroup>,
+) -> BroadPrefetchGroup {
+    let mut semantic_to_name = BTreeMap::new();
+    let mut relation_values = Vec::new();
+    for group in groups {
+        semantic_to_name.extend(group.semantic_to_name);
+        relation_values.extend(group.relation_values);
+    }
+    BroadPrefetchGroup {
+        database,
+        semantic_to_name,
+        relation_values,
+    }
+}
+
+/// Regroup the per-schema groups by database and, for each database, decide via
+/// the schema-count probe whether to keep pruned per-schema point queries (a
+/// large database, where the broad scan would force a costly full-database scan)
+/// or collapse them into one broad `table_schema IN (...)` scan (a small
+/// database, where one query beats N). When adaptive metadata fetch is disabled,
+/// always use the broad scan — the pre-adaptive plugin behavior.
+///
+/// Snowflake-only; callers gate this behind the no-metadata-warehouse Snowflake
+/// path. The probes run sequentially here (no metadata warehouse means metadata
+/// queries run one at a time on the main warehouse anyway).
+async fn build_adaptive_prefetch_tasks(
+    ctx: &TaskRunnerCtx,
+    schema_groups: Vec<SchemaPrefetchGroup>,
+) -> Vec<PrefetchTask> {
+    let adaptive = run_cache_adaptive_metadata_fetch(ctx);
+
+    let mut by_database: BTreeMap<String, Vec<SchemaPrefetchGroup>> = BTreeMap::new();
+    for group in schema_groups {
+        by_database
+            .entry(group.database.clone())
+            .or_default()
+            .push(group);
+    }
+
+    let mut tasks = Vec::new();
+    for (database, groups) in by_database {
+        let num_schemas = groups.len();
+        let use_broad = if !adaptive {
+            true
+        } else {
+            !should_fetch_schemas_sequentially(ctx, &database, num_schemas).await
+        };
+        if use_broad {
+            tasks.push(PrefetchTask::Broad(merge_schema_groups_into_broad(
+                database, groups,
+            )));
+        } else {
+            tasks.extend(groups.into_iter().map(PrefetchTask::Schema));
+        }
+    }
+    tasks
+}
+
+/// Dispatch a single prefetch task to its per-schema or broad-scan runner.
+async fn prefetch_last_modified_for_task(
+    ctx: &TaskRunnerCtx,
+    adapter: &Adapter,
+    metadata_adapter: &dyn MetadataAdapter,
+    metadata_options: &MetadataQueryOptions,
+    task: &PrefetchTask,
+) -> FsResult<()> {
+    match task {
+        PrefetchTask::Schema(group) => {
+            prefetch_last_modified_for_schema_group(
+                ctx,
+                adapter,
+                metadata_adapter,
+                metadata_options,
+                group,
+            )
+            .await
+        }
+        PrefetchTask::Broad(group) => {
+            prefetch_last_modified_for_broad_group(
+                ctx,
+                adapter,
+                metadata_adapter,
+                metadata_options,
+                group,
+            )
+            .await
+        }
+    }
 }
 
 /// Prefetch last-modified epochs for a single `(database, schema)` group and
@@ -1003,6 +1260,104 @@ async fn prefetch_last_modified_for_schema_group(
             ErrorCode::StateServiceWarn,
             format!(
                 "dbt State schema-level freshness dump returned empty for {database}.{schema}; \
+                 falling back to per-node warehouse queries for {} relations",
+                semantic_to_name.len()
+            ),
+        );
+        let empty_overrides = BTreeMap::new();
+        let freshness = metadata_adapter
+            .freshness_with_overrides_and_options(
+                relation_values,
+                &empty_overrides,
+                metadata_options,
+                adapter.cancellation_token(),
+            )
+            .await
+            .map_err(into_fs_error)?;
+        for (sem_fqn, name) in semantic_to_name {
+            let epoch = freshness
+                .get(sem_fqn)
+                .map(|m| m.last_altered.timestamp_millis());
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .insert_last_modified_epoch(name, epoch);
+        }
+    } else {
+        for (sem_fqn, name) in semantic_to_name {
+            let epoch = dump.get(sem_fqn).map(|m| m.last_altered.timestamp_millis());
+            ctx.inner
+                .run_cache_ctx
+                .run_cache_metadata
+                .insert_last_modified_epoch(name, epoch);
+        }
+    }
+
+    Ok(())
+}
+
+/// Prefetch last-modified epochs for a whole database via one broad
+/// `table_schema IN (...)` scan and write them into `run_cache_metadata`.
+///
+/// Chosen — over one pruned point query per schema — for databases small enough
+/// that a single broad scan is cheaper (see `should_fetch_schemas_sequentially`).
+/// The fail-open (scan failure → unknown freshness) and empty-dump fallback
+/// behavior matches `prefetch_last_modified_for_schema_group`.
+async fn prefetch_last_modified_for_broad_group(
+    ctx: &TaskRunnerCtx,
+    adapter: &Adapter,
+    metadata_adapter: &dyn MetadataAdapter,
+    metadata_options: &MetadataQueryOptions,
+    group: &BroadPrefetchGroup,
+) -> FsResult<()> {
+    let BroadPrefetchGroup {
+        database,
+        semantic_to_name,
+        relation_values,
+    } = group;
+
+    let dump = match metadata_adapter
+        .freshness_all_in_schemas(
+            database,
+            relation_values,
+            metadata_options,
+            adapter.cancellation_token(),
+        )
+        .await
+    {
+        Ok(dump) => dump,
+        Err(err) => {
+            let err = into_fs_error(err);
+            // Matches the Python plugin: broad metadata prefetch failures
+            // should not disable dbt State; unknown freshness keeps
+            // downstream decisions conservative.
+            emit_warn_log_message(
+                ErrorCode::StateServiceWarn,
+                format!(
+                    "dbt State schema-level freshness scan failed for {database}: {err}; \
+                     caching unknown freshness for {} relations",
+                    semantic_to_name.len()
+                ),
+            );
+            for name in semantic_to_name.values() {
+                ctx.inner
+                    .run_cache_ctx
+                    .run_cache_metadata
+                    .insert_last_modified_epoch(name, None);
+            }
+            return Ok(());
+        }
+    };
+
+    if dump.is_empty() {
+        // Empty result from the broad scan. As with the per-schema dump this is
+        // typically INFORMATION_SCHEMA eventual consistency (see
+        // `prefetch_last_modified_for_schema_group`), so fall back to the batched
+        // per-table path for this database's relations.
+        emit_warn_log_message(
+            ErrorCode::StateServiceWarn,
+            format!(
+                "dbt State schema-level freshness scan returned empty for {database}; \
                  falling back to per-node warehouse queries for {} relations",
                 semantic_to_name.len()
             ),
@@ -6191,6 +6546,108 @@ mod tests {
 
         let no_warehouse = MetadataQueryOptions { warehouse: None };
         assert!(!should_fan_out_schema_prefetch(&no_warehouse));
+    }
+
+    #[test]
+    fn schema_probe_limit_scales_and_clamps() {
+        // D=5 -> 284 * 5 = 1420, below the 10k cap.
+        assert_eq!(schema_probe_limit(5), 1420);
+        // D=36 -> 284 * 36 = 10224, clamped to Snowflake's SHOW LIMIT cap.
+        assert_eq!(schema_probe_limit(36), MAX_SHOW_LIMIT);
+        assert_eq!(schema_probe_limit(36), 10000);
+    }
+
+    #[test]
+    fn crossover_coefficient_matches_measured_rates() {
+        // Derived in code from the two measured curves; documented as ~284.
+        assert_eq!(CROSSOVER_N_PER_FETCHED_SCHEMA, 284);
+    }
+
+    #[test]
+    fn schema_probe_decision_small_db_uses_sequential_without_probe() {
+        // At or below ALWAYS_SEQUENTIAL_MAX_SCHEMAS the probe is skipped: the
+        // decision is sequential regardless of any observed count.
+        assert!(schema_probe_decision(1, None));
+        assert!(schema_probe_decision(ALWAYS_SEQUENTIAL_MAX_SCHEMAS, None));
+        assert!(schema_probe_decision(
+            ALWAYS_SEQUENTIAL_MAX_SCHEMAS,
+            Some(0)
+        ));
+    }
+
+    #[test]
+    fn schema_probe_decision_probe_failure_falls_back_to_broad_scan() {
+        // D above the short-circuit and no observed count (probe error) -> broad IN scan.
+        assert!(!schema_probe_decision(
+            ALWAYS_SEQUENTIAL_MAX_SCHEMAS + 1,
+            None
+        ));
+    }
+
+    #[test]
+    fn schema_probe_decision_saturated_probe_uses_sequential() {
+        // D=5 -> threshold 284*5 = 1420. Saturated (observed == threshold) -> sequential.
+        assert!(schema_probe_decision(5, Some(1420)));
+        // Just short of saturation -> the DB is small enough for one broad scan.
+        assert!(!schema_probe_decision(5, Some(1419)));
+    }
+
+    #[test]
+    fn schema_probe_decision_clamped_threshold_saturation() {
+        // D=36 -> 284*36 = 10224, clamped to MAX_SHOW_LIMIT (10000). Saturation is
+        // measured against the clamped threshold.
+        assert!(schema_probe_decision(36, Some(MAX_SHOW_LIMIT)));
+        assert!(!schema_probe_decision(36, Some(MAX_SHOW_LIMIT - 1)));
+    }
+
+    #[test]
+    fn merge_schema_groups_into_broad_unions_schemas_and_relations() {
+        let unquoted = ResolvedQuoting {
+            database: false,
+            schema: false,
+            identifier: false,
+        };
+        let group = |schema: &str, table: &str| {
+            let rel: Arc<dyn BaseRelation> = create_relation(
+                AdapterType::Snowflake,
+                "DB".to_string(),
+                schema.to_string(),
+                Some(table.to_string()),
+                None,
+                unquoted,
+            )
+            .unwrap()
+            .into();
+            SchemaPrefetchGroup {
+                database: "DB".to_string(),
+                schema: schema.to_string(),
+                semantic_to_name: BTreeMap::from([(
+                    rel.semantic_fqn(),
+                    format!("\"DB\".\"{schema}\".\"{table}\""),
+                )]),
+                relation_values: vec![rel],
+            }
+        };
+
+        let broad = merge_schema_groups_into_broad(
+            "DB".to_string(),
+            vec![group("S0", "T0"), group("S1", "T1")],
+        );
+
+        assert_eq!(broad.database, "DB");
+        assert_eq!(broad.semantic_to_name.len(), 2);
+        assert_eq!(broad.relation_values.len(), 2);
+        // The schemas the broad scan covers are derived from the relations, not
+        // carried on the group — so they can never drift from result matching.
+        let schemas: BTreeSet<String> = broad
+            .relation_values
+            .iter()
+            .map(|rel| rel.schema_as_resolved_str().unwrap())
+            .collect();
+        assert_eq!(
+            schemas,
+            BTreeSet::from(["S0".to_string(), "S1".to_string()])
+        );
     }
 
     #[test]

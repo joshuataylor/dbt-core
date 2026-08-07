@@ -351,6 +351,72 @@ pub trait MetadataAdapter: Send + Sync {
         Box::pin(async move { Ok(BTreeMap::new()) })
     }
 
+    /// Fetch freshness for all tables across several schemas of a database in a
+    /// single broad `table_schema IN (...)` scan.
+    ///
+    /// This is the multi-schema counterpart of `freshness_all_in_schema` and
+    /// mirrors the plugin's pre-adaptive
+    /// `_fetch_last_modified_epochs_from_schemas_in_catalog` (which issues one
+    /// broad `table_schema IN (...)` fetch per catalog). The adaptive prefetch
+    /// uses it for databases small enough that a single broad scan is cheaper
+    /// than one pruned point query per schema.
+    ///
+    /// The set of schemas to scan is derived from `relations` themselves (using
+    /// the same resolution `find_matching_relation` uses to key results), so the
+    /// `table_schema IN (...)` predicate and the result matching can never drift
+    /// apart. `relations` is the subset of input relations in this database
+    /// (spanning one or more schemas); adapters use `find_matching_relation` on
+    /// the scan results to key the returned map by the same semantic FQN as
+    /// `relation.semantic_fqn()`.
+    ///
+    /// Unlike `freshness_all_in_schema` — a general per-schema path several
+    /// adapters share, whose empty default deliberately signals "fall back to
+    /// the per-table query" — the broad scan is only ever selected by adapters
+    /// whose prefetch orchestration opts into it (currently Snowflake only). A
+    /// call reaching this base default therefore means the adapter does not
+    /// support the broad scan, so it raises `NotSupported` rather than silently
+    /// returning empty.
+    fn freshness_all_in_schemas<'a>(
+        &'a self,
+        _database: &'a str,
+        _relations: &'a [Arc<dyn BaseRelation>],
+        _options: &'a MetadataQueryOptions,
+        _token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        Box::pin(async move {
+            Err(Cancellable::Error(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "freshness_all_in_schemas (broad multi-schema INFORMATION_SCHEMA scan) is not \
+                 supported by this adapter",
+            )))
+        })
+    }
+
+    /// Count the schemas in `database`, capped at `limit` rows.
+    ///
+    /// A cheap, constant-cost probe used by the adaptive freshness prefetch to
+    /// choose between one broad `table_schema IN (...)` scan and per-schema point
+    /// queries, without listing the whole database. Implementations return
+    /// `min(actual_schema_count, limit)`; the caller treats `observed == limit`
+    /// as "the database has at least `limit` schemas".
+    ///
+    /// The probe query is engine-specific (Snowflake uses
+    /// `SHOW TERSE SCHEMAS IN DATABASE ... LIMIT`), so the base default is
+    /// `NotSupported`; callers gate this behind the adapters that implement it.
+    fn count_schemas_up_to<'a>(
+        &'a self,
+        _database: &'a str,
+        _limit: usize,
+        _token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, usize> {
+        Box::pin(async move {
+            Err(Cancellable::Error(AdapterError::new(
+                AdapterErrorKind::NotSupported,
+                "count_schemas_up_to (schema-count probe) is not supported by this adapter",
+            )))
+        })
+    }
+
     /// Check whether each relation exists, keyed by semantic FQN.
     ///
     /// The default implementation uses `list_relations_in_parallel`, which is

@@ -913,6 +913,10 @@ impl CatalogRelation {
 
                 let external_volume =
                     Self::get_model_config_value(model, "external_volume", AdapterType::Snowflake);
+                let external_volume = Some(
+                    external_volume
+                        .unwrap_or_else(|| SNOWFLAKE_MANAGED_EXTERNAL_VOLUME.to_string()),
+                );
                 let base_location_root = Self::get_model_config_value(
                     model,
                     "base_location_root",
@@ -1981,7 +1985,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_iceberg_managed_storage_omits_base_location() {
+    fn legacy_iceberg_managed_storage_templates_snowflake_managed_omits_base_location() {
         let conf = json!({
             "table_format": "ICEBERG",
             "schema": "SCH",
@@ -1995,7 +1999,10 @@ mod tests {
             let r = CatalogRelation::build_without_catalogs_yml(&m).unwrap();
             assert_eq!(r.catalog_type, ICEBERG_BUILT_IN_CATALOG);
             assert_eq!(r.table_format, TableFormat::Iceberg);
-            assert!(r.external_volume.is_none());
+            assert_eq!(
+                r.external_volume.as_deref(),
+                Some(SNOWFLAKE_MANAGED_EXTERNAL_VOLUME)
+            );
             assert!(r.base_location.is_none());
         }
     }

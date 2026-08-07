@@ -134,10 +134,23 @@ pub trait RenderingEventListener: std::fmt::Debug {
     }
 }
 
+/// Which dbt block a malformed-name event refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockNameKind {
+    /// A `{% snapshot %}` block.
+    Snapshot,
+    /// A `{% docs %}` block.
+    Docs,
+}
+
 /// A listener for tokenizer events emitted during template compilation.
 pub trait TokenizerEventListener: std::fmt::Debug {
     /// Called when the tokenizer emits a source token.
     fn on_source_token(&self, token: &Token<'_>, span: &Span);
+
+    /// Called when a `{% snapshot %}`/`{% docs %}` block name is followed by a
+    /// non-empty suffix that dbt-core's regex extractor silently discards.
+    fn on_malformed_block_name(&self, _kind: BlockNameKind, _name: &str, _name_span: &Span) {}
 }
 
 /// A macro start event.

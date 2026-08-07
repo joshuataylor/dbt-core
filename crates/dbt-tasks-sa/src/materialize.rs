@@ -343,7 +343,9 @@ pub fn execute_node_hooks<S: serde::Serialize>(
 
 #[cfg(test)]
 mod tests {
-    use super::{NodeHookPhase, NodeHookStyle, model_hook_style, node_hook_expression};
+    use super::{
+        NodeHookPhase, NodeHookStyle, cell_as_bool, model_hook_style, node_hook_expression,
+    };
     use dbt_adapter_core::AdapterType;
     use dbt_schemas::schemas::common::DbtMaterialization;
     use minijinja::Value;
@@ -443,6 +445,25 @@ mod tests {
             model_hook_style(AdapterType::Bigquery, &DbtMaterialization::MaterializedView),
             NodeHookStyle::SplitTransaction
         );
+    }
+
+    #[test]
+    fn cell_as_bool_reads_adapter_text_booleans() {
+        assert!(cell_as_bool(&Value::from("true")));
+        assert!(cell_as_bool(&Value::from("True")));
+        assert!(cell_as_bool(&Value::from("TRUE")));
+        assert!(!cell_as_bool(&Value::from("false")));
+        assert!(!cell_as_bool(&Value::from("False")));
+        assert!(!cell_as_bool(&Value::from("FALSE")));
+    }
+
+    #[test]
+    fn cell_as_bool_falls_back_to_value_truthiness() {
+        assert!(cell_as_bool(&Value::from(true)));
+        assert!(!cell_as_bool(&Value::from(false)));
+        assert!(cell_as_bool(&Value::from(1i64)));
+        assert!(!cell_as_bool(&Value::from(0i64)));
+        assert!(!cell_as_bool(&Value::from(())));
     }
 }
 
@@ -1253,6 +1274,16 @@ impl TestResult {
     }
 }
 
+/// Coerce a test-result cell to bool. Some adapters (SQL Server) have no
+/// boolean literal and return the text "true"/"false".
+fn cell_as_bool(v: &Value) -> bool {
+    match v.as_str() {
+        Some(s) if s.eq_ignore_ascii_case("true") => true,
+        Some(s) if s.eq_ignore_ascii_case("false") => false,
+        _ => v.is_true(),
+    }
+}
+
 fn get_test_results(table: &AgateTable) -> FsResult<Vec<TestResult>> {
     let column_names = table.column_names();
     let column_name_idx = column_names
@@ -1297,8 +1328,8 @@ fn get_test_results(table: &AgateTable) -> FsResult<Vec<TestResult>> {
         let should_error = columns.get(2).unwrap().get_item_by_index(0).ok();
 
         let failures_val = failures.and_then(|v| v.as_i64()).unwrap_or(-1);
-        let should_warn_val = should_warn.map(|v| v.is_true()).unwrap_or(false);
-        let should_error_val = should_error.map(|v| v.is_true()).unwrap_or(false);
+        let should_warn_val = should_warn.map(|v| cell_as_bool(&v)).unwrap_or(false);
+        let should_error_val = should_error.map(|v| cell_as_bool(&v)).unwrap_or(false);
 
         Ok(vec![TestResult {
             column_name: None,
@@ -1325,11 +1356,11 @@ fn get_column_test_result(
         .unwrap_or(0);
 
     let should_warn = get_cell_value(values, row, should_warn_idx)
-        .map(|v| v.is_true())
+        .map(|v| cell_as_bool(&v))
         .unwrap_or(false);
 
     let should_error = get_cell_value(values, row, should_error_idx)
-        .map(|v| v.is_true())
+        .map(|v| cell_as_bool(&v))
         .unwrap_or(false);
 
     TestResult {

@@ -1525,8 +1525,40 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
     }
 }
 
+/// BigQuery reports a miss through two different APIs, and bigquery-adbc
+/// formats each from whichever fields its error type carries — so the two
+/// share no common token:
+///
+/// - **Metadata lookup** — a REST `Tables.Get` that returns HTTP 404. Has a
+///   status code, no reason code (for example, `get_table_schema` -> Table.Metadata):
+///
+///   ```text
+///   [bq] Could not get metadata for table `p`.`d`.`t`: 404 Not Found: Not found: Table p:d.t
+///   ```
+///
+/// - **Query job** — the HTTP calls all succeed; the failure arrives inside
+///   the job payload. Has a reason code, no status code (`execute` arbitrary SQLs):
+///
+///   ```text
+///   [bq] Could not complete job: notFound: Not found: Dataset p:d was not found in location US ()
+///   ```
+///
+/// See `errToAdbcErr`, which dispatches on the Go error type:
+/// <https://github.com/dbt-labs/bigquery-adbc/blob/449ef311c5f2b82d586c97cf36d7c00dc8610851/go/util.go#L153>
+///
+/// arrow-adbc stringifies the raw SDK error instead, so both of its variants
+/// read `googleapi: Error 404: Not found: …`.
+///
+/// TODO: match on the ADBC status instead — bigquery-adbc already reports
+/// `StatusNotFound` for both — once the driver migration is complete.
 pub fn is_bigquery_not_found_error(e: &AdapterError) -> bool {
-    e.message().contains("Error 404: Not found:")
+    let msg = e.message();
+    // arrow-adbc (both sources)
+    msg.contains("Error 404: Not found:")
+        // bigquery-adbc, metadata lookup
+        || msg.contains("404 Not Found:")
+        // bigquery-adbc, query job
+        || msg.contains("notFound:")
 }
 
 /// BigQuery surfaces access-control failures as googleapi HTTP 403 errors.
@@ -1892,5 +1924,52 @@ mod tests {
              for dataset operations, quotaExceeded",
         );
         assert!(!is_bigquery_permission_error(&quota));
+    }
+
+    #[test]
+    fn test_is_bigquery_not_found_error() {
+        // arrow-adbc spelling.
+        let legacy = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+        );
+        assert!(is_bigquery_not_found_error(&legacy));
+
+        // arrow-adbc, query job.
+        let legacy_job = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "googleapi: Error 404: Not found: Dataset proj:dataset was not found \
+             in location US, notFound",
+        );
+        assert!(is_bigquery_not_found_error(&legacy_job));
+
+        // bigquery-adbc metadata lookup: "<code> <StatusText>", not "Error <code>".
+        let foundry = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not get metadata for table `proj`.`dataset`.`tbl`: \
+             404 Not Found: Not found: Table proj:dataset.tbl",
+        );
+        assert!(is_bigquery_not_found_error(&foundry));
+
+        // bigquery-adbc query job: no HTTP code at all, only the reason.
+        let foundry_job = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not complete job: notFound: Not found: Dataset \
+             proj:dataset was not found in location US ()",
+        );
+        assert!(is_bigquery_not_found_error(&foundry_job));
+
+        // Other failures must still propagate.
+        let denied = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "googleapi: Error 403: Access Denied, accessDenied",
+        );
+        assert!(!is_bigquery_not_found_error(&denied));
+
+        let invalid = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not complete job: invalidQuery: Syntax error (query)",
+        );
+        assert!(!is_bigquery_not_found_error(&invalid));
     }
 }

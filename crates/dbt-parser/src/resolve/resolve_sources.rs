@@ -1,6 +1,8 @@
 //! Module containing the entrypoint for the resolve phase.
 use crate::args::ResolveArgs;
-use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs, init_project_config};
+use crate::dbt_project_config::{
+    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
+};
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
@@ -235,7 +237,12 @@ pub async fn resolve_sources(
 
     let config_resolver =
         ProjectConfigResolver::build(root_project_configs.sources.clone(), is_dependency, || {
-            init_project_config(&package.dbt_project.sources, (), dependency_package_name)
+            init_project_config(
+                &package.dbt_project.sources,
+                (),
+                dependency_package_name,
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+            )
         })?
         .with_resolve_defaults((
             arg.static_analysis.unwrap_or_default(),

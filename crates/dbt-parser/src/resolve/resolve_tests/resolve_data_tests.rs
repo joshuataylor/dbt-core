@@ -1,6 +1,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::ProjectConfigResolver;
 use crate::dbt_project_config::RootProjectConfigs;
+use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
 use crate::renderer::RenderCtx;
 use crate::renderer::RenderCtxInner;
@@ -389,7 +390,14 @@ pub async fn resolve_data_tests(
                 (None, Some(data_tests)) => Some(data_tests),
                 (None, None) => None,
             };
-            init_project_config(&tests_config, package_quoting, dependency_package_name)
+            let disallow_plus_prefix =
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref());
+            init_project_config(
+                &tests_config,
+                package_quoting,
+                dependency_package_name,
+                disallow_plus_prefix,
+            )
         })?
         .with_resolve_defaults((arg.static_analysis.unwrap_or_default(), arg.store_failures));
 

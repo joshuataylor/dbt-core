@@ -702,6 +702,7 @@ pub async fn resolve_inner(
     let mut min_properties = resolve_minimal_properties(
         arg,
         package,
+        dbt_state.root_package(),
         root_package_name,
         root_project_configs,
         &jinja_env,
@@ -1007,6 +1008,7 @@ pub async fn resolve_inner(
         arg,
         min_properties.unit_tests,
         package,
+        dbt_state.root_package(),
         package_quoting,
         root_project_configs,
         package_name,

@@ -1,6 +1,7 @@
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::ProjectConfigResolver;
 use crate::dbt_project_config::RootProjectConfigs;
+use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
 use crate::python_ast::parse_python;
 use crate::python_file_info::PythonFileInfo;
@@ -212,6 +213,7 @@ pub async fn resolve_models(
                 &package.dbt_project.models,
                 package_quoting,
                 dependency_package_name,
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
             )
         })?
         .with_resolve_defaults((

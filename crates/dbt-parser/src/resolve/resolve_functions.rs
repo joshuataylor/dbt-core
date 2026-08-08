@@ -30,7 +30,9 @@ use dbt_schemas::{
 };
 use minijinja::MacroSpans;
 
-use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs, init_project_config};
+use crate::dbt_project_config::{
+    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
+};
 use crate::renderer::{RenderCtx, RenderCtxInner};
 use crate::resolve::resolve_utils::{build_unrendered_config, extract_config_map};
 use crate::utils::{
@@ -91,6 +93,7 @@ pub async fn resolve_functions(
                 &package.dbt_project.functions,
                 package_quoting,
                 dependency_package_name,
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
             )
         },
     )?

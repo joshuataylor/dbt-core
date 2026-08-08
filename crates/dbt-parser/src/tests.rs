@@ -1217,7 +1217,8 @@ mod tests {
             &base,
             &pmc,
             "",
-            &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key_path: &str| {},
+            &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key: &str, _key_path: &str| {},
+            false,
         );
 
         let hours = |cfg: &ModelConfig| {
@@ -1267,7 +1268,8 @@ mod tests {
             &base,
             &pmc,
             "",
-            &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key_path: &str| {},
+            &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key: &str, _key_path: &str| {},
+            false,
         )
     }
 
@@ -1409,7 +1411,8 @@ mod tests {
             &base,
             &psc,
             "",
-            &|_variant: &dbt_yaml::ShouldBe<ProjectSnapshotConfig>, _key_path: &str| {},
+            &|_variant: &dbt_yaml::ShouldBe<ProjectSnapshotConfig>, _key: &str, _key_path: &str| {},
+            false,
         );
 
         let hours = |cfg: &SnapshotConfig| {

@@ -1,8 +1,8 @@
 use super::resolve_properties::MinimalPropertiesEntry;
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
-    ProjectConfigResolver, RootProjectConfigs, init_project_config,
-    strip_resource_paths_from_ref_path,
+    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags,
+    init_project_config, strip_resource_paths_from_ref_path,
 };
 use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
@@ -285,6 +285,7 @@ pub async fn resolve_snapshots(
                 &package.dbt_project.snapshots,
                 package_quoting,
                 dependency_package_name,
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
             )
         },
     )?

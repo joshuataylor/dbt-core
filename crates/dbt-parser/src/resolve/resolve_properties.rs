@@ -1,5 +1,7 @@
 use crate::args::ResolveArgs;
-use crate::dbt_project_config::{ProjectConfigResolver, RootProjectConfigs, init_project_config};
+use crate::dbt_project_config::{
+    ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
+};
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_utils::try_read_yml_to_str;
 use dbt_common::tracing::dbt_emit::{emit_strict_parse_error, emit_warn_log_message};
@@ -584,6 +586,7 @@ fn validate_resource_name(name: &str) -> FsResult<String> {
 pub fn resolve_minimal_properties(
     arg: &ResolveArgs,
     package: &DbtPackage,
+    root_package: &DbtPackage,
     root_package_name: &str,
     root_project_configs: &RootProjectConfigs,
     jinja_env: &JinjaEnv,
@@ -604,6 +607,7 @@ pub fn resolve_minimal_properties(
                 &package.dbt_project.semantic_models,
                 (),
                 Some(package.dbt_project.name.as_str()),
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
             )
         },
     )?;

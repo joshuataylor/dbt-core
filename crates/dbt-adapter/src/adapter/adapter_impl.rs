@@ -4231,7 +4231,7 @@ impl AdapterImpl {
                 snowflake::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Bigquery, engine) => {
-                bigquery::list_relations_via_adbc(engine.as_ref(), conn, db_schema)
+                bigquery::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Databricks | Spark, engine) => {
                 databricks::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)

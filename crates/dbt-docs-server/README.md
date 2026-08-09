@@ -147,13 +147,21 @@ DBT_TARGET_PATH=/abs/path/to/project/target docker compose up --build
 
 Then open <http://localhost:8580>.
 
+> Override the pinned dbt version with `DBT_VERSION=<version>` (e.g. `DBT_VERSION=2.0.0-alpha.5 docker compose up --build`). The image runs as a non-root user and ships a healthcheck against `/api/v1/health`.
+
 ### 🐋 Option C: Docker
 
-A `Dockerfile` is included. It installs the released dbt binary (it does not build from source), so the build is quick and needs no cargo toolchain:
+A `Dockerfile` is included. It downloads the released dbt Core binary from [GitHub Releases](https://github.com/dbt-labs/dbt-core/releases) (verifying the published `SHA256SUMS` digest) rather than building from source, so the build is quick and needs no cargo toolchain.
+
+It is a multi-stage BuildKit build and produces `linux/amd64` and `linux/arm64` images.
+
+> From within the repository root, not `crates/dbt-docs-server`
 
 ```bash
 docker build -f crates/dbt-docs-server/Dockerfile -t dbt-docs-server .
 ```
+
+Pin or bump the version with `--build-arg DBT_VERSION=<version>` (default: `2.0.0-alpha.5`).
 
 Run it, mounting a project `target/` that already contains `target/index/*.parquet`:
 

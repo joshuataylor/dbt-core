@@ -2,17 +2,22 @@
 #
 # Point DBT_TARGET_PATH at a project's `target/` dir containing
 # target/index/*.parquet (from `dbt --write-index <run|build|compile>`), then
-# open http://localhost:8580. Use an absolute path — relative resolves against
+# open http://localhost:8580. Use an absolute path -- relative resolves against
 # this file's dir.
 #
 #   DBT_TARGET_PATH=/abs/path/to/project/target docker compose up --build
+#
+# Override the pinned dbt version with DBT_VERSION=2.0.0-alpha.5 (etc).
 
 services:
   dbt-docs-server:
     build:
-      # Installs the released dbt binary; copies no source, so context is minimal.
+      # Fetches the released dbt binary over the network; COPYs no source, so
+      # the build context is empty (see .dockerignore).
       context: .
       dockerfile: Dockerfile
+      args:
+        DBT_VERSION: ${DBT_VERSION:-2.0.0-alpha.5}
     image: dbt-docs-server
     ports:
       - "${DBT_DOCS_PORT:-8580}:8580"
@@ -27,6 +32,7 @@ services:
       DBT_DOCS_PORT: "8580"
       DBT_DOCS_TARGET_PATH: "/data/target"
     restart: unless-stopped
+    # The image ships a HEALTHCHECK (HEAD /api/v1/health); inherited here.
 
 volumes:
   dbt-adbc-cache:

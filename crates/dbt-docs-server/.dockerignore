@@ -1,0 +1,3 @@
+# The Dockerfile COPYs nothing from the build context (the dbt binary is fetched
+# over the network), so send an empty context and skip uploading web/, src/, etc.
+*

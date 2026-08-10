@@ -4107,6 +4107,17 @@ impl Adapter {
     }
 }
 
+/// Adapter methods whose `Parse`-mode implementation independently
+/// fabricates relation/table/column/schema-shaped data (rather than
+/// returning a trivial `bool`/`none` placeholder) instead of ever calling
+/// `execute`. Each of these needs to be tainted individually at the
+/// dispatch point below -- there is no single shared call they all funnel
+/// through to taint once. This is the canonical list; minijinja's
+/// `INTROSPECTIVE_METHOD_NAMES` (used for the static "does this macro reach
+/// an introspective call" analysis) must be kept in sync with it, since
+/// minijinja cannot depend on this crate to reuse it directly.
+const INTROSPECTIVE_METHODS: &[&str] = minijinja::INTROSPECTIVE_METHOD_NAMES;
+
 impl Object for Adapter {
     fn call_method(
         self: &Arc<Self>,
@@ -4116,7 +4127,23 @@ impl Object for Adapter {
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, minijinja::Error> {
         if let Parse(_) = &self.inner {
-            return self.call_method_impl(state, name, args, listeners);
+            let result = self.call_method_impl(state, name, args, listeners);
+            return result.map(|value| {
+                // Gated on a listener actually wanting introspective holes
+                // (only `JinjaRenderMode::Symbolic`'s listener does): wrapping
+                // unconditionally would change this value's `ValueRepr` from
+                // whatever primitive it really is (e.g. `None`) to `Object`
+                // for *every* render mode, silently breaking plain
+                // `{% if not adapter.get_relation(...) %}`/`is none`-style
+                // checks that never touch taint at all.
+                if INTROSPECTIVE_METHODS.contains(&name)
+                    && listeners.iter().any(|l| l.wants_introspective_holes())
+                {
+                    crate::introspective_taint::IntrospectiveValue::wrap(value)
+                } else {
+                    value
+                }
+            });
         }
         // NOTE(jason): This function uses the time machine - cross version Fusion snapshot tests
         // not to be confused with conformance ReplayAdapter or Adapter Record/Replay modes

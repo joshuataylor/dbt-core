@@ -1503,6 +1503,10 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         map_reduce.run(Arc::new(keys), token)
     }
 
+    fn supports_bulk_freshness_dump(&self) -> bool {
+        true
+    }
+
     fn freshness_all_in_schema<'a>(
         &'a self,
         database: &'a str,

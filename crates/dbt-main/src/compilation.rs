@@ -1779,8 +1779,6 @@ impl DbtProjectCompilation {
                 &arg.io.out_dir,
                 self.resolved_state.adapter_type,
                 extra_frontier_unique_ids,
-                arg.io.use_parquet_schema_store,
-                arg.io.verify_parquet_schema_store,
             )?)
         };
 

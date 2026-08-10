@@ -7,10 +7,7 @@ use std::{collections::HashMap, sync::Arc, thread};
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use dbt_ident::Ident;
-use dbt_schema_store::{
-    CanonicalFqn, SchemaStoreTrait,
-    store::{SchemaStore, StoreFormat},
-};
+use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait, store::SchemaStore};
 use tempfile::TempDir;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────
@@ -34,9 +31,7 @@ fn empty_store(dir: &TempDir) -> SchemaStore {
         HashMap::new(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     )
 }
 
@@ -188,9 +183,7 @@ fn save_is_idempotent() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     store
         .register_schema(&c, None, make_schema("col"), false)
@@ -234,9 +227,7 @@ fn save_from_multiple_threads() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     ));
     store
         .register_schema(&c, None, make_schema("col"), false)
@@ -285,9 +276,7 @@ fn save_from_multiple_threads() {
         frontier2,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     assert!(store2.exists(&c), "schema must survive concurrent saves");
 }

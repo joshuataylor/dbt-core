@@ -9,10 +9,7 @@ use dbt_schema_store::{LocalSchemaEntry, store::LookupEntry};
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use dbt_ident::Ident;
-use dbt_schema_store::{
-    CanonicalFqn, SchemaStoreTrait,
-    store::{SchemaStore, StoreFormat},
-};
+use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait, store::SchemaStore};
 use tempfile::TempDir;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -29,7 +26,7 @@ fn cfqn(cat: &str, schema: &str, table: &str) -> CanonicalFqn {
     CanonicalFqn::new(&ident(cat), &ident(schema), &ident(table))
 }
 
-/// Builds an empty `SchemaStore` with `ParquetCache` format rooted at `dir`.
+/// Builds an empty `SchemaStore` rooted at `dir`.
 fn empty_store(dir: &TempDir) -> SchemaStore {
     SchemaStore::new(
         dir.path().to_path_buf(),
@@ -37,9 +34,7 @@ fn empty_store(dir: &TempDir) -> SchemaStore {
         HashMap::new(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     )
 }
 
@@ -53,9 +48,7 @@ fn store_with_frontier(dir: &TempDir, c: &CanonicalFqn, uid: &str) -> SchemaStor
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     )
 }
 
@@ -260,9 +253,7 @@ fn ttl_evicts_stale_entry() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         refresh_intervals,
-        None,
     );
 
     assert!(!store2.exists(&c), "stale entry must be evicted on reload");
@@ -294,9 +285,7 @@ fn ttl_keeps_fresh_entry() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         refresh_intervals,
-        None,
     );
 
     assert!(store2.exists(&c), "fresh entry must survive reload");
@@ -353,9 +342,7 @@ fn multiple_entries_independent() {
             frontier,
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c1, None, make_schema("col_a"), false)
@@ -375,9 +362,7 @@ fn multiple_entries_independent() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
 
     assert_eq!(
@@ -470,9 +455,7 @@ fn evict_stale_not_repersisted() {
         frontier.clone(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
-        HashMap::new(), // no TTL yet — fresh
-        None,
+        HashMap::new(),
     );
     store
         .register_schema(&c, None, make_schema("col"), false)
@@ -489,9 +472,7 @@ fn evict_stale_not_repersisted() {
         frontier.clone(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         long_ttl,
-        None,
     );
     assert!(store2.exists(&c), "entry must be loaded as fresh");
 
@@ -518,9 +499,7 @@ fn evict_stale_not_repersisted() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         short_ttl,
-        None,
     );
     assert!(
         !store3.exists(&c),
@@ -553,9 +532,7 @@ fn local_schema_not_persisted() {
             HashMap::new(),
             local,
             vec![local_entry],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         assert!(store.exists(&c));
         store.save(dir.path()).unwrap();
@@ -575,9 +552,7 @@ fn local_schema_not_persisted() {
         HashMap::new(),
         local,
         vec![local_entry2],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
 
     assert!(store2.exists(&c));
@@ -646,9 +621,7 @@ fn promote_to_frontier_visible_in_run() {
         HashMap::new(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
 
     // 1. Register the analyzed (Selected) schema.
@@ -692,9 +665,7 @@ fn promote_to_frontier_survives_reload() {
             HashMap::new(),
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c, None, make_schema("amount"), false)
@@ -713,9 +684,7 @@ fn promote_to_frontier_survives_reload() {
             frontier,
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         assert!(
             store2.exists(&c),
@@ -748,9 +717,7 @@ fn delta_epoch_contains_only_new_entries() {
             frontier,
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c_old, None, make_schema("old_col"), false)
@@ -769,9 +736,7 @@ fn delta_epoch_contains_only_new_entries() {
             frontier,
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c_new, None, make_schema("new_col"), false)
@@ -789,9 +754,7 @@ fn delta_epoch_contains_only_new_entries() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     assert_eq!(
         store3.get_schema(&c_old).unwrap().inner().field(0).name(),
@@ -854,9 +817,7 @@ fn snapshot_entry_survives_reload() {
             HashMap::new(),
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c, None, make_schema("snap_col"), false)
@@ -873,9 +834,7 @@ fn snapshot_entry_survives_reload() {
         HashMap::new(),
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     assert!(store2.exists(&c), "Snapshot schema must survive reload");
     assert_eq!(
@@ -904,9 +863,7 @@ fn selected_schema_available_as_frontier_in_next_run() {
             HashMap::new(),
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c, None, make_schema("amount"), false)
@@ -925,9 +882,7 @@ fn selected_schema_available_as_frontier_in_next_run() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
 
     assert!(
@@ -957,9 +912,7 @@ fn selected_schema_latest_wins_across_runs() {
             HashMap::new(),
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c, None, make_schema("v1"), false)
@@ -978,9 +931,7 @@ fn selected_schema_latest_wins_across_runs() {
             HashMap::new(),
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c, None, make_schema("v2"), true)
@@ -998,9 +949,7 @@ fn selected_schema_latest_wins_across_runs() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
     assert_eq!(
         store3.get_schema(&c).unwrap().inner().field(0).name(),
@@ -1027,9 +976,7 @@ fn all_selected_models_persisted_not_just_snapshots() {
             HashMap::new(),
             HashMap::new(),
             vec![],
-            StoreFormat::ParquetCache,
             HashMap::new(),
-            None,
         );
         store
             .register_schema(&c, None, make_schema("reg_col"), false)
@@ -1047,9 +994,7 @@ fn all_selected_models_persisted_not_just_snapshots() {
         frontier,
         HashMap::new(),
         vec![],
-        StoreFormat::ParquetCache,
         HashMap::new(),
-        None,
     );
 
     assert!(

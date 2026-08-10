@@ -891,14 +891,14 @@ impl SchemaStore {
             return Ok(());
         };
 
-        let analyzed_guard = analyzed.read().expect("analyzed cache lock poisoned");
+        let mut analyzed_guard = analyzed.write().expect("analyzed cache lock poisoned");
         if !analyzed_guard.is_empty() {
             let analyzed_dir = target_dir.join(SCHEMAS_ANALYZED_DIR);
             analyzed_guard.save_to(&analyzed_dir)?;
         }
         drop(analyzed_guard);
 
-        let remote_guard = remote.read().expect("remote cache lock poisoned");
+        let mut remote_guard = remote.write().expect("remote cache lock poisoned");
         if !remote_guard.is_empty() {
             let remote_dir = target_dir.join(SCHEMAS_REMOTE_DIR);
             remote_guard.save_to(&remote_dir)?;

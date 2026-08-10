@@ -883,3 +883,181 @@ fn snapshot_entry_survives_reload() {
         "snap_col"
     );
 }
+
+// ── Selected-model accumulation ──────────────────────────────────────────────────
+
+/// A Selected model's schema from run 1 must be discoverable as a Frontier entry
+/// in run 2 without re-registration (schema store accumulates across runs).
+#[test]
+fn selected_schema_available_as_frontier_in_next_run() {
+    let dir = TempDir::new().unwrap();
+    let c = cfqn("db", "s", "model_b");
+    let uid = "model.pkg.model_b";
+
+    // Run 1: model_b is Selected, compiled, schema registered and saved.
+    {
+        let mut selected = HashMap::new();
+        selected.insert(c.clone(), uid.to_string());
+        let store = SchemaStore::new(
+            dir.path().to_path_buf(),
+            selected,
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+            StoreFormat::ParquetCache,
+            HashMap::new(),
+            None,
+        );
+        store
+            .register_schema(&c, None, make_schema("amount"), false)
+            .unwrap();
+        // Promote to frontier so it's discoverable as a Frontier key next run.
+        store.promote_to_frontier(&c).unwrap();
+        store.save(dir.path()).unwrap();
+    }
+
+    // Run 2: model_b is now a Frontier entry (model_a depends on it).
+    let mut frontier = HashMap::new();
+    frontier.insert(c.clone(), uid.to_string());
+    let store2 = SchemaStore::new(
+        dir.path().to_path_buf(),
+        HashMap::new(),
+        frontier,
+        HashMap::new(),
+        vec![],
+        StoreFormat::ParquetCache,
+        HashMap::new(),
+        None,
+    );
+
+    assert!(
+        store2.exists(&c),
+        "Selected schema from run 1 must be available as Frontier in run 2"
+    );
+    assert_eq!(
+        store2.get_schema(&c).unwrap().inner().field(0).name(),
+        "amount"
+    );
+}
+
+/// Latest Selected schema wins across runs.
+#[test]
+fn selected_schema_latest_wins_across_runs() {
+    let dir = TempDir::new().unwrap();
+    let c = cfqn("db", "s", "model_b");
+    let uid = "model.pkg.model_b";
+
+    // Run 1: compile with schema v1.
+    {
+        let mut selected = HashMap::new();
+        selected.insert(c.clone(), uid.to_string());
+        let store = SchemaStore::new(
+            dir.path().to_path_buf(),
+            selected,
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+            StoreFormat::ParquetCache,
+            HashMap::new(),
+            None,
+        );
+        store
+            .register_schema(&c, None, make_schema("v1"), false)
+            .unwrap();
+        store.promote_to_frontier(&c).unwrap();
+        store.save(dir.path()).unwrap();
+    }
+
+    // Run 2: recompile with schema v2.
+    {
+        let mut selected = HashMap::new();
+        selected.insert(c.clone(), uid.to_string());
+        let store = SchemaStore::new(
+            dir.path().to_path_buf(),
+            selected,
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+            StoreFormat::ParquetCache,
+            HashMap::new(),
+            None,
+        );
+        store
+            .register_schema(&c, None, make_schema("v2"), true)
+            .unwrap();
+        store.promote_to_frontier(&c).unwrap();
+        store.save(dir.path()).unwrap();
+    }
+
+    // Run 3: load as Frontier — must see v2.
+    let mut frontier = HashMap::new();
+    frontier.insert(c.clone(), uid.to_string());
+    let store3 = SchemaStore::new(
+        dir.path().to_path_buf(),
+        HashMap::new(),
+        frontier,
+        HashMap::new(),
+        vec![],
+        StoreFormat::ParquetCache,
+        HashMap::new(),
+        None,
+    );
+    assert_eq!(
+        store3.get_schema(&c).unwrap().inner().field(0).name(),
+        "v2",
+        "latest Selected schema must win across runs"
+    );
+}
+
+/// All Selected models (not just snapshots) should have their schemas persisted
+/// in the compile cache and be loadable in subsequent runs.
+#[test]
+fn all_selected_models_persisted_not_just_snapshots() {
+    let dir = TempDir::new().unwrap();
+    let c = cfqn("db", "s", "regular_model");
+    let uid = "model.pkg.regular_model";
+
+    // Run 1: register a regular (non-snapshot) Selected model.
+    {
+        let mut selected = HashMap::new();
+        selected.insert(c.clone(), uid.to_string());
+        let store = SchemaStore::new(
+            dir.path().to_path_buf(),
+            selected,
+            HashMap::new(),
+            HashMap::new(),
+            vec![],
+            StoreFormat::ParquetCache,
+            HashMap::new(),
+            None,
+        );
+        store
+            .register_schema(&c, None, make_schema("reg_col"), false)
+            .unwrap();
+        store.promote_to_frontier(&c).unwrap();
+        store.save(dir.path()).unwrap();
+    }
+
+    // Run 2: the same model is now in the frontier. Must find it.
+    let mut frontier = HashMap::new();
+    frontier.insert(c.clone(), uid.to_string());
+    let store2 = SchemaStore::new(
+        dir.path().to_path_buf(),
+        HashMap::new(),
+        frontier,
+        HashMap::new(),
+        vec![],
+        StoreFormat::ParquetCache,
+        HashMap::new(),
+        None,
+    );
+
+    assert!(
+        store2.exists(&c),
+        "regular (non-snapshot) Selected model must persist across runs"
+    );
+    assert_eq!(
+        store2.get_schema(&c).unwrap().inner().field(0).name(),
+        "reg_col"
+    );
+}

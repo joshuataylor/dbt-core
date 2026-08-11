@@ -1686,6 +1686,16 @@ fn yml_mapping_to_sql_literal(
     }
 }
 
+/// BigQuery has no `STRING -> JSON` cast, so `PARSE_JSON` is the only constructor, and its
+/// result is already typed - callers must not wrap it (dbt-labs/dbt-core#15708).
+fn is_bigquery_json_literal(
+    adapter_type: AdapterType,
+    data_type: &DataType,
+    value: &YmlValue,
+) -> bool {
+    adapter_type == AdapterType::Bigquery && BigqueryTyping::is_json(data_type) && !value.is_null()
+}
+
 /// Converts a yaml value to a String literal for the given adapter type
 fn yml_value_to_sql_literal(
     adapter_type: AdapterType,
@@ -1694,6 +1704,25 @@ fn yml_value_to_sql_literal(
     data_type: &DataType,
 ) -> FsResult<String> {
     let literal_formatter = SqlLiteralFormatter::new(adapter_type);
+
+    if is_bigquery_json_literal(adapter_type, data_type, &value) {
+        // A string fixture is the JSON document itself; anything else is serialized to JSON.
+        let json_str = match &value {
+            YmlValue::String(s, _) => s.clone(),
+            _ => serde_json::to_string(&value).map_err(|_| {
+                fs_err!(
+                    ErrorCode::InvalidArgument,
+                    "Unable to serialize JSON fixture value"
+                )
+            })?,
+        };
+        // `format_str` does not escape backslashes for BigQuery; JSON text is full of them.
+        let json_str = json_str.replace('\\', "\\\\");
+        return Ok(format!(
+            "PARSE_JSON({})",
+            literal_formatter.format_str(&json_str)
+        ));
+    }
 
     match value {
         // Scalars are handled the same across dialects
@@ -2093,6 +2122,10 @@ fn create_bigquery_relation_to_select_from(
                         )
                     })?;
 
+                    let data_type = schema.field(i).data_type();
+                    let skip_cast =
+                        is_bigquery_json_literal(AdapterType::Bigquery, data_type, &value);
+
                     // Complex-type handling (verbatim SQL-expression injection
                     // for STRUCT/GEOGRAPHY, STRUCT(...) for mappings, arrays for
                     // sequences) lives in `yml_value_to_sql_literal`.
@@ -2100,12 +2133,16 @@ fn create_bigquery_relation_to_select_from(
                         AdapterType::Bigquery,
                         type_ops,
                         value,
-                        schema.field(i).data_type(),
+                        data_type,
                     )?;
 
-                    Ok(format!(
-                        "CAST({formatted_value} AS {bigquery_type}) AS {formatted_name}"
-                    ))
+                    if skip_cast {
+                        Ok(format!("{formatted_value} AS {formatted_name}"))
+                    } else {
+                        Ok(format!(
+                            "CAST({formatted_value} AS {bigquery_type}) AS {formatted_name}"
+                        ))
+                    }
                 })
                 .collect::<FsResult<Vec<_>>>()?;
             Ok(format!("STRUCT({})", struct_fields.join(", ")))
@@ -3159,6 +3196,90 @@ mod tests {
             !result.contains("'ST_GEOGPOINT(102, -39)'"),
             "array GEOGRAPHY expression should not be quoted as a string literal: {result}"
         );
+    }
+
+    /// Regression for dbt-labs/dbt-core#15708: a BigQuery `JSON` column is
+    /// mockable from either an object or a JSON string, both rendered with
+    /// `PARSE_JSON` and no enclosing cast.
+    #[test]
+    fn test_create_values_bigquery_json_column() {
+        let json_type =
+            DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("from_object", json_type.clone(), true),
+            Field::new("from_string", json_type.clone(), true),
+            Field::new("with_escapes", json_type.clone(), true),
+            Field::new("missing", json_type, true),
+        ]));
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+
+        let mut object_map = dbt_yaml::mapping::Mapping::new();
+        object_map.insert(
+            YmlValue::string("segmentCode".to_string()),
+            YmlValue::string("HORECA".to_string()),
+        );
+        let mut escaped_map = dbt_yaml::mapping::Mapping::new();
+        escaped_map.insert(
+            YmlValue::string("note".to_string()),
+            YmlValue::string("a\nb".to_string()),
+        );
+
+        let rows = vec![BTreeMap::from([
+            (
+                "from_object".to_string(),
+                YmlValue::Mapping(object_map, Default::default()),
+            ),
+            (
+                "from_string".to_string(),
+                YmlValue::string(r#"{"segmentCode":"HORECA"}"#.to_string()),
+            ),
+            (
+                "with_escapes".to_string(),
+                YmlValue::Mapping(escaped_map, Default::default()),
+            ),
+            ("missing".to_string(), YmlValue::null()),
+        ])];
+
+        // `allow_pseudocolumns` is the only thing separating given from expect
+        for allow_pseudocolumns in [true, false] {
+            let result = create_values(
+                &schema,
+                &rows,
+                AdapterType::Bigquery,
+                &type_ops,
+                None,
+                "json_source",
+                allow_pseudocolumns,
+            )
+            .expect("JSON fixture should render");
+
+            assert_contains!(
+                result,
+                r#"PARSE_JSON('{"segmentCode":"HORECA"}') AS from_object"#,
+                "object fixture should render as PARSE_JSON"
+            );
+            assert_contains!(
+                result,
+                r#"PARSE_JSON('{"segmentCode":"HORECA"}') AS from_string"#,
+                "JSON string fixture should render as PARSE_JSON"
+            );
+            // BigQuery unescapes `\\` back to a single backslash, so PARSE_JSON
+            // receives the `\n` escape rather than a literal newline.
+            assert_contains!(
+                result,
+                r#"PARSE_JSON('{"note":"a\\nb"}') AS with_escapes"#,
+                "backslashes in JSON text must survive the string literal"
+            );
+            assert_contains!(
+                result,
+                "CAST(NULL AS JSON) AS missing",
+                "a null JSON value keeps the cast that carries the column type"
+            );
+            assert!(
+                !result.contains("CAST(PARSE_JSON"),
+                "PARSE_JSON is already typed JSON and must not be cast: {result}"
+            );
+        }
     }
 
     fn row(pairs: &[(&str, i64)]) -> BTreeMap<String, YmlValue> {

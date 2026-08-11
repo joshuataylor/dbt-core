@@ -2719,6 +2719,14 @@ impl AdapterImpl {
 
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_convert_type(state, data_type),
+            Impl(Snowflake, _)
+                if matches!(
+                    data_type,
+                    DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
+                ) =>
+            {
+                Ok("text".to_string())
+            }
             Impl(_, engine) => {
                 let mut out = String::new();
                 engine

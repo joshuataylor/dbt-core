@@ -35,17 +35,7 @@ pub enum LocalExecutionBackendKind {
 }
 
 #[derive(
-    Debug,
-    Copy,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    ValueEnum,
-    Display,
-    Default,
-    JsonSchema,
+    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Display, Default,
 )]
 #[serde(rename_all = "lowercase")]
 #[clap(rename_all = "lowercase")]
@@ -57,9 +47,67 @@ pub enum ComputeArg {
     /// Run computations in-process
     Inline,
     /// Run computations in a separate, ephemeral worker process
+    // `local` is the other accepted spelling, as in `Execute::from_str`. It is
+    // an alias, not a variant, so that one value reaches the code that matches
+    // on `Sidecar`, and so that we always serialize `sidecar`.
+    #[serde(alias = "local")]
+    #[value(alias = "local")]
     Sidecar,
     /// Run via the remote compute service (persistent workers/cluster).
     Service,
+}
+
+// Hand-written because schemars 0.8 drops `#[serde(alias)]`. Editors validate
+// YAML against this schema, so it must list `local`. If it does not, an editor
+// rejects a value that dbt accepts. Keep the descriptions in sync with the
+// variant docs above.
+impl schemars::JsonSchema for ComputeArg {
+    fn schema_name() -> String {
+        "ComputeArg".to_string()
+    }
+
+    fn json_schema(_gen: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        let variants: [(&[&str], &str); 4] = [
+            (
+                &["remote"],
+                "Execute on the remote warehouse (Snowflake, BigQuery, etc.)",
+            ),
+            (&["inline"], "Run computations in-process"),
+            (
+                &["sidecar", "local"],
+                "Run computations in a separate, ephemeral worker process",
+            ),
+            (
+                &["service"],
+                "Run via the remote compute service (persistent workers/cluster).",
+            ),
+        ];
+
+        schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+            subschemas: Some(Box::new(schemars::schema::SubschemaValidation {
+                one_of: Some(
+                    variants
+                        .iter()
+                        .map(|(values, description)| {
+                            schemars::schema::Schema::Object(schemars::schema::SchemaObject {
+                                metadata: Some(Box::new(schemars::schema::Metadata {
+                                    description: Some((*description).to_string()),
+                                    ..Default::default()
+                                })),
+                                instance_type: Some(schemars::schema::InstanceType::String.into()),
+                                enum_values: Some(
+                                    values.iter().map(|v| (*v).into()).collect::<Vec<_>>(),
+                                ),
+                                ..Default::default()
+                            })
+                        })
+                        .collect(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        })
+    }
 }
 
 impl From<ComputeArg> for LocalExecutionBackendKind {

@@ -34,7 +34,6 @@ mod openapi;
 pub mod providers;
 mod server;
 pub mod state;
-mod vortex_sender;
 
 pub use providers::Providers;
 pub use server::run_with_args;

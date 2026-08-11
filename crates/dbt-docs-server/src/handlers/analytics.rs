@@ -2,8 +2,8 @@
 //!
 //! The docs v2 browser UI does NOT talk to Vortex directly. It POSTs a batch of
 //! events here; this handler enforces consent, maps each event to its concrete
-//! `docs.proto` wire type, and forwards it to Vortex via the self-contained
-//! [`crate::vortex_sender`] (fire-and-forget). Keeping the relay server-side lets
+//! `docs.proto` wire type, and forwards it to Vortex via [`VortexSink`]
+//! (fire-and-forget). Keeping the relay server-side lets
 //! us gate on consent, keep the ingest URL off the browser, and guarantee no PII
 //! reaches the wire.
 //!
@@ -22,21 +22,23 @@
 //! ## Wire contract
 //!
 //! The proto types below are hand-transcribed from `docs.proto`
-//! (`v1.public.events.docs`), mirroring the dbt-index / codex-vortex precedent of
-//! avoiding `proto-rust` and the shared `vortex-client`. Enum-ish fields are
-//! `string` on the wire (Vortex converts proto enums to Int32 in Iceberg, losing
-//! the label), carrying the lowercase dbt domain code. The `enrichment` field
-//! (tag 1) is omitted — producers set it to None server-side and leaving it out
-//! encodes identically.
+//! (`v1.public.events.docs`) so this crate does not need `proto-rust`; only the
+//! envelope comes from `vortex-client`. Enum-ish fields are `string` on the wire
+//! (Vortex converts proto enums to Int32 in Iceberg, losing the label), carrying
+//! the lowercase dbt domain code. The `enrichment` field (tag 1) is omitted —
+//! producers set it to None server-side and leaving it out encodes identically.
+
+use std::sync::{LazyLock, Mutex};
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use vortex_client::client::{VortexProducerClient, WorkerThread};
+use vortex_client::env::DefaultVortexEnv;
 
 use crate::handlers::json::bad_request_coded;
 use crate::state::{SharedState, TelemetryHydration};
-use crate::vortex_sender;
 
 /// Wire package for all docs analytics events.
 const PACKAGE: &str = "v1.public.events.docs";
@@ -286,7 +288,7 @@ impl_docs_name! {
 // ---------------------------------------------------------------------------
 
 /// A concrete docs event ready to be emitted through the generic
-/// `vortex_sender::log_proto`. The [`AnalyticsSink`] matches on this to recover
+/// `log_proto`. The [`AnalyticsSink`] matches on this to recover
 /// the concrete type (so `T::PACKAGE`/`T::NAME` resolve correctly).
 #[derive(Clone, PartialEq, Debug)]
 pub enum DocsEvent {
@@ -312,6 +314,22 @@ pub trait AnalyticsSink: Send + Sync {
     fn emit(&self, event: DocsEvent);
 }
 
+static WORKER_THREAD: Mutex<WorkerThread> = Mutex::new(WorkerThread::empty());
+
+/// dbt-docs-server is a separate process and it gets its own Vortex logs producer.
+static VORTEX_PRODUCER: LazyLock<VortexProducerClient> = LazyLock::new(|| {
+    let env = DefaultVortexEnv::new("dbt-docs-server", env!("CARGO_PKG_VERSION"));
+    let mut client = VortexProducerClient::from_env(&env);
+    let handle = client.take_thread_handle();
+    debug_assert!(
+        client.is_in_dev_mode() || handle.is_some(),
+        "Worker thread must be spawned by VortexProducerClient::from_env()"
+    );
+    let mut lock = WORKER_THREAD.lock().unwrap();
+    *lock = handle;
+    client
+});
+
 /// Production sink: forwards each event to Vortex through the generic
 /// `log_proto` so the concrete `prost::Name` type_url is preserved.
 pub struct VortexSink;
@@ -320,37 +338,37 @@ impl AnalyticsSink for VortexSink {
     fn emit(&self, event: DocsEvent) {
         match event {
             DocsEvent::DocsSiteOpened(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::ResourceViewed(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::LineageViewed(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::SearchPerformed(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::FilterApplied(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::UpsellPromptDisplayed(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::UpsellPromptClicked(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::UpsellPromptDismissed(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::ReferralLinkClicked(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::AccountLoggedIn(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
             DocsEvent::ErrorEncountered(m) => {
-                let _ = vortex_sender::log_proto(m);
+                let _ = VORTEX_PRODUCER.log_proto(m);
             }
         }
     }

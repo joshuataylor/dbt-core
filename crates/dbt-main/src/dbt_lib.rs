@@ -91,12 +91,12 @@ use dbt_telemetry::{
     ShowDataOutputFormat, ShowResult,
 };
 
+use dbt_vortex::vortex_producer_is_running;
 #[cfg(debug_assertions)]
 use git_version::git_version;
 use minijinja::Value;
 use serde_json::{json, to_string_pretty};
 use tracing::{Instrument, Span};
-use vortex_client::client::vortex_producer_is_running;
 use vortex_events::{build_result_string, invocation_end_event};
 
 use crate::{

@@ -66,6 +66,7 @@ members = [
   "crates/dbt-deps",
   "crates/vortex-client",
   "crates/vortex-events",
+  "crates/dbt-vortex",
   "crates/proto-rust",
   "crates/proto-rust-macros",
   "crates/dbt-env",
@@ -286,6 +287,7 @@ dbt-test-primitives = { path = "crates/dbt-test-primitives" }
 dbt-test-utils = { path = "crates/dbt-test-utils" }
 dbt-tracing = { path = "crates/dbt-tracing" }
 dbt-tui-progress = { path = "crates/dbt-tui-progress" }
+dbt-vortex = { path = "crates/dbt-vortex" }
 proto-rust = { path = "crates/proto-rust" }
 proto-rust-macros = { path = "crates/proto-rust-macros" }
 vortex-client = { path = "crates/vortex-client" }

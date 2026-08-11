@@ -198,9 +198,9 @@ async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
 
-    // TODO(META-7739): analytics events buffered in the vortex_sender worker are
+    // TODO(META-7739): analytics events buffered in the Vortex producer's worker are
     // not flushed on shutdown. Loss on Ctrl-C is acceptable (worker flushes every
-    // ~500ms); if that changes, call `vortex_sender::log_proto_and_shutdown` here.
+    // ~500ms); if that changes, call `log_proto_and_shutdown` on the analytics producer here.
     info!(
         target: "dbt_docs_server",
         grace_secs = SHUTDOWN_GRACE.as_secs(),

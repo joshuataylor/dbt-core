@@ -375,6 +375,16 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
         version: &Option<String>,
         node_package_name: &Option<String>,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>)>;
+    /// Resolve a node's own relation by identity, for binding `this`. Unlike
+    /// `lookup_ref`, a name shared with another node is not ambiguous here
+    /// because `unique_id` selects the record.
+    fn lookup_self_relation(
+        &self,
+        unique_id: &str,
+        package_name: &str,
+        name: &str,
+        version: &Option<String>,
+    ) -> FsResult<(MinijinjaValue, Option<MinijinjaValue>)>;
     fn lookup_source(
         &self,
         package_name: &str,
@@ -468,6 +478,20 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
         Err(fs_err!(
             ErrorCode::NotImplemented,
             "DummyNodeResolverTracker: lookup_ref not implemented for '{}'",
+            name
+        ))
+    }
+
+    fn lookup_self_relation(
+        &self,
+        _unique_id: &str,
+        _package_name: &str,
+        name: &str,
+        _version: &Option<String>,
+    ) -> FsResult<(MinijinjaValue, Option<MinijinjaValue>)> {
+        Err(fs_err!(
+            ErrorCode::NotImplemented,
+            "DummyNodeResolverTracker: lookup_self_relation not implemented for '{}'",
             name
         ))
     }

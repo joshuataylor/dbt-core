@@ -896,7 +896,7 @@ fn discover_given_relations(
         ut,
         &base_context,
         DependencyValidationConfig::new_unvalidated(),
-    );
+    )?;
 
     let mut given_relations = Vec::new();
     let mut relations_to_fetch = Vec::new();
@@ -1097,7 +1097,7 @@ fn render_unit_test(
             .validate()
             .allow_dependencies(given_relation_ids.iter())
             .allow_dependencies(tested_model_function_deps),
-    );
+    )?;
 
     // Apply overrides to the compile context
     if let Some(overrides) = &node.__unit_test_attr__.overrides {

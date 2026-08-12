@@ -1573,11 +1573,41 @@ pub fn compare_record_batches(
     let mut actual_rows = vec![];
     let mut expected_rows = vec![];
 
-    let label_array = batch
-        .column(label_col_index)
+    // An empty result has no labels to inspect, regardless of the physical type
+    // inferred for the label column.
+    if batch.num_rows() == 0 {
+        return Ok(CompareRecordBatchResult {
+            actual_rows: 0,
+            expected_rows: 0,
+            diff_batch: batch.clone(),
+            has_differences: false,
+        });
+    }
+
+    let label_column = batch.column(label_col_index);
+    let label_column = match label_column.data_type() {
+        DataType::Utf8 => label_column.clone(),
+        DataType::Binary | DataType::BinaryView | DataType::LargeBinary => {
+            let cast_options = CastOptions {
+                safe: false,
+                format_options: Default::default(),
+            };
+            cast_with_options(label_column, &DataType::Utf8, &cast_options)?
+        }
+        data_type => {
+            return Err(arrow::error::ArrowError::SchemaError(format!(
+                "'actual_or_expected' column must be a string or binary, found {data_type}"
+            )));
+        }
+    };
+    let label_array = label_column
         .as_any()
         .downcast_ref::<StringArray>()
-        .expect("'actual_or_expected' column must be StringArray");
+        .ok_or_else(|| {
+            arrow::error::ArrowError::SchemaError(
+                "Failed to normalize 'actual_or_expected' column to a string".to_string(),
+            )
+        })?;
 
     for i in 0..batch.num_rows() {
         match label_array.value(i) {
@@ -1739,7 +1769,7 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
 #[cfg(test)]
 mod compare_record_batches_tests {
     use super::compare_record_batches;
-    use arrow::array::{Int32Array, StringViewArray};
+    use arrow::array::{BinaryArray, Int32Array, Int64Array, StringViewArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -1782,6 +1812,72 @@ mod compare_record_batches_tests {
             vec![
                 Arc::new(StringViewArray::from(vec!["expected", "actual"])),
                 Arc::new(StringViewArray::from(vec!["alice", "alice"])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(!result.has_differences);
+    }
+
+    #[test]
+    fn empty_non_string_label_column_has_no_differences() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Int64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(Vec::<i64>::new())),
+                Arc::new(Int64Array::from(Vec::<i64>::new())),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(!result.has_differences);
+        assert_eq!(result.actual_rows, 0);
+        assert_eq!(result.expected_rows, 0);
+        assert_eq!(result.diff_batch.schema(), batch.schema());
+    }
+
+    #[test]
+    fn non_empty_invalid_label_type_returns_schema_error() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Int64, false),
+            Field::new("id", DataType::Int64, false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![1])),
+                Arc::new(Int64Array::from(vec![1])),
+            ],
+        )
+        .unwrap();
+
+        let error = compare_record_batches(&batch).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Schema error: 'actual_or_expected' column must be a string or binary, found Int64"
+        );
+    }
+
+    #[test]
+    fn accepts_binary_label_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Binary, false),
+            Field::new("id", DataType::Int32, false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(BinaryArray::from(vec![
+                    b"expected".as_slice(),
+                    b"actual".as_slice(),
+                ])),
+                Arc::new(Int32Array::from(vec![1, 1])),
             ],
         )
         .unwrap();

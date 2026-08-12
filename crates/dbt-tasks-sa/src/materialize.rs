@@ -579,20 +579,45 @@ pub fn materialize_seed(
         runtime_config.dependencies.keys().cloned().collect(),
     );
 
+    // Runtime-phase errors report the run/Executable path per the path-requirements matrix.
     let run_path = seed
         .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
         .into_owned();
 
-    execute_materialization_macro(
+    let unique_id = seed.__common_attr__.unique_id.clone();
+    let node_alias = seed.__base_attr__.alias.clone();
+    let adapter = jinja_env
+        .get_base_adapter()
+        .ok_or_else(|| unexpected_fs_err!("No adapter found for seed {}", &unique_id))?;
+    let node_overrides = apply_node_overrides(
+        &adapter,
+        adapter_type,
+        seed.deprecated_config
+            .__warehouse_specific_config__
+            .snowflake_warehouse
+            .clone(),
+        &seed.__base_attr__.database,
+        &unique_id,
+    )?;
+
+    let result = execute_materialization_macro(
         jinja_env,
         &macro_name,
         &mut context,
         "seed",
-        &seed.__common_attr__.unique_id,
-        &seed.__base_attr__.alias,
+        &unique_id,
+        &node_alias,
         run_path,
-    )
-    .map(|value| (value, result_store.main_adapter_response()))
+    );
+
+    // Surface a failed reset only when the seed itself succeeded: `reset_node_overrides`
+    // already drops the poisoned connection, and a seed error is far more actionable than the
+    // restore error it would otherwise mask. It also keeps the CSV-column hint that
+    // `chain_materialize_seed_error_with_pending_hint` appends attached to a real seed error.
+    let reset = reset_node_overrides(&adapter, &unique_id, &node_overrides);
+    let value = result?;
+    reset?;
+    Ok((value, result_store.main_adapter_response()))
 }
 
 #[allow(clippy::too_many_arguments)]

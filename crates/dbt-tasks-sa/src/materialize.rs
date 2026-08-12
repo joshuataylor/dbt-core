@@ -18,6 +18,7 @@ use arrow::{
         Array, ArrayRef, BooleanArray, Decimal128Array, Float64Array, Int32Array, Int64Array,
         RecordBatch, StringArray, TimestampNanosecondArray, TimestampSecondArray,
     },
+    compute::{CastOptions, cast_with_options},
     datatypes::{DataType, Field, Schema, TimeUnit},
     util::pretty::{pretty_format_batches, print_batches},
 };
@@ -1503,9 +1504,58 @@ pub fn materialize_test(
     Ok((test_results, None, result_store.main_adapter_response()))
 }
 
+/// `AgateTable`'s underlying batches may carry `Utf8View`/`LargeUtf8` columns
+/// (query results are normalized to view types at the adapter boundary; see
+/// `dbt-adapter`'s `concat_batches::to_view_types`). The comparison logic below
+/// assumes plain `Utf8`/`StringArray`, so downgrade back to that before comparing.
+///
+/// TODO(felipecrv): implement semantic comparison functionality in dbt-agate.
+fn normalize_to_utf8(batch: &RecordBatch) -> arrow::error::Result<RecordBatch> {
+    let schema = batch.schema();
+    if !schema
+        .fields()
+        .iter()
+        .any(|f| matches!(f.data_type(), DataType::Utf8View | DataType::LargeUtf8))
+    {
+        return Ok(batch.clone());
+    }
+
+    let fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .map(|f| match f.data_type() {
+            DataType::Utf8View | DataType::LargeUtf8 => {
+                f.as_ref().clone().with_data_type(DataType::Utf8)
+            }
+            _ => f.as_ref().clone(),
+        })
+        .collect();
+    let new_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+
+    let cast_options = CastOptions {
+        safe: false,
+        format_options: Default::default(),
+    };
+    let columns: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .zip(new_schema.fields())
+        .map(|(col, field)| match field.data_type() {
+            DataType::Utf8 if col.data_type() != &DataType::Utf8 => {
+                cast_with_options(col, &DataType::Utf8, &cast_options)
+            }
+            _ => Ok(col.clone()),
+        })
+        .collect::<Result<_, _>>()?;
+
+    RecordBatch::try_new(new_schema, columns)
+}
+
 pub fn compare_record_batches(
     batch: &RecordBatch,
 ) -> arrow::error::Result<CompareRecordBatchResult> {
+    let batch = normalize_to_utf8(batch)?;
+    let batch = &batch;
     let schema = batch.schema();
 
     let label_col_index = schema
@@ -1683,6 +1733,61 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
             })
         }
         _ => "[unsupported]".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod compare_record_batches_tests {
+    use super::compare_record_batches;
+    use arrow::array::{Int32Array, StringViewArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    // Query results are normalized to Utf8View/LargeUtf8 at the adapter boundary
+    // (dbt-adapter's concat_batches::to_view_types), so AgateTable's batches carry
+    // Utf8View columns rather than plain Utf8. Regression test for a real mismatch
+    // being masked as a match once that switch happened.
+    #[test]
+    fn detects_mismatch_in_utf8_view_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8View, false),
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8View, false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringViewArray::from(vec!["expected", "actual"])),
+                Arc::new(Int32Array::from(vec![1, 1])),
+                Arc::new(StringViewArray::from(vec!["alice", "bob"])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(
+            result.has_differences,
+            "expected 'alice' vs 'bob' to be flagged as a mismatch, but Utf8View columns were silently treated as unsupported"
+        );
+    }
+
+    #[test]
+    fn no_differences_when_utf8_view_values_match() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8View, false),
+            Field::new("name", DataType::Utf8View, false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringViewArray::from(vec!["expected", "actual"])),
+                Arc::new(StringViewArray::from(vec!["alice", "alice"])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(!result.has_differences);
     }
 }
 

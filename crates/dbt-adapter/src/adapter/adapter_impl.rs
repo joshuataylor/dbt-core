@@ -718,24 +718,25 @@ impl AdapterImpl {
 
     /// Execute `use warehouse [name]` statement for Snowflake.
     /// For other warehouses, this is noop.
+    /// Returns whether the connection changed and must be restored.
     pub fn use_warehouse(
         &self,
         conn: &'_ mut dyn Connection,
         warehouse: String,
         node_id: &str,
         token: CancellationToken,
-    ) -> FsResult<()> {
+    ) -> FsResult<bool> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_use_warehouse(conn, warehouse, node_id),
             Impl(Snowflake, _) => {
                 let ctx = QueryCtx::default().with_node_id(node_id);
                 let sql = format!("use warehouse {warehouse}");
                 self.exec_stmt(&ctx, conn, &sql, false, token)?;
-                Ok(())
+                Ok(true)
             }
             Impl(..) => {
                 debug_assert!(false, "use_warehouse is Snowflake-specific");
-                Ok(())
+                Ok(false)
             }
         }
     }
@@ -5727,7 +5728,7 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         conn: &'_ mut dyn Connection,
         warehouse: String,
         node_id: &str,
-    ) -> FsResult<()>;
+    ) -> FsResult<bool>;
 
     fn replay_verify_database(&self, database: &str) -> AdapterResult<Value>;
 

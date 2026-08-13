@@ -3329,13 +3329,13 @@ impl Adapter {
                 };
 
                 let mut conn = adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
-                adapter.use_warehouse(
+                let warehouse_changed = adapter.use_warehouse(
                     conn.as_mut(),
                     warehouse,
                     node_id,
                     self.cancellation_token.clone(),
                 )?;
-                Ok(Some(NodeOverride::Warehouse))
+                Ok(warehouse_changed.then_some(NodeOverride::Warehouse))
             }
             Parse(_) => Ok(None),
         }

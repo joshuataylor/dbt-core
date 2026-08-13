@@ -513,6 +513,7 @@ async fn do_execute_fs(
             deps_args.common_args.warn_error_options.clone(),
             Some(feature_stack.tracing.config_provider.as_ref()),
             token,
+            feature_stack.loader.private_package_resolver.clone(),
         )
         .await
         {

@@ -566,3 +566,23 @@ fn test_typed_mode_execute_result_is_not_tainted() {
     let result = call_method_test(&adapter, "execute", &[Value::from("select 1")]).unwrap();
     assert!(!result.is_introspective_stub());
 }
+
+#[test]
+fn test_check_schema_exists_tolerates_none_database() {
+    let adapter = make_duckdb_adapter();
+    let err = dispatch_test(
+        &adapter,
+        "check_schema_exists",
+        &[Value::from(()), Value::from("main")],
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        !message.contains("incompatible type"),
+        "database=none should not fail argument type conversion, got: {message}"
+    );
+    assert!(
+        message.contains("template not found") || message.contains("check_schema_exists"),
+        "expected a macro-lookup failure past arg parsing, got: {message}"
+    );
+}

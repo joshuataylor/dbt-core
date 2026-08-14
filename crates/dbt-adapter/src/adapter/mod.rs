@@ -1662,7 +1662,7 @@ impl Adapter {
         match &self.inner {
             Typed { adapter, .. } => {
                 let iter = ArgsIter::new("check_schema_exists", &["database", "schema"], args);
-                let database = iter.next_arg::<&str>()?;
+                let database = iter.next_arg::<Option<&str>>()?.unwrap_or("");
                 let schema = iter.next_arg::<&str>()?;
                 iter.finish()?;
 

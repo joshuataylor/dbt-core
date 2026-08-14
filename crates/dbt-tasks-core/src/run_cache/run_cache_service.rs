@@ -386,7 +386,7 @@ impl RunCacheCloneDecision {
             execution_results: response.clone_execution_results.clone(),
             execution_runtime_ms: response.execution_runtime_ms,
             freshness_tolerance_seconds: freshness_tolerance_seconds.max(0) as u64,
-            explained_decision: response.explained_decision,
+            explained_decision: response.explained_decision.clone(),
             transformed_nodes_by_query: response.transformed_nodes_by_query.clone(),
             execution_decision_id: response.execution_decision_id.clone(),
         }

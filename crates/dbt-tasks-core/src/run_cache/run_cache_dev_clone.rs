@@ -422,6 +422,7 @@ async fn prepare_dev_clone_request(
             false,
             ctx.dbt_profile().allow_clones,
         ),
+        table_namespace: None, //todo: implement
     }
     .into_proto();
 
@@ -729,6 +730,7 @@ mod tests {
             clone_source_table_type: Some("table".to_string()),
             table_properties: candidate.table_properties(),
             clone_chain_depth_limit: None,
+            table_namespace: None,
         }
         .into_proto();
 

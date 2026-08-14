@@ -204,6 +204,7 @@ fn build_node_state<'a, 'b>(
         node_persisted_descriptions_hash: hashes.node_persisted_descriptions_hash,
         node_macros_hash: hashes.node_macros_hash,
         node_contract_hash: hashes.node_contract_hash,
+        node_database_representation: None, //todo: implement
     };
 
     // Every component is logged individually because the server compares them
@@ -510,6 +511,7 @@ fn build_sql_request_input(
         clone_chain_depth_limit: context.clone_chain_depth_limit,
         dbt_node_state: Some(node_state),
         compare_unrendered_code: context.compare_unrendered_code,
+        table_namespace: None, //todo: implement
     })
 }
 

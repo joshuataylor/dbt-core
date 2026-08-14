@@ -205,6 +205,7 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
     pub compare_unrendered_code: bool,
+    pub table_namespace: Option<String>, //todo: implement
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -229,6 +230,7 @@ impl SubmitEnrichedSqlRequestInput {
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
             compare_unrendered_code: self.compare_unrendered_code,
+            table_namespace: self.table_namespace,
         }
     }
 }
@@ -262,6 +264,7 @@ impl SubmitValuesRequestInput {
             clone_table_properties: self.clone_table_properties,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
+            table_namespace: None, //todo: implement
         }
     }
 }
@@ -305,6 +308,7 @@ pub fn sql_execution_record_from_submit_request(
                 default_schema: request.default_schema,
                 dbt_node_state: request.dbt_node_state,
                 from_speculative_submit,
+                table_namespace: None, //todo: implement
             },
         ))),
     }
@@ -324,6 +328,7 @@ pub fn values_execution_record_from_submit_request(
             semantic_extras: request.semantic_extras,
             labels: request.labels,
             dbt_node_state: request.dbt_node_state,
+            table_namespace: None, //todo: implement
         }))),
     }
 }
@@ -421,6 +426,7 @@ pub struct CloneRequestInput {
     pub clone_source_table_type: Option<String>,
     pub table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub table_namespace: Option<String>,
 }
 
 impl CloneRequestInput {
@@ -436,6 +442,7 @@ impl CloneRequestInput {
             clone_source_table_type: self.clone_source_table_type,
             table_properties: self.table_properties,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
+            table_namespace: self.table_namespace,
         }
     }
 }
@@ -858,8 +865,10 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None,
             }),
             compare_unrendered_code: true,
+            table_namespace: None,
         }
         .into_proto();
 
@@ -894,6 +903,7 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None
             })
         )
     }
@@ -926,6 +936,7 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None,
             }),
         }
         .into_proto();
@@ -952,6 +963,7 @@ mod tests {
                 ),
                 node_macros_hash: Some("node_macros_hash".to_string()),
                 node_contract_hash: Some("node_contract_hash".to_string()),
+                node_database_representation: None
             })
         )
     }
@@ -981,6 +993,7 @@ mod tests {
             clone_chain_depth_limit: None,
             dbt_node_state: None,
             compare_unrendered_code: false,
+            table_namespace: None,
         }
         .into_proto();
 
@@ -1061,6 +1074,7 @@ mod tests {
             clone_source_table_type: Some("table".to_string()),
             table_properties: Some(properties),
             clone_chain_depth_limit: Some(3),
+            table_namespace: None,
         }
         .into_proto();
 

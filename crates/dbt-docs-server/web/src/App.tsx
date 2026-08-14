@@ -629,12 +629,14 @@ function Topbar({
               <Icon ryecon={RyeconColorDbt} size="xl" alt="dbt" />
             </span>
           </button>
-          <Tooltip content="This docs site is in alpha." placement="bottom">
-            <Badge text="alpha" type="purple" size="xs" />
-          </Tooltip>
           {project && (
             <div className="topbar-v2__brand-text">
-              <div className="topbar-v2__brand-name">{project.name}</div>
+              <div className="topbar-v2__brand-name">
+                {project.name}
+                <Tooltip content="This docs site is in beta." placement="bottom">
+                  <Badge text="beta" type="purple" size="xs" />
+                </Tooltip>
+              </div>
               <div className="topbar-v2__brand-sub">
                 {project.adapterType ?? ''}
                 {project.dbtVersion ? ` · v${project.dbtVersion}` : ''}

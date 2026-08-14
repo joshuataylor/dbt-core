@@ -29,6 +29,7 @@ export { ColumnCard } from './components/ColumnCard';
 export * from './components/ColumnCardShell';
 export * from './components/ColumnsView';
 export * from './components/ColumnTable';
+export * from './components/ConfigDisplay';
 export * from './components/DataPlatformChip';
 export { DescriptionDisplay } from './components/DescriptionDisplay';
 export * from './components/DetailTabs';

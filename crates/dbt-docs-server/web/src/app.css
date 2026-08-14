@@ -151,6 +151,9 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .topbar-v2__bg {
   position: absolute;
@@ -957,20 +960,6 @@ button {
   padding-top: 8px;
   border-top: 1px solid var(--borderMuted);
 }
-.locate-pane__branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--fgMain);
-  background: transparent;
-  border: 1px solid var(--borderMuted);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-.locate-pane__dirty {
-  color: var(--fgWarning);
-}
-
 /* ---------- Main content ---------- */
 
 .main {

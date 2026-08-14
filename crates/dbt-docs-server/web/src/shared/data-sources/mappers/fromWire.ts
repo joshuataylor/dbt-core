@@ -107,6 +107,7 @@ interface RestModelDetail extends RestDetailBase {
   tags?: string[];
   fqn?: string[];
   meta?: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
   columns?: RestNodeColumn[];
   depends_on?: RestEdgeRef[];
   referenced_by?: RestEdgeRef[];
@@ -121,6 +122,7 @@ interface RestSeedDetail extends RestDetailBase {
   schema_name?: string | null;
   identifier?: string | null;
   meta: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
   columns: RestNodeColumn[];
   depends_on?: RestEdgeRef[];
   referenced_by: RestEdgeRef[];
@@ -137,6 +139,7 @@ interface RestSnapshotDetail extends RestDetailBase {
   raw_code?: string | null;
   compiled_code?: string | null;
   meta: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
   depends_on: RestEdgeRef[];
   referenced_by: RestEdgeRef[];
   columns: RestNodeColumn[];
@@ -151,6 +154,7 @@ interface RestSourceDetail extends RestDetailBase {
   source_name?: string | null;
   loader?: string | null;
   meta: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
   columns: RestNodeColumn[];
   referenced_by?: RestEdgeRef[];
   freshness: {
@@ -305,6 +309,7 @@ interface RestNodeDetail extends RestDetailBase {
   tags?: string[] | null;
   fqn?: string[] | null;
   meta?: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
   arguments?: RestMacroArgument[] | null;
   return_type?: string | null;
   database_name?: string | null;
@@ -619,6 +624,7 @@ export function fromModelDetail(d: RestModelDetail): ModelAsset {
     patchPath: d.patch_path ?? null,
     fqn: d.fqn ?? null,
     meta: d.meta ?? null,
+    config: d.config ?? null,
     rawCode: d.raw_code ?? null,
     compiledCode: d.compiled_code ?? null,
     language: (d.language as ModelAsset['language']) ?? null,
@@ -645,6 +651,7 @@ export function fromSeedDetail(d: RestSeedDetail): ModelAsset {
     patchPath: d.patch_path ?? null,
     fqn: d.fqn ?? null,
     meta: d.meta ?? null,
+    config: d.config ?? null,
     rawCode: null,
     compiledCode: null,
     language: null,
@@ -671,6 +678,7 @@ export function fromSnapshotDetail(d: RestSnapshotDetail): ModelAsset {
     patchPath: d.patch_path ?? null,
     fqn: d.fqn ?? null,
     meta: null,
+    config: d.config ?? null,
     rawCode: d.raw_code ?? null,
     compiledCode: d.compiled_code ?? null,
     language: null,
@@ -696,6 +704,7 @@ export function fromSourceDetail(d: RestSourceDetail): SourceAsset {
     originalFilePath: d.original_file_path ?? null,
     fqn: d.fqn ?? null,
     meta: d.meta ?? null,
+    config: d.config ?? null,
     sourceName: d.source_name ?? '',
     identifier: d.identifier ?? '',
     loader: d.loader ?? null,
@@ -951,6 +960,7 @@ export function fromNodeDetail(d: RestNodeDetail): Asset {
     originalFilePath: d.original_file_path ?? null,
     fqn: d.fqn ?? null,
     meta: d.meta ?? null,
+    config: d.config ?? null,
     dependsOn: (d.depends_on ?? []).map((e) => e.unique_id),
     referencedBy: (d.referenced_by ?? []).map((e) => e.unique_id),
   };

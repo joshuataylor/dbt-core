@@ -120,7 +120,13 @@ function parseJsonColumn(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'object') return value as Record<string, unknown>;
   if (typeof value !== 'string' || value === '') return null;
   try {
-    const parsed: unknown = JSON.parse(value);
+    let parsed: unknown = JSON.parse(value);
+    // Some exporter paths double-encode: the VARCHAR cell is itself a JSON
+    // string literal wrapping the real JSON text, so one parse yields a
+    // string rather than an object. Parse again in that case.
+    if (typeof parsed === 'string') {
+      parsed = JSON.parse(parsed);
+    }
     return typeof parsed === 'object' && parsed !== null
       ? (parsed as Record<string, unknown>)
       : null;

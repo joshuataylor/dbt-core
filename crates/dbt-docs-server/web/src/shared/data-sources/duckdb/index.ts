@@ -33,6 +33,7 @@ import type { Distribution } from '../../typings/domain/distribution';
 import type { Facets } from '../../typings/domain/facets';
 import type { FileEntry } from '../../typings/domain/files';
 import type { ColumnLineageResult, LineageGraph } from '../../typings/domain/lineage';
+import type { ProjectOverview } from '../../typings/domain/overview';
 import type { Project } from '../../typings/domain/project';
 import type {
   SearchFacets,
@@ -48,6 +49,7 @@ import {
   fromLineageResponse,
   fromNodeCounts,
   fromProject,
+  fromProjectOverview,
   fromSearchFacets,
   fromSearchResponse,
   type RestColumnLineageEdge,
@@ -55,6 +57,7 @@ import {
   type RestLineageEdge,
   type RestLineageNode,
   type RestNodeCounts,
+  type RestProjectOverview,
 } from '../mappers/fromWire';
 import type { MetadataDataSource } from '../MetadataDataSource';
 import type { BootstrapData } from './bootstrap';
@@ -95,6 +98,8 @@ import {
   NODE_EDGES_TABLES,
   nodeEdgesSql,
   normalizeLineageKind,
+  OVERVIEW_TABLES,
+  overviewSql,
   SAVED_QUERY_TABLES,
   savedQueryDependsOnSql,
 } from './sql';
@@ -198,6 +203,22 @@ export function createDuckDbDataSource(
       counts[key] = (counts[key] ?? 0) + Number(row.count ?? 0);
     }
     return fromNodeCounts(counts);
+  }
+
+  /**
+   * The winning `__overview__` doc block, or null when the project defines none.
+   *
+   * The root package name comes from the bootstrap, as `fetchProject`'s does —
+   * `dbt.project` is not registered in DuckDB, and pulling it in to resolve one
+   * string would cost an artifact fetch on the landing page's critical path.
+   */
+  async function fetchOverview(): Promise<ProjectOverview | null> {
+    const { project } = await options.data;
+    const [row] = await engine.query<RestProjectOverview>(
+      overviewSql(project?.name ?? ''),
+      OVERVIEW_TABLES,
+    );
+    return row ? fromProjectOverview(row) : null;
   }
 
   async function fetchFiles(): Promise<FileEntry[]> {
@@ -540,6 +561,7 @@ export function createDuckDbDataSource(
     fetchDistribution,
     fetchAssetCounts,
     fetchProject,
+    fetchOverview,
     fetchFiles,
     fetchLineage,
     fetchColumnLineage,

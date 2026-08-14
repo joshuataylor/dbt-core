@@ -561,7 +561,7 @@ button {
   background: var(--bgBrandMuted);
 }
 
-/* Screen-reader-only utility (used by CatalogHome project anchor) */
+/* Screen-reader-only utility */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1936,17 +1936,6 @@ code.inline {
   margin: 0;
 }
 
-/* CatalogHome upgrade cluster — vertical stack with breathing room
-   below the marts section. The shared UpgradeStatusPanel and persistent
-   UpgradeCards bring their own visual treatment; this just provides the
-   layout slot. */
-.catalog-home__upgrade {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
-}
-
 /* ============================================================
    Upgrade panel — "Get more from dbt".
    Mirrors Catalog Figma (OMejLgivWDSbjaEpEdWmf6 #18484:44009): one
@@ -2168,10 +2157,9 @@ code.inline {
   color: var(--fgDecorative);
 }
 
-/* CatalogHome + NodeDetail hook clusters — stack vertically with breathing
-   room. On wider screens we could 2-up these as a grid; for v0 the column
-   layout is calmer and reads as a discrete "platform features" zone. */
-.catalog-home__hooks,
+/* NodeDetail hook cluster — stacks vertically with breathing room. On wider
+   screens we could 2-up these as a grid; for v0 the column layout is calmer and
+   reads as a discrete "platform features" zone. */
 .node-detail__hooks {
   display: flex;
   flex-direction: column;

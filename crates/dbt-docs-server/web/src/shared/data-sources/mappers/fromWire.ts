@@ -54,6 +54,7 @@ import type { Distribution } from '../../typings/domain/distribution';
 import type { Facets, FacetValue } from '../../typings/domain/facets';
 import type { FileEntry } from '../../typings/domain/files';
 import type { ColumnLineageGraph, LineageGraph } from '../../typings/domain/lineage';
+import type { ProjectOverview } from '../../typings/domain/overview';
 import type { Project } from '../../typings/domain/project';
 import type {
   MatchedField,
@@ -336,6 +337,13 @@ export interface RestProject {
   git_sha?: string | null;
   git_branch?: string | null;
   git_is_dirty?: boolean | null;
+}
+
+/** One row of `dbt.docs` — the winning `__overview__` block. */
+export interface RestProjectOverview {
+  unique_id: string;
+  package_name: string | null;
+  block_contents: string;
 }
 
 /** One row of `GET /api/v1/files`. `patch_path` is populated only for nodes
@@ -1214,6 +1222,14 @@ export function fromProject(d: RestProject): Project {
     gitSha: d.git_sha,
     gitBranch: d.git_branch,
     gitIsDirty: d.git_is_dirty,
+  };
+}
+
+export function fromProjectOverview(d: RestProjectOverview): ProjectOverview {
+  return {
+    uniqueId: d.unique_id,
+    packageName: d.package_name,
+    blockContents: d.block_contents,
   };
 }
 

@@ -82,6 +82,7 @@ export * from './hooks/useFiles';
 export * from './hooks/useLineage';
 export * from './hooks/useLocalStorage';
 export * from './hooks/useProject';
+export * from './hooks/useProjectOverview';
 export * from './hooks/useSearch';
 export * from './hooks/useSearchFacets';
 export * from './links';

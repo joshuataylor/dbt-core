@@ -4151,6 +4151,20 @@ impl Object for Adapter {
         listeners: &[Rc<dyn RenderingEventListener>],
     ) -> Result<Value, minijinja::Error> {
         if let Parse(_) = &self.inner {
+            // A tainted argument (e.g. a column name drawn from a tainted
+            // `get_columns_in_relation()` result flowing into `quote()`)
+            // means `call_method_impl` can't be meaningfully evaluated: its
+            // native argument extraction expects a real `&str`/`i64`/etc.,
+            // not an `IntrospectiveValue` object, and would hard-fail with a
+            // type error instead of degrading gracefully. Skip the real impl
+            // entirely and hand back a tainted placeholder, mirroring
+            // `IntrospectiveValue::call`/`call_method`'s own "swallow, don't
+            // fail" rule for operations on fabricated stub data.
+            if args.iter().any(|v| v.is_introspective_stub()) {
+                return Ok(crate::introspective_taint::IntrospectiveValue::wrap(
+                    Value::UNDEFINED,
+                ));
+            }
             let result = self.call_method_impl(state, name, args, listeners);
             return result.map(|value| {
                 // Gated on a listener actually wanting introspective holes

@@ -568,6 +568,34 @@ fn test_typed_mode_execute_result_is_not_tainted() {
 }
 
 #[test]
+fn test_parse_mode_call_with_tainted_argument_short_circuits_instead_of_erroring() {
+    // Regression test: `quote()` isn't itself introspective (it's a pure
+    // string transform, not in `INTROSPECTIVE_METHODS`), but it's commonly
+    // called with an identifier drawn from an already-tainted result (e.g. a
+    // column name from `get_columns_in_relation()`). Before this fix,
+    // `call_method_impl`'s `ArgsIter::next_arg::<&str>()` hard-failed with
+    // "argument 'identifier' to quote() has incompatible type
+    // IntrospectiveValue; value is not a string" because the tainted arg is
+    // an `Object`, not a real `&str`, and `Adapter::call_method` called the
+    // real impl regardless of argument taint.
+    let adapter = make_duckdb_parse_adapter();
+    let tainted_relation = call_method_test(
+        &adapter,
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("my_table"),
+        ],
+    )
+    .unwrap();
+    assert!(tainted_relation.is_introspective_stub());
+
+    let result = call_method_test(&adapter, "quote", &[tainted_relation]).unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
 fn test_check_schema_exists_tolerates_none_database() {
     let adapter = make_duckdb_adapter();
     let err = dispatch_test(

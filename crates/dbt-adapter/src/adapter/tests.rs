@@ -509,6 +509,30 @@ fn test_parse_mode_get_columns_in_relation_result_is_tainted() {
 }
 
 #[test]
+fn test_parse_mode_get_columns_in_relation_accepts_string() {
+    let adapter = make_duckdb_parse_adapter();
+    let result = call_method_test(
+        &adapter,
+        "get_columns_in_relation",
+        &[Value::from("relation_name")],
+    )
+    .unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_runtime_get_columns_in_relation_rejects_string() {
+    let adapter = make_duckdb_adapter();
+    let err = dispatch_test(
+        &adapter,
+        "get_columns_in_relation",
+        &[Value::from("relation_name")],
+    )
+    .unwrap_err();
+    assert_eq!(err.detail(), Some("relation must be an object"));
+}
+
+#[test]
 fn test_parse_mode_get_relation_result_is_tainted() {
     let adapter = make_duckdb_parse_adapter();
     let result = call_method_test(

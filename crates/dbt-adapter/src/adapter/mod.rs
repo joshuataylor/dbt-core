@@ -3675,13 +3675,22 @@ impl Adapter {
                 self.get_relation(state, database, schema, identifier, needs_information)
             }
             "get_columns_in_relation" => {
-                // relation: BaseRelation
                 let iter = ArgsIter::new(name, &["relation"], args);
-                let relation = iter.next_arg::<&Value>()?;
-                let relation = downcast_value_to_dyn_base_relation(relation)?;
-                iter.finish()?;
+                let relation = iter
+                    .next_arg::<&Value>()
+                    .and_then(downcast_value_to_dyn_base_relation)
+                    .and_then(|relation| {
+                        iter.finish()?;
+                        Ok(relation)
+                    });
 
-                self.get_columns_in_relation(state, relation.as_ref())
+                // Core's parse stub accepts arbitrary arguments, while valid relations must
+                // still use the existing recording path.
+                match relation {
+                    Ok(relation) => self.get_columns_in_relation(state, relation.as_ref()),
+                    Err(_) if self.is_parse() => Ok(empty_mutable_vec_value()),
+                    Err(err) => Err(err),
+                }
             }
             "build_catalog_from_show_tables_and_svv_columns" => {
                 self.build_catalog_from_show_tables_and_svv_columns(state, args)

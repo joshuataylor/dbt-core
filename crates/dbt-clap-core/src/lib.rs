@@ -830,7 +830,7 @@ pub struct ShowArgs {
     pub common_args: CommonArgs,
 
     /// Show the given query
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     pub inline: Option<String>,
 
     /// Select nodes of a specific type;

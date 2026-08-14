@@ -25,6 +25,12 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_typographic_quotes_in_dollar_quoted_strings(&expected);
     let actual = canonicalize_uuid_literals(&actual);
     let expected = canonicalize_uuid_literals(&expected);
+    let actual = canonicalize_dbt_version_literal(&actual);
+    let expected = canonicalize_dbt_version_literal(&expected);
+    let actual = canonicalize_run_started_at_literal(&actual);
+    let expected = canonicalize_run_started_at_literal(&expected);
+    let actual = canonicalize_yyyymmdd_batch_literals(&actual);
+    let expected = canonicalize_yyyymmdd_batch_literals(&expected);
     let actual = canonicalize_uuid_prefixed_test_unique_id_literals(&actual);
     let expected = canonicalize_uuid_prefixed_test_unique_id_literals(&expected);
     let actual = canonicalize_dbt_test_unique_id_literals(&actual);
@@ -1900,6 +1906,91 @@ fn canonicalize_elementary_metadata_pkg_version(sql: &str) -> String {
     });
     RE.replace_all(sql, "'DBT_PKG_VERSION' as dbt_pkg_version")
         .to_string()
+}
+
+/// Case-insensitive substring check that avoids allocating a lowercased copy of `sql`.
+/// `needle` must be lowercase ASCII and non-empty.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+// Replay-drift literal patterns: each matches a literal whose value is decided by the engine
+// build or the run's wall clock, never by the user's source, plus the alias that identifies it.
+// The alias requirement is the guardrail — it keeps these from rewriting literals that carry
+// real meaning.
+
+/// Matches a digit-leading quoted semver-ish literal, an optional `::type` cast, and the
+/// `as dbt_version` alias. The leading-digit requirement keeps it off unrelated string literals.
+static DBT_VERSION_LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)'[0-9][0-9A-Za-z.+_-]*'(?P<cast>::[a-z_][a-z0-9_]*)?\s+as\s+dbt_version")
+        .unwrap()
+});
+
+/// Matches a quoted ISO-8601 timestamp (either `T` or space separator, optional `Z`/offset), an
+/// optional `::type` cast, and the `as [dbt_]run_started_at` alias.
+static RUN_STARTED_AT_LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)'[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+(?:Z|[+-][0-9]{2}:?[0-9]{2})?'(?P<cast>::[a-z_][a-z0-9_]*)?\s+as\s+(?P<alias>dbt_run_started_at|run_started_at)",
+    )
+    .unwrap()
+});
+
+/// Replace a `dbt_version` literal with a fixed placeholder — the replay engine's version and
+/// the recorded engine's version differ by construction.
+/// Example: '2026.8.4+2f16d1c' as dbt_version -> 'DBT_VERSION' as dbt_version
+fn canonicalize_dbt_version_literal(sql: &str) -> String {
+    if !contains_ignore_ascii_case(sql, "dbt_version") {
+        return sql.to_string();
+    }
+    DBT_VERSION_LITERAL_RE
+        .replace_all(sql, "'DBT_VERSION'$cast as dbt_version")
+        .to_string()
+}
+
+/// Replace a `run_started_at`/`dbt_run_started_at` literal with a fixed placeholder — it's
+/// derived from the run's wall-clock time, so it only matches a recording under exact clock
+/// pinning.
+/// Example: '2026-08-09T16:01:19' as dbt_run_started_at -> 'RUN_STARTED_AT' as dbt_run_started_at
+fn canonicalize_run_started_at_literal(sql: &str) -> String {
+    if !contains_ignore_ascii_case(sql, "run_started_at") {
+        return sql.to_string();
+    }
+    RUN_STARTED_AT_LITERAL_RE
+        .replace_all(sql, "'RUN_STARTED_AT'$cast as $alias")
+        .to_string()
+}
+
+/// Replace `YYYYMMDDHHMMSS`-derived batch id and archive path literals with fixed placeholders —
+/// like `run_started_at`, these are wall-clock derived and only match under exact clock pinning.
+/// Example: 20260808051943::number as etl_batch_id -> 00000000000000::number as etl_batch_id
+/// Example: archive/20260808_180232/ -> archive/00000000_000000/
+fn canonicalize_yyyymmdd_batch_literals(sql: &str) -> String {
+    let lower = sql.to_ascii_lowercase();
+    let mut out = sql.to_string();
+
+    if lower.contains("etl_batch_id") {
+        static BATCH_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?i)\b[0-9]{14}\b(?P<cast>::[a-z_][a-z0-9_]*)?\s+as\s+etl_batch_id")
+                .unwrap()
+        });
+        out = BATCH_ID_RE
+            .replace_all(&out, "00000000000000$cast as etl_batch_id")
+            .to_string();
+    }
+
+    if lower.contains("archive/") {
+        static ARCHIVE_PATH_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)(archive/)[0-9]{8}_[0-9]{6}(/)").unwrap());
+        out = ARCHIVE_PATH_RE
+            .replace_all(&out, "${1}00000000_000000${2}")
+            .to_string();
+    }
+
+    out
 }
 
 /// Public because `compare_sql` treats *any* two Elementary-originated statements as equal, so a
@@ -5059,6 +5150,91 @@ SELECT
         assert!(
             result.is_ok(),
             "Elementary metadata package version drift should be ignored even when schema is renamed"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_dbt_version_literal_drift_ignored() {
+        // dbt1405: replay engine version and recorded engine version differ by construction.
+        let actual = "select current_timestamp() as ts, '2.0.0' as dbt_version";
+        let expected = "select current_timestamp() as ts, '2026.8.4+2f16d1c' as dbt_version";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "dbt_version literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_run_started_at_literal_drift_ignored() {
+        // dbt1405: a customer macro deriving a literal from run_started_at differs when replay
+        // happens at a different wall-clock time than the recording.
+        let actual = "select '2026-08-09T16:01:19' as dbt_run_started_at";
+        let expected = "select '2026-08-09T16:00:26' as dbt_run_started_at";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "run_started_at literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_dbt_version_literal_with_cast_drift_ignored() {
+        // dbt1405: same as above, but the literal is explicitly cast before the alias.
+        let actual = "select '2.0.0'::varchar as dbt_version";
+        let expected = "select '2026.8.4+2f16d1c'::varchar as dbt_version";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "dbt_version literal drift with a cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_run_started_at_literal_with_cast_drift_ignored() {
+        // dbt1405: same as above, but the literal is explicitly cast before the alias.
+        let actual = "select '2026-08-09T16:01:19'::timestamp_ntz as dbt_run_started_at";
+        let expected = "select '2026-08-09T16:00:26'::timestamp_ntz as dbt_run_started_at";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "run_started_at literal drift with a cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_etl_batch_id_literal_drift_ignored() {
+        // dbt1405: a customer macro deriving an etl_batch_id from the run's wall-clock time.
+        let actual = "select 20260808051943::number as etl_batch_id";
+        let expected = "select 20260808050939::number as etl_batch_id";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "etl_batch_id literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_etl_batch_id_literal_with_other_cast_drift_ignored() {
+        // dbt1405: same as above, but cast to a type other than `number`.
+        let actual = "select 20260808051943::bigint as etl_batch_id";
+        let expected = "select 20260808050939::bigint as etl_batch_id";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "etl_batch_id literal drift with a non-number cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_archive_stage_path_timestamp_drift_ignored() {
+        // dbt1405: a customer macro deriving an archival stage path from the run's wall-clock time.
+        let actual = "COPY FILES INTO '@DB.STG.TEMP_STAGE_FOR_ARCHIVAL/archive/20260808_180232/' FROM @DB.STG.TEMP_STAGE_FOR_ARCHIVAL";
+        let expected = "COPY FILES INTO '@DB.STG.TEMP_STAGE_FOR_ARCHIVAL/archive/20260808_180104/' FROM @DB.STG.TEMP_STAGE_FOR_ARCHIVAL";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "archive stage path timestamp drift should be ignored: {result:?}"
         );
     }
 

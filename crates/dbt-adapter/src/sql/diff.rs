@@ -1343,15 +1343,36 @@ fn compare_sql_structurally(actual: &str, expected: &str, adapter_type: AdapterT
     }
 
     // 3) CREATE [OR REPLACE] <stuff> AS (<subquery>)
-    if let (Some((a_stuff, a_sub)), Some((b_stuff, b_sub))) =
+    if let (Some((a_stuff, a_sub, a_keywords)), Some((b_stuff, b_sub, b_keywords))) =
         (parse_create_as_subquery(&a), parse_create_as_subquery(&b))
     {
+        if a_keywords != b_keywords {
+            return false;
+        }
         return a_stuff == b_stuff && compare_sql(a_sub, b_sub, adapter_type).is_ok();
     }
 
     // 4) <sub1> union all <sub2> ... union all <sub_q>
     if let (Some(mut a_parts), Some(mut b_parts)) =
         (split_union_all_top_level(&a), split_union_all_top_level(&b))
+    {
+        if a_parts.len() > 1 && b_parts.len() > 1 && a_parts.len() == b_parts.len() {
+            // Key-less lexicographic sort for deterministic pairing
+            a_parts.sort();
+            b_parts.sort();
+
+            for (ax, bx) in a_parts.iter().zip(b_parts.iter()) {
+                if compare_sql(ax, bx, adapter_type).is_err() {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    // 4) <sub1> union <sub2> ... union <sub_q>
+    if let (Some(mut a_parts), Some(mut b_parts)) =
+        (split_union_top_level(&a), split_union_top_level(&b))
     {
         if a_parts.len() > 1 && b_parts.len() > 1 && a_parts.len() == b_parts.len() {
             // Key-less lexicographic sort for deterministic pairing
@@ -1747,9 +1768,60 @@ fn parse_with_clause(s: &str) -> Option<(Vec<(String, String)>, &str)> {
     }
 }
 
-fn split_union_all_top_level(s: &str) -> Option<Vec<&str>> {
+/// Removes comments and trims start and end.
+fn normalize_part(part: &str) -> String {
+    strip_sql_comments(part).trim_start().trim().to_string()
+}
+
+fn split_union_top_level(s: &str) -> Option<Vec<String>> {
     // Split on top-level "union all" (case-insensitive)
-    let mut parts: Vec<&str> = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let lower = s.to_ascii_lowercase();
+    let mut iter = lower.char_indices().peekable();
+    while let Some((i, ch)) = iter.next() {
+        if ch == '(' {
+            depth += 1;
+            continue;
+        } else if ch == ')' {
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if depth == 0 && lower[i..].starts_with("union") {
+            // ensure it is "union"
+            let k = i + "union".len();
+            // require at least one whitespace
+            let k_after_ws = skip_ws(&lower, k);
+            if k_after_ws > k {
+                // boundary found
+                let left = &s[start..i];
+                parts.push(normalize_part(left));
+                let next_i = k_after_ws;
+                start = next_i;
+                while let Some(&(peek_i, _)) = iter.peek() {
+                    if peek_i < next_i {
+                        iter.next();
+                    } else {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+    }
+    // push final segment
+    let last = &s[start..];
+    if !parts.is_empty() {
+        parts.push(normalize_part(last));
+        return Some(parts);
+    }
+    None
+}
+
+fn split_union_all_top_level(s: &str) -> Option<Vec<String>> {
+    // Split on top-level "union all" (case-insensitive)
+    let mut parts: Vec<String> = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
     let lower = s.to_ascii_lowercase();
@@ -1769,8 +1841,8 @@ fn split_union_all_top_level(s: &str) -> Option<Vec<&str>> {
             let k_after_ws = skip_ws(&lower, k);
             if k_after_ws > k && lower[k_after_ws..].starts_with("all") {
                 // boundary found
-                let left = s[start..i].trim();
-                parts.push(left);
+                let left = &s[start..i];
+                parts.push(normalize_part(left));
                 // advance past "union all"
                 let next_i = k_after_ws + "all".len();
                 start = next_i;
@@ -1786,15 +1858,15 @@ fn split_union_all_top_level(s: &str) -> Option<Vec<&str>> {
         }
     }
     // push final segment
-    let last = s[start..].trim();
+    let last = &s[start..];
     if !parts.is_empty() {
-        parts.push(last);
+        parts.push(normalize_part(last));
         return Some(parts);
     }
     None
 }
 
-fn parse_create_as_subquery(s: &str) -> Option<(&str, &str)> {
+fn parse_create_as_subquery(s: &str) -> Option<(&str, &str, Vec<&str>)> {
     // Recognize: CREATE [OR REPLACE] <stuff> AS (<subquery>)
     // Case-insensitive for keywords; preserve exact <stuff> for equality check
     let mut i = skip_ws(s, 0);
@@ -1807,6 +1879,18 @@ fn parse_create_as_subquery(s: &str) -> Option<(&str, &str)> {
             i = k;
         } // if "or" not followed by "replace", keep original i (treat as not present)
     }
+
+    let mut keywords = Vec::new();
+
+    i = skip_ws(s, i);
+    if let Some(j) = eat_keyword_ci(s, i, "transient") {
+        keywords.push("transient");
+        i = skip_ws(s, j);
+    } else if let Some(j) = eat_keyword_ci(s, i, "temporary") {
+        keywords.push("temporary");
+        i = skip_ws(s, j);
+    }
+
     let stuff_start = i;
     // Find 'as' followed by '(' (case-insensitive), not inside parentheses
     let lower = s.to_ascii_lowercase();
@@ -1844,7 +1928,7 @@ fn parse_create_as_subquery(s: &str) -> Option<(&str, &str)> {
     let open = k;
     let close = find_matching_paren(s, open)?;
     let sub = s[open + 1..close].trim();
-    Some((stuff, sub))
+    Some((stuff, sub, keywords))
 }
 
 /// Replace the payload of `ALTER SESSION SET QUERY_TAG = '...';` with a fixed placeholder,
@@ -3396,15 +3480,21 @@ qualify row_number() over (partition by billing_group_id, __as_of order by rn de
     }
 
     #[test]
+    fn test_split_union_top_level_splits_and_handles_unicode() {
+        // Regression test: previously this could panic if the scan index landed in the middle
+        // of a multi-byte UTF-8 char (e.g. “).
+        let sql = "select 1 as a /* “unicode” */ UNION      select 2 as b";
+        let parts = split_union_top_level(sql).expect("should split on top-level UNION");
+        assert_eq!(parts, vec!["select 1 as a", "select 2 as b"]);
+    }
+
+    #[test]
     fn test_split_union_all_top_level_splits_and_handles_unicode() {
         // Regression test: previously this could panic if the scan index landed in the middle
         // of a multi-byte UTF-8 char (e.g. “).
         let sql = "select 1 as a /* “unicode” */ UNION   ALL   select 2 as b";
         let parts = split_union_all_top_level(sql).expect("should split on top-level UNION ALL");
-        assert_eq!(
-            parts,
-            vec!["select 1 as a /* “unicode” */", "select 2 as b"]
-        );
+        assert_eq!(parts, vec!["select 1 as a", "select 2 as b"]);
     }
 
     #[test]
@@ -3704,9 +3794,9 @@ qualify row_number() over (partition by billing_group_id, __as_of order by rn de
 
     #[test]
     fn test_compare_sql_timestamp() {
-        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T18:07:45.449898-07:00'"#;
-        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T14:16:52.500487'"#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(
@@ -3813,9 +3903,9 @@ cast('test.dis_asko_servering.elementary_schema_changes_from_baseline_prs_dim_he
 
     #[test]
     fn test_compare_sql_timestamp_ignore_t() {
-        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T18:07:45.449898'"#;
-        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-1014:16:52.500487'"#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(
@@ -3826,9 +3916,9 @@ cast('test.dis_asko_servering.elementary_schema_changes_from_baseline_prs_dim_he
 
     #[test]
     fn test_compare_sql_timestamp_ignore_t2() {
-        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T18:07:45.449898'"#;
-        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10 14:16:52.500487'"#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(
@@ -3919,7 +4009,7 @@ from aggregated
     fn test_comment_in_ephemeral_model() {
         let sql1 = r#"
 create or replace  temporary view DB.SCHEMA.model_name__dbt_tmp
-  
+
    as (
     with __dbt__cte__stg_source_a as (
 SELECT
@@ -3927,7 +4017,7 @@ SELECT
 FROM
   source_db.metadata.table_a
 ), __dbt__cte__stg_source_b as (
-SELECT 
+SELECT
   *
 FROM
   source_db.metadata.table_b
@@ -3938,17 +4028,17 @@ select * from (
 
 -- Do not allow a full refresh of this model
 
-  
+
 
 
 -- This model contains aggregated statistics
 -- Every day, the data is extracted and stored for analysis
 
 WITH aggregated_data AS (
-  SELECT 
+  SELECT
     entity_id
     , COUNT(DISTINCT field_name) as field_count
-  FROM 
+  FROM
     __dbt__cte__stg_source_a
   GROUP BY entity_id
 )
@@ -3962,7 +4052,7 @@ SELECT
   , CURRENT_DATE() AS snapshot_date
 FROM
   __dbt__cte__stg_source_b t
-LEFT OUTER JOIN 
+LEFT OUTER JOIN
   aggregated_data s ON t.entity_id = s.entity_id
 --EPHEMERAL-SELECT-WRAPPER-END
 )
@@ -3970,16 +4060,16 @@ LEFT OUTER JOIN
 "#;
         let sql2 = r#"
 create or replace  temporary view DB.SCHEMA.model_name__dbt_tmp
-  
-  
-  
-  
+
+
+
+
   as (
-    
+
 
 -- Do not allow a full refresh of this model
 
-  
+
 
 
 -- This model contains aggregated statistics
@@ -3991,15 +4081,15 @@ SELECT
 FROM
   source_db.metadata.table_a
 ),  __dbt__cte__stg_source_b as (
-SELECT 
+SELECT
   *
 FROM
   source_db.metadata.table_b
 ), aggregated_data AS (
-  SELECT 
+  SELECT
     entity_id
     , COUNT(DISTINCT field_name) as field_count
-  FROM 
+  FROM
     __dbt__cte__stg_source_a
   GROUP BY entity_id
 )
@@ -4013,7 +4103,7 @@ SELECT
   , CURRENT_DATE() AS snapshot_date
 FROM
   __dbt__cte__stg_source_b t
-LEFT OUTER JOIN 
+LEFT OUTER JOIN
   aggregated_data s ON t.entity_id = s.entity_id
   );
 "#;
@@ -4120,7 +4210,7 @@ where 1 = 0
 
 
 
-      
+
 
     merge
     into
@@ -4281,16 +4371,972 @@ as (
 
     #[test]
     fn test_structural_union_ordering_equivalence() {
+        let actual = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_line_refund
+
+
+
+
+  as (
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FIBERON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FIBERON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FYPON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FYPON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'LARSON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'LARSON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_EU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_EU' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_UK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_UK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MOEN' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MOEN' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_OWNERSCLUB' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_OWNERSCLUB' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_CA' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_CA' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_US' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_US' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'THERMATRU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'THERMATRU' and origin = 'refund'
+                )
+
+
+
+
+
+
+
+  );
+        "#;
+
+        let expected = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_line_refund
+
+
+
+
+  as (
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_EU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_EU' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_UK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_UK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_OWNERSCLUB' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_OWNERSCLUB' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_CA' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_CA' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_US' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_US' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FIBERON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FIBERON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FYPON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FYPON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'THERMATRU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'THERMATRU' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'LARSON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'LARSON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MOEN' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MOEN' and origin = 'refund'
+                )
+
+
+
+
+
+
+
+  );
+        "#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_ordering_equivalence_with_transient_extra_space() {
+        let actual = r#"create or replace transient  table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let expected = r#"create or replace transient table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_ordering_equivalence_with_temporary_extra_space() {
+        let actual = r#"create or replace temporary  table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let expected = r#"create or replace temporary table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_ordering_equivalence_with_dashdash_comment() {
+        let actual = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_adjustment
+
+
+
+
+  as (
+    --
+
+        select order_id, amount, 'FIBERON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_ADJUSTMENT"
+
+
+            union
+
+
+
+
+
+
+
+
+        select order_id, amount, 'FYPON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_ADJUSTMENT"
+
+  );"#;
+
+        let expected = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_adjustment
+
+
+
+
+  as (
+    --
+
+        select order_id, amount, 'FYPON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_ADJUSTMENT"
+
+
+            union
+
+
+
+
+
+
+
+
+        select order_id, amount, 'FIBERON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_ADJUSTMENT"
+
+  );"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_all_ordering_equivalence() {
         let actual = r#"select * from (
-        
+
 
 
 
 with filtered_information_schema_columns as (
-    
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4303,12 +5349,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('aftership')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4321,12 +5367,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_staging')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4339,12 +5385,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_ads')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4357,12 +5403,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_analytics')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4375,12 +5421,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4393,12 +5439,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('klaviyo')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4411,12 +5457,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('macroeconomic_data')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4429,12 +5475,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mailchimp')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4447,12 +5493,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('predictions')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4465,12 +5511,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mongodb')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4483,12 +5529,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('postgres_rds')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4501,12 +5547,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4519,12 +5565,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('resmagic_api')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4537,12 +5583,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('returnly')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4555,12 +5601,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('sendgrid')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4573,12 +5619,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('shopify')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4591,12 +5637,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('information_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4609,12 +5655,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('stripe')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4627,12 +5673,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zendesk')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4645,12 +5691,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zucc_meta')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4663,8 +5709,8 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_models')
 
 )
-        
-    
+
+
 
 
 )
@@ -4678,15 +5724,15 @@ where full_table_name is not null
         "#;
 
         let expected = r#"select * from (
-        
+
 
 
 
 with filtered_information_schema_columns as (
-    
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4699,12 +5745,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('aftership')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4717,12 +5763,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_staging')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4735,12 +5781,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_ads')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4753,12 +5799,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_analytics')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4771,12 +5817,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4789,12 +5835,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('klaviyo')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4807,12 +5853,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('macroeconomic_data')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4825,12 +5871,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mailchimp')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4843,12 +5889,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('predictions')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4861,12 +5907,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4879,12 +5925,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('returnly')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4897,12 +5943,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('sendgrid')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4915,12 +5961,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('information_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4933,12 +5979,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('shopify')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4951,12 +5997,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('stripe')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4969,12 +6015,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zendesk')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4987,12 +6033,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zucc_meta')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -5005,12 +6051,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mongodb')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -5023,12 +6069,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('postgres_rds')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -5041,12 +6087,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('resmagic_api')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -5059,8 +6105,8 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_models')
 
 )
-        
-    
+
+
 
 
 )
@@ -5095,9 +6141,9 @@ where full_table_name is not null
     fn test_compare_sql_elementary_pkg_version_drift_ignored() {
         let actual = r#"
 create or replace transient  table DB_FANANALYTICS.analytics_elementary_metadata.metadata
-    
-    
-    
+
+
+
     as (
 
 SELECT
@@ -5107,9 +6153,9 @@ SELECT
 "#;
         let expected = r#"
 create or replace transient table DB_FANANALYTICS.analytics_elementary_metadata.metadata
-    
-    
-    
+
+
+
     as (
 
 SELECT
@@ -5240,12 +6286,12 @@ SELECT
 
     #[test]
     fn test_compare_sql_elementary_metadata_comment_ignored() {
-        let actual = r#"select metadata_hash 
+        let actual = r#"select metadata_hash
     from OPERATIONS_PRD.MFG_INSTRUMENTS.dbt_exposures
     order by metadata_hash
     /* --ELEMENTARY-METADATA-- {"invocation_id": "019ba036-aec2-71a3-8709-a31b68ced8b0", "command": "build", "package_name": "elementary", "resource_name": "dbt_exposures", "resource_type": "model"} --END-ELEMENTARY-METADATA-- */"#;
 
-        let expected = r#"select metadata_hash 
+        let expected = r#"select metadata_hash
     from OPERATIONS_PRD.MFG_INSTRUMENTS.dbt_exposures
     order by metadata_hash"#;
 
@@ -5637,12 +6683,12 @@ where 1 = 0";
     fn test_alter_table_set_tblproperties_order_independent() {
         // Fusion and dbt-databricks may emit the same tblproperties in different order.
         // The properties are a set of key-value pairs — ordering is not semantically meaningful.
-        let actual = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET 
-    tblproperties ('delta.columnMapping.mode' = 'name' , 'delta.enableChangeDataFeed' = 'true' 
+        let actual = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET
+    tblproperties ('delta.columnMapping.mode' = 'name' , 'delta.enableChangeDataFeed' = 'true'
     )"#;
 
-        let expected = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET 
-    tblproperties ('delta.enableChangeDataFeed' = 'true' , 'delta.columnMapping.mode' = 'name' 
+        let expected = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET
+    tblproperties ('delta.enableChangeDataFeed' = 'true' , 'delta.columnMapping.mode' = 'name'
     )"#;
 
         let result = compare_sql(actual, expected, AdapterType::Databricks);

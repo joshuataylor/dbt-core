@@ -205,7 +205,7 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
     pub compare_unrendered_code: bool,
-    pub table_namespace: Option<String>, //todo: implement
+    pub table_namespace: Option<String>,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -248,6 +248,7 @@ pub struct SubmitValuesRequestInput {
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
+    pub table_namespace: Option<String>,
 }
 
 impl SubmitValuesRequestInput {
@@ -264,7 +265,7 @@ impl SubmitValuesRequestInput {
             clone_table_properties: self.clone_table_properties,
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
-            table_namespace: None, //todo: implement
+            table_namespace: self.table_namespace,
         }
     }
 }
@@ -308,7 +309,7 @@ pub fn sql_execution_record_from_submit_request(
                 default_schema: request.default_schema,
                 dbt_node_state: request.dbt_node_state,
                 from_speculative_submit,
-                table_namespace: None, //todo: implement
+                table_namespace: request.table_namespace,
             },
         ))),
     }
@@ -328,7 +329,7 @@ pub fn values_execution_record_from_submit_request(
             semantic_extras: request.semantic_extras,
             labels: request.labels,
             dbt_node_state: request.dbt_node_state,
-            table_namespace: None, //todo: implement
+            table_namespace: request.table_namespace,
         }))),
     }
 }
@@ -938,6 +939,7 @@ mod tests {
                 node_contract_hash: Some("node_contract_hash".to_string()),
                 node_database_representation: None,
             }),
+            table_namespace: Some("foo".to_string()),
         }
         .into_proto();
 
@@ -965,7 +967,8 @@ mod tests {
                 node_contract_hash: Some("node_contract_hash".to_string()),
                 node_database_representation: None
             })
-        )
+        );
+        assert_eq!(request.table_namespace(), "foo")
     }
 
     #[test]
@@ -1033,6 +1036,7 @@ mod tests {
             clone_table_properties: None,
             clone_chain_depth_limit: None,
             dbt_node_state: None,
+            table_namespace: None,
         }
         .into_proto();
 

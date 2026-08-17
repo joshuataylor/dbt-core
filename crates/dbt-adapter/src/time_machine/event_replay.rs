@@ -17,7 +17,7 @@ use similar::{ChangeTag, TextDiff};
 
 use super::event::{
     AdapterCallEvent, CacheInvalidationEvent, MetadataCallArgs, MetadataCallEvent, RecordedEvent,
-    RecordingHeader, RunRemoteAdhocEvent, SaoEvent,
+    RecordingHeader, RunCacheCloneEvent, RunRemoteAdhocEvent, SaoEvent,
 };
 use super::semantic::SemanticCategory;
 use super::serde::values_match;
@@ -84,6 +84,16 @@ pub(crate) fn is_read_only_execute_call(method: &str, args: &serde_json::Value) 
 /// This compares the structured arguments to ensure we match the correct
 /// recorded event when replaying.
 fn metadata_args_match(recorded: &MetadataCallArgs, actual: &MetadataCallArgs) -> bool {
+    fn relations_match(recorded_relations: &[String], actual_relations: &[String]) -> bool {
+        let recorded_set: HashSet<String> = recorded_relations
+            .iter()
+            .map(|r| r.to_ascii_uppercase())
+            .collect();
+        actual_relations
+            .iter()
+            .all(|rel| recorded_set.contains(&rel.to_ascii_uppercase()))
+    }
+
     match (recorded, actual) {
         // For ListRelationsSchemas, check if recorded is a superset of actual.
         // If recorded contains all the relations requested in actual, we have
@@ -101,13 +111,26 @@ fn metadata_args_match(recorded: &MetadataCallArgs, actual: &MetadataCallArgs) -
             // Case-insensitive superset check: semantic_fqn strings may differ
             // only in casing due to identifier normalization (e.g. Snowflake
             // uppercasing unquoted identifiers), so we compare uppercased forms.
-            let recorded_set: HashSet<String> = recorded_relations
-                .iter()
-                .map(|r| r.to_ascii_uppercase())
-                .collect();
-            actual_relations
-                .iter()
-                .all(|rel| recorded_set.contains(&rel.to_ascii_uppercase()))
+            relations_match(recorded_relations, actual_relations)
+        }
+        (
+            MetadataCallArgs::FreshnessAllInSchema {
+                database: recorded_database,
+                schema: recorded_schema,
+                relations: recorded_relations,
+                warehouse: recorded_warehouse,
+            },
+            MetadataCallArgs::FreshnessAllInSchema {
+                database: actual_database,
+                schema: actual_schema,
+                relations: actual_relations,
+                warehouse: actual_warehouse,
+            },
+        ) => {
+            recorded_database.eq_ignore_ascii_case(actual_database)
+                && recorded_schema.eq_ignore_ascii_case(actual_schema)
+                && recorded_warehouse == actual_warehouse
+                && relations_match(recorded_relations, actual_relations)
         }
         // For other types, use exact value matching
         _ => {
@@ -401,6 +424,10 @@ pub struct Recording {
     metadata_events_by_caller: BTreeMap<String, Vec<MetadataCallEvent>>,
     /// SAO skip events indexed by node_id
     sao_events: BTreeMap<String, SaoEvent>,
+    /// dbt State service clone-decision events indexed by node_id.
+    ///
+    /// A node can have both a pre-render dev clone and a run-phase clone.
+    clone_events: BTreeMap<String, Vec<RunCacheCloneEvent>>,
     /// Run-remote-adhoc events in order
     run_remote_adhoc_events: Vec<RunRemoteAdhocEvent>,
     /// Cache invalidation events in order
@@ -478,6 +505,7 @@ impl Recording {
         let mut metadata_events_by_caller: BTreeMap<String, Vec<MetadataCallEvent>> =
             BTreeMap::new();
         let mut sao_events: BTreeMap<String, SaoEvent> = BTreeMap::new();
+        let mut clone_events: BTreeMap<String, Vec<RunCacheCloneEvent>> = BTreeMap::new();
         let mut run_remote_adhoc_events: Vec<RunRemoteAdhocEvent> = Vec::new();
         let mut cache_invalidation_events: Vec<CacheInvalidationEvent> = Vec::new();
 
@@ -506,6 +534,12 @@ impl Recording {
                 RecordedEvent::CacheInvalidation(event) => {
                     cache_invalidation_events.push(event);
                 }
+                RecordedEvent::RunCacheClone(clone_event) => {
+                    clone_events
+                        .entry(clone_event.node_id.clone())
+                        .or_default()
+                        .push(clone_event);
+                }
             }
         }
 
@@ -525,6 +559,7 @@ impl Recording {
             adapter_events_by_node,
             metadata_events_by_caller,
             sao_events,
+            clone_events,
             run_remote_adhoc_events,
             cache_invalidation_events,
             adapter_positions: RwLock::new(HashMap::new()),
@@ -556,6 +591,29 @@ impl Recording {
 
     pub fn total_sao_events(&self) -> usize {
         self.sao_events.len()
+    }
+
+    // -------------------------------------------------------------------------
+    // dbt State service clone-decision methods
+    // -------------------------------------------------------------------------
+
+    /// Present only when the node's execution was satisfied by a clone
+    /// decision from the dbt State service during recording.
+    pub fn get_run_cache_clone_event(&self, node_id: &str) -> Option<&RunCacheCloneEvent> {
+        self.get_run_cache_clone_event_for_phase(node_id, false)
+            .or_else(|| self.clone_events.get(node_id)?.first())
+    }
+
+    /// Get the recorded clone decision for a node and clone phase.
+    pub fn get_run_cache_clone_event_for_phase(
+        &self,
+        node_id: &str,
+        dev_clone: bool,
+    ) -> Option<&RunCacheCloneEvent> {
+        self.clone_events
+            .get(node_id)?
+            .iter()
+            .find(|event| event.dev_clone == dev_clone)
     }
 
     // -------------------------------------------------------------------------
@@ -1027,7 +1085,8 @@ impl Recording {
     // Statistics and reset
     // -------------------------------------------------------------------------
 
-    /// Get the total number of events (adapter, metadata, SAO, and run_remote_adhoc).
+    /// Get the total number of events (adapter, metadata, SAO, run-cache clone,
+    /// and run_remote_adhoc).
     pub fn total_events(&self) -> usize {
         self.adapter_events_by_node
             .values()
@@ -1039,6 +1098,7 @@ impl Recording {
                 .map(|v| v.len())
                 .sum::<usize>()
             + self.sao_events.len()
+            + self.clone_events.len()
             + self.run_remote_adhoc_events.len()
     }
 
@@ -1359,6 +1419,7 @@ mod tests {
             adapter_events_by_node,
             metadata_events_by_caller: BTreeMap::new(),
             sao_events: BTreeMap::new(),
+            clone_events: BTreeMap::new(),
             run_remote_adhoc_events: Vec::new(),
             cache_invalidation_events: Vec::new(),
             adapter_positions: RwLock::new(HashMap::new()),
@@ -1902,6 +1963,7 @@ mod tests {
             adapter_events_by_node,
             metadata_events_by_caller: BTreeMap::new(),
             sao_events: BTreeMap::new(),
+            clone_events: BTreeMap::new(),
             run_remote_adhoc_events: Vec::new(),
             cache_invalidation_events: Vec::new(),
             adapter_positions: RwLock::new(HashMap::new()),
@@ -2406,7 +2468,7 @@ mod tests {
     // SAO (State Aware Orchestration) tests
     // -------------------------------------------------------------------------
 
-    use super::super::event::SaoStatus;
+    use super::super::event::{RecordedRunCacheCloneDecision, RunCacheCloneEvent, SaoStatus};
 
     /// Helper to create a test Recording with SAO events
     fn make_recording_with_sao(
@@ -2442,6 +2504,7 @@ mod tests {
             adapter_events_by_node,
             metadata_events_by_caller: BTreeMap::new(),
             sao_events: sao_events_map,
+            clone_events: BTreeMap::new(),
             run_remote_adhoc_events: Vec::new(),
             cache_invalidation_events: Vec::new(),
             adapter_positions: RwLock::new(HashMap::new()),
@@ -2462,6 +2525,7 @@ mod tests {
                 status: SaoStatus::ReusedNoChanges,
                 message: "No new changes on any upstreams".to_string(),
                 stored_hash: "abc123".to_string(),
+                cached_test_result: None,
                 timestamp_ns: 1000,
             },
             SaoEvent {
@@ -2472,6 +2536,7 @@ mod tests {
                 },
                 message: "Still within freshness period".to_string(),
                 stored_hash: "def456".to_string(),
+                cached_test_result: None,
                 timestamp_ns: 2000,
             },
         ];
@@ -2506,6 +2571,7 @@ mod tests {
             status: SaoStatus::ReusedNoChanges,
             message: "No new changes".to_string(),
             stored_hash: "abc123".to_string(),
+            cached_test_result: None,
             timestamp_ns: 1000,
         }];
         let recording = make_recording_with_sao(vec![], sao_events);
@@ -2522,6 +2588,7 @@ mod tests {
                 status: SaoStatus::ReusedNoChanges,
                 message: "No new changes".to_string(),
                 stored_hash: "abc123".to_string(),
+                cached_test_result: None,
                 timestamp_ns: 1000,
             },
             SaoEvent {
@@ -2529,6 +2596,7 @@ mod tests {
                 status: SaoStatus::ReusedStillFreshNoChanges,
                 message: "Still fresh".to_string(),
                 stored_hash: "def456".to_string(),
+                cached_test_result: None,
                 timestamp_ns: 2000,
             },
         ];
@@ -2548,6 +2616,7 @@ mod tests {
                 status: SaoStatus::ReusedNoChanges,
                 message: "No new changes".to_string(),
                 stored_hash: "abc123".to_string(),
+                cached_test_result: None,
                 timestamp_ns: 1000,
             },
             SaoEvent {
@@ -2555,6 +2624,7 @@ mod tests {
                 status: SaoStatus::ReusedNoChanges,
                 message: "No new changes".to_string(),
                 stored_hash: "def456".to_string(),
+                cached_test_result: None,
                 timestamp_ns: 2000,
             },
         ];
@@ -2571,12 +2641,32 @@ mod tests {
             status: SaoStatus::ReusedNoChanges,
             message: "No new changes".to_string(),
             stored_hash: "abc123".to_string(),
+            cached_test_result: None,
             timestamp_ns: 1000,
         }];
-        let recording = make_recording_with_sao(adapter_events, sao_events);
+        let mut recording = make_recording_with_sao(adapter_events, sao_events);
+        recording.clone_events.insert(
+            "model.test.cloned".to_string(),
+            vec![RunCacheCloneEvent {
+                node_id: "model.test.cloned".to_string(),
+                dev_clone: false,
+                clone: RecordedRunCacheCloneDecision {
+                    request_id: "request-1".to_string(),
+                    clone_sqls: vec!["CREATE TABLE target CLONE source".to_string()],
+                    clone_source: "db.schema.source".to_string(),
+                    clone_target: "db.schema.target".to_string(),
+                    required_source_epoch: None,
+                    execution_runtime_ms: None,
+                    freshness_tolerance_seconds: 0,
+                    is_stale: false,
+                    execution_decision_id: None,
+                },
+                timestamp_ns: 3000,
+            }],
+        );
 
-        // Total should include both adapter events and SAO events
-        assert_eq!(recording.total_events(), 2);
+        // Total should include adapter, SAO, and run-cache clone events.
+        assert_eq!(recording.total_events(), 3);
         assert_eq!(recording.total_adapter_events(), 1);
         assert_eq!(recording.total_sao_events(), 1);
     }
@@ -2595,6 +2685,7 @@ mod tests {
             status: SaoStatus::ReusedNoChanges,
             message: "No new changes".to_string(),
             stored_hash: "abc123".to_string(),
+            cached_test_result: None,
             timestamp_ns: 1000,
         }];
         let recording = make_recording_with_sao(adapter_events, sao_events);
@@ -2646,5 +2737,23 @@ mod tests {
             !metadata_args_match(&recorded, &actual_missing),
             "should not match a relation that was never recorded"
         );
+    }
+
+    #[test]
+    fn test_metadata_args_match_schema_freshness_case_insensitive() {
+        let recorded = MetadataCallArgs::FreshnessAllInSchema {
+            database: "my_database".to_string(),
+            schema: "public".to_string(),
+            relations: vec!["my_database.public.table_a".to_string()],
+            warehouse: None,
+        };
+        let actual = MetadataCallArgs::FreshnessAllInSchema {
+            database: "MY_DATABASE".to_string(),
+            schema: "PUBLIC".to_string(),
+            relations: vec!["MY_DATABASE.PUBLIC.TABLE_A".to_string()],
+            warehouse: None,
+        };
+
+        assert!(metadata_args_match(&recorded, &actual));
     }
 }

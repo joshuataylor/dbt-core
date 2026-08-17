@@ -5,7 +5,12 @@ use std::{
     range::Range,
 };
 
-use dbt_common::{ErrorCode, FsResult, err, error::WrappedError, fs_err};
+use dbt_common::{
+    ErrorCode, FsResult, err,
+    error::WrappedError,
+    fs_err,
+    pretty_string::{DIM, GREEN, RED},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -653,6 +658,32 @@ fn offset_of(text: &str, sub: &str) -> usize {
     sub.as_ptr() as usize - text.as_ptr() as usize
 }
 
+/// Splits `text` into lines as half-open byte ranges in ascending order (so
+/// `.enumerate()` gives each line's zero-based index), each excluding its
+/// trailing line terminator (`\n` or `\r\n`). Matches `str::lines()`'s
+/// notion of a line — in particular, a trailing `\n` does not produce a
+/// final empty line, and a `\r` unpaired with a following `\n` is kept.
+fn lines(text: &str) -> impl Iterator<Item = ops::Range<usize>> + '_ {
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        if pos >= text.len() {
+            return None;
+        }
+        let start = pos;
+        let Some(newline) = text[start..].find('\n').map(|i| start + i) else {
+            pos = text.len();
+            return Some(start..text.len());
+        };
+        pos = newline + 1;
+        let end = if text[start..newline].ends_with('\r') {
+            newline - 1
+        } else {
+            newline
+        };
+        Some(start..end)
+    })
+}
+
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
@@ -840,6 +871,137 @@ pub struct ManifestReplacements {
 }
 
 impl ManifestReplacements {
+    /// Writes the pending changes to `out` as colored, line-numbered diff
+    /// hunks — a little surrounding context, then each affected line as it
+    /// reads in `manifest` now and as it would read after `apply_to` — in
+    /// file order, ready to print to a terminal so a user can review the
+    /// change before it overwrites the file. Changes close enough to share
+    /// context share a hunk, and changes to the same line render as a single
+    /// pair. Reads only `manifest`'s in-memory snapshot; doesn't touch the
+    /// file on disk.
+    pub fn diff(&self, manifest: &PythonManifest, out: &mut dyn Write) -> FsResult<()> {
+        const CONTEXT_LINES: usize = 2;
+
+        let io_err = |e: std::io::Error| {
+            fs_err!(ErrorCode::IoError, "failed to write diff").with_cause(WrappedError::Io(e))
+        };
+
+        let text = &manifest.contents;
+        let all_lines: Vec<ops::Range<usize>> = lines(text).collect();
+        let width = all_lines.len().max(1).to_string().len();
+
+        let mut ordered: Vec<&ManifestReplacement> = self.replacements.iter().collect();
+        ordered.sort_by_key(|r| r.range_replace.start);
+
+        // Resolve every replacement to the single line it edits, collecting
+        // the ones sharing a line so that line renders as one `-`/`+` pair.
+        let mut edited_lines: Vec<(usize, Vec<&ManifestReplacement>)> = Vec::new();
+        for r in ordered {
+            let range: ops::Range<usize> = r.range_replace.into();
+            if text.get(range.clone()).is_none() {
+                return err!(
+                    ErrorCode::Unexpected,
+                    "replacement range {:?} is out of bounds for {}",
+                    range,
+                    manifest.path.display()
+                );
+            }
+
+            let Some(line_idx) = all_lines
+                .iter()
+                .position(|l| l.start <= range.start && range.end <= l.end)
+            else {
+                return err!(
+                    ErrorCode::Unexpected,
+                    "replacement range {:?} does not fall within a single line of {}",
+                    range,
+                    manifest.path.display()
+                );
+            };
+
+            match edited_lines.last_mut() {
+                Some((idx, sharing_line)) if *idx == line_idx => sharing_line.push(r),
+                _ => edited_lines.push((line_idx, vec![r])),
+            }
+        }
+
+        // Edited lines whose context windows overlap render as a single hunk,
+        // so a line never prints both as a `-`/`+` pair and as a neighbor's
+        // context.
+        let mut hunk_start = 0;
+        let mut hunks_written = 0;
+        while hunk_start < edited_lines.len() {
+            let mut hunk_end = hunk_start + 1;
+            while hunk_end < edited_lines.len()
+                && edited_lines[hunk_end].0.saturating_sub(CONTEXT_LINES)
+                    <= edited_lines[hunk_end - 1].0 + CONTEXT_LINES
+            {
+                hunk_end += 1;
+            }
+            let hunk = &edited_lines[hunk_start..hunk_end];
+            hunk_start = hunk_end;
+
+            if hunks_written > 0 {
+                writeln!(out).map_err(io_err)?;
+            }
+            hunks_written += 1;
+
+            let window_start = hunk[0].0.saturating_sub(CONTEXT_LINES);
+            let window_end = (hunk[hunk.len() - 1].0 + 1 + CONTEXT_LINES).min(all_lines.len());
+
+            let mut next_edit = 0;
+            for (offset, line) in all_lines[window_start..window_end].iter().enumerate() {
+                let line_idx = window_start + offset;
+                let line = line.clone();
+                let old_line = &text[line.clone()];
+
+                let Some((_, sharing_line)) =
+                    hunk.get(next_edit).filter(|(idx, _)| *idx == line_idx)
+                else {
+                    writeln!(
+                        out,
+                        "{}{}",
+                        DIM.apply_to(format!("  {:>width$} | ", line_idx + 1)),
+                        old_line
+                    )
+                    .map_err(io_err)?;
+                    continue;
+                };
+                next_edit += 1;
+
+                // Splicing back to front keeps the not-yet-applied offsets
+                // valid.
+                let mut new_line = old_line.to_string();
+                for r in sharing_line.iter().rev() {
+                    let range: ops::Range<usize> = r.range_replace.into();
+                    new_line.replace_range(
+                        range.start - line.start..range.end - line.start,
+                        &r.replacement,
+                    );
+                }
+
+                writeln!(
+                    out,
+                    "{}{}{}",
+                    RED.apply_to("-"),
+                    DIM.apply_to(format!(" {:>width$} | ", line_idx + 1)),
+                    RED.apply_to(old_line)
+                )
+                .map_err(io_err)?;
+                writeln!(
+                    out,
+                    "{}{}{}",
+                    GREEN.apply_to("+"),
+                    DIM.apply_to(format!(" {:>width$} | ", line_idx + 1)),
+                    GREEN.apply_to(&new_line)
+                )
+                .map_err(io_err)?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Verifies `manifest.path` still holds the exact text these
     /// replacements were computed from, and — only if so — splices in every
     /// replacement and writes the result back.
@@ -1523,6 +1685,209 @@ mod tests {
                 .get_version_replacement(&spec(PackageVersion::Exact("1.5.0".into())))
                 .unwrap();
             assert!(replacements.is_none());
+        }
+
+        fn diff_to_string(
+            replacements: &ManifestReplacements,
+            manifest: &PythonManifest,
+        ) -> String {
+            let mut buf = Vec::new();
+            replacements.diff(manifest, &mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
+        }
+
+        fn diff_err(
+            replacements: &ManifestReplacements,
+            manifest: &PythonManifest,
+        ) -> Box<dbt_common::FsError> {
+            let mut buf = Vec::new();
+            replacements.diff(manifest, &mut buf).unwrap_err()
+        }
+
+        #[test]
+        fn diff_shows_old_and_new_lines_with_line_numbers_without_touching_the_file() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(
+                tmp.path(),
+                "requirements.txt",
+                "other-package==0.1.0\ndbt-core==1.2.3\n",
+            );
+            let replacements = manifest
+                .get_version_replacement(&spec(PackageVersion::Exact("1.5.0".into())))
+                .unwrap()
+                .expect("dbt-core is declared");
+
+            let diff = diff_to_string(&replacements, &manifest);
+            assert!(diff.contains("- 2 | dbt-core==1.2.3"), "got: {diff}");
+            assert!(diff.contains("+ 2 | dbt-core==1.5.0"), "got: {diff}");
+            // The other line is included as context, unmarked.
+            assert!(diff.contains("  1 | other-package==0.1.0"), "got: {diff}");
+
+            let on_disk = std::fs::read_to_string(manifest.path()).unwrap();
+            assert_eq!(on_disk, "other-package==0.1.0\ndbt-core==1.2.3\n");
+        }
+
+        #[test]
+        fn diff_orders_multiple_replacements_by_file_position() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(
+                tmp.path(),
+                "pyproject.toml",
+                "[tool.poetry.dependencies]\ndbt-core = \"^1.2.3\"\n\n[tool.poetry.group.test.dependencies]\ndbt-core = \"^1.2.3\"\n",
+            );
+            let replacements = manifest
+                .get_version_replacement(&spec(PackageVersion::Compatible("1.5.0".into())))
+                .unwrap()
+                .expect("dbt-core is declared");
+
+            let diff = diff_to_string(&replacements, &manifest);
+            assert!(diff.contains("- 2 | dbt-core"), "got: {diff}");
+            assert!(diff.contains("- 5 | dbt-core"), "got: {diff}");
+
+            let first = diff.find("- 2 | dbt-core").unwrap();
+            let second = diff.find("- 5 | dbt-core").unwrap();
+            assert!(first < second, "expected line 2 before line 5: {diff}");
+        }
+
+        #[test]
+        fn diff_strips_carriage_returns_from_crlf_line_endings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(
+                tmp.path(),
+                "requirements.txt",
+                "other-package==0.1.0\r\ndbt-core==1.2.3\r\nthird-package==3.0.0\r\n",
+            );
+            let replacements = manifest
+                .get_version_replacement(&spec(PackageVersion::Exact("1.5.0".into())))
+                .unwrap()
+                .expect("dbt-core is declared");
+
+            let diff = diff_to_string(&replacements, &manifest);
+            assert!(!diff.contains('\r'), "got: {diff:?}");
+            assert!(diff.contains("- 2 | dbt-core==1.2.3\n"), "got: {diff:?}");
+            assert!(diff.contains("+ 2 | dbt-core==1.5.0\n"), "got: {diff:?}");
+            assert!(
+                diff.contains("  1 | other-package==0.1.0\n"),
+                "got: {diff:?}"
+            );
+            assert!(
+                diff.contains("  3 | third-package==3.0.0\n"),
+                "got: {diff:?}"
+            );
+        }
+
+        #[test]
+        fn diff_rejects_a_replacement_spanning_more_than_one_line() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(
+                tmp.path(),
+                "requirements.txt",
+                "dbt-core==1.2.3\nother-package==0.1.0\n",
+            );
+            let replacements = ManifestReplacements {
+                replacements: vec![ManifestReplacement {
+                    range_replace: Range { start: 9, end: 25 },
+                    replacement: "1.5.0".into(),
+                }],
+                source_checksum: manifest.checksum_sha256,
+            };
+
+            let err = diff_err(&replacements, &manifest);
+            assert_eq!(err.code, ErrorCode::Unexpected);
+            assert!(
+                err.context.contains("does not fall within a single line"),
+                "got: {}",
+                err.context
+            );
+        }
+
+        #[test]
+        fn diff_rejects_a_replacement_starting_past_the_last_line() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(tmp.path(), "requirements.txt", "dbt-core==1.2.3\n");
+            let replacements = ManifestReplacements {
+                replacements: vec![ManifestReplacement {
+                    range_replace: Range { start: 16, end: 16 },
+                    replacement: "other-package==0.1.0\n".into(),
+                }],
+                source_checksum: manifest.checksum_sha256,
+            };
+
+            let err = diff_err(&replacements, &manifest);
+            assert_eq!(err.code, ErrorCode::Unexpected);
+            assert!(
+                err.context.contains("does not fall within a single line"),
+                "got: {}",
+                err.context
+            );
+        }
+
+        #[test]
+        fn diff_renders_nearby_replacements_as_one_hunk() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(
+                tmp.path(),
+                "requirements.txt",
+                "alpha==0.1.0\ndbt-core==1.2.3\nmiddle==0.0.1\ndbt-core==1.2.3\nomega==9.9.9\n",
+            );
+            let replacements = manifest
+                .get_version_replacement(&spec(PackageVersion::Exact("1.5.0".into())))
+                .unwrap()
+                .expect("dbt-core is declared");
+
+            let diff = diff_to_string(&replacements, &manifest);
+            for expected in [
+                "  1 | alpha==0.1.0\n",
+                "- 2 | dbt-core==1.2.3\n",
+                "+ 2 | dbt-core==1.5.0\n",
+                "  3 | middle==0.0.1\n",
+                "- 4 | dbt-core==1.2.3\n",
+                "+ 4 | dbt-core==1.5.0\n",
+                "  5 | omega==9.9.9\n",
+            ] {
+                assert_eq!(
+                    diff.matches(expected).count(),
+                    1,
+                    "expected {expected:?} exactly once, got: {diff}"
+                );
+            }
+            // Neither changed line may also appear as unmarked context.
+            assert!(!diff.contains("  2 | "), "got: {diff}");
+            assert!(!diff.contains("  4 | "), "got: {diff}");
+            // A single hunk, so no blank-line separator.
+            assert!(!diff.contains("\n\n"), "got: {diff}");
+        }
+
+        #[test]
+        fn diff_combines_replacements_sharing_a_line_into_one_pair() {
+            let tmp = tempfile::tempdir().unwrap();
+            let manifest = manifest_with(
+                tmp.path(),
+                "requirements.txt",
+                "dbt-core==1.2.3 other-pkg==2.0.0\n",
+            );
+            // Given in reverse file order, to exercise `diff`'s sort.
+            let replacements = ManifestReplacements {
+                replacements: vec![
+                    ManifestReplacement {
+                        range_replace: Range { start: 27, end: 32 },
+                        replacement: "9.9.9".into(),
+                    },
+                    ManifestReplacement {
+                        range_replace: Range { start: 10, end: 15 },
+                        replacement: "1.10.0".into(),
+                    },
+                ],
+                source_checksum: manifest.checksum_sha256,
+            };
+
+            let diff = diff_to_string(&replacements, &manifest);
+            assert_eq!(
+                diff,
+                "- 1 | dbt-core==1.2.3 other-pkg==2.0.0\n\
+                 + 1 | dbt-core==1.10.0 other-pkg==9.9.9\n",
+                "got: {diff}"
+            );
         }
 
         #[test]

@@ -21,7 +21,7 @@ use super::event::{
 };
 use super::semantic::SemanticCategory;
 use super::serde::values_match;
-use super::validation::{SqlSanitizer, UuidSanitizer};
+use super::validation::{SqlSanitizer, TmpSuffixSanitizer, UuidSanitizer};
 use crate::AdapterType;
 use crate::sql::diff::compare_sql;
 
@@ -152,7 +152,31 @@ pub(crate) fn adapter_args_match_for_type(
                 |(rec_sql, act_sql)| compare_sql(rec_sql, act_sql, adapter_type).is_ok(),
             ),
         "submit_python_job" => python_job_args_match(recorded, actual),
+        "expand_target_column_types" => values_match(
+            &normalize_tmp_suffixes(recorded),
+            &normalize_tmp_suffixes(actual),
+        ),
         _ => values_match(recorded, actual),
+    }
+}
+
+/// Recursively normalize `__dbt_tmp<suffix>` substrings in every string value.
+///
+/// `expand_target_column_types`'s `from_relation`/`to_relation` kwargs embed the
+/// non-deterministic temp-relation suffix; normalize both sides like `TmpSuffixSanitizer`
+/// does for SQL text, or replay false-fails.
+fn normalize_tmp_suffixes(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(TmpSuffixSanitizer.sanitize(s)),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(normalize_tmp_suffixes).collect())
+        }
+        serde_json::Value::Object(obj) => serde_json::Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.clone(), normalize_tmp_suffixes(v)))
+                .collect(),
+        ),
+        other => other.clone(),
     }
 }
 

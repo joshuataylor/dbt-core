@@ -9,10 +9,10 @@ use serde_with::skip_serializing_none;
 use std::borrow::Cow;
 
 pub use crate::impls::node::{
-    AnyNodeOutcomeDetail, NodeEvent, get_cache_detail, get_freshness_detail,
-    get_node_outcome_detail, get_test_outcome, has_node_warning, is_statically_checked_test,
-    set_node_warning_outcome_no_warnings, set_node_warning_outcome_warned,
-    update_dbt_core_event_code_for_node_processed_end,
+    AnyNodeOutcomeDetail, NodeEvent, aggregated_test_unique_id, get_cache_detail,
+    get_freshness_detail, get_node_outcome_detail, get_test_outcome, has_node_warning,
+    is_aggregated_test, is_statically_checked_test, set_node_warning_outcome_no_warnings,
+    set_node_warning_outcome_warned, update_dbt_core_event_code_for_node_processed_end,
 };
 pub use crate::proto::v1::public::events::fusion::node::{
     NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType, NodeEvaluated,

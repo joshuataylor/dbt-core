@@ -391,11 +391,16 @@ struct ManagedTaskSpan<R, S> {
 /// ```
 ///
 /// ## Related task chain (used for aggregage node result reporting)
+///
+/// Nodes that share one aggregated query are nested under a grouping span of their own,
+/// so that span's close signals that the whole group has finished.
 /// ```text
 /// [visitor's current span]
 ///   └─ TuiAllProcessingNodesGroup (single span for all nodes)
 ///       ├─ NodeProcessed (unique_id=model.x, last_phase=Run) [Info]
-///       ├─ NodeProcessed (unique_id=test.y, last_phase=Run) [Info]
+///       ├─ TuiAggregatedTestGroup (macro_name=unique, attached_node=model.x) [Info]
+///       │   ├─ NodeProcessed (unique_id=test.y, last_phase=Run) [Info]
+///       │   └─ NodeProcessed (unique_id=test.z, last_phase=Run) [Info]
 ///       └─ ...
 /// ```
 ///
@@ -947,7 +952,10 @@ impl<R, S> SpanManager<R, S> {
 mod tests {
     use std::{
         collections::{HashMap, HashSet},
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     use dbt_telemetry::GenericOpExecuted;
@@ -1026,6 +1034,38 @@ mod tests {
                         None,
                         Some(Box::new(|_, _, _| true)),
                         Some(Box::new(|_, _, _| true)),
+                    )
+                }),
+            )
+            .expect("parent span builder should register");
+    }
+
+    /// Registers a parent span that closes only once `expected_children` of its direct
+    /// children have closed, mirroring the counting parents built in `task_spans`.
+    fn register_counting_parent(
+        span_manager: &SpanManager<(), ()>,
+        key: &'static str,
+        parent_key: Option<&'static str>,
+        expected_children: u64,
+    ) {
+        let close_counter = Arc::new(AtomicU64::new(0));
+
+        span_manager
+            .register_parent_span_builder(
+                key.to_string(),
+                parent_key.map(|key| ParentSpanRef::new(SpanLevel::Info, key.into())),
+                Box::new(move || {
+                    let skip_counter = close_counter.clone();
+
+                    ParentSpanBuilder::new(
+                        attrs(key),
+                        None,
+                        Some(Box::new(move |_, _, _| {
+                            close_counter.fetch_add(1, Ordering::AcqRel) + 1 == expected_children
+                        })),
+                        Some(Box::new(move |_, _, _| {
+                            skip_counter.fetch_add(1, Ordering::AcqRel) + 1 == expected_children
+                        })),
                     )
                 }),
             )
@@ -1145,6 +1185,98 @@ mod tests {
                 "related_leaf",
                 "related_mid",
                 "related_root",
+            ]
+        );
+    }
+
+    #[test]
+    fn node_group_closes_once_after_a_nested_aggregated_group() {
+        // Mirrors the shape `task_spans::populate_span_manager` registers for one
+        // ungrouped node plus one aggregated group of two members:
+        //
+        // all_nodes
+        //   ├─ np_plain
+        //   └─ agg_group
+        //        ├─ np_member_a
+        //        └─ np_member_b
+        //
+        // A parent's close counter is bumped once per closing *direct child*, so
+        // `all_nodes` expects one child per group, not one per member node. Counting
+        // members instead leaves it permanently short: it never closes, its end-of-run
+        // callbacks never fire, and nothing errors out.
+        const ALL_NODES_DIRECT_CHILDREN: u64 = 2;
+
+        let recorder = CloseRecorder::default();
+        let subscriber = tracing_subscriber::registry().with(recorder.clone());
+
+        let closed_while_running = tracing::subscriber::with_default(subscriber, || {
+            let root_span = tracing::info_span!("root");
+            let _root_scope = root_span.enter();
+
+            let span_manager = SpanManager::<(), ()>::new_empty();
+
+            register_counting_parent(&span_manager, "phase", None, 3);
+            register_counting_parent(&span_manager, "all_nodes", None, ALL_NODES_DIRECT_CHILDREN);
+            register_counting_parent(&span_manager, "agg_group", Some("all_nodes"), 2);
+            register_counting_parent(&span_manager, "np_plain", Some("all_nodes"), 1);
+            register_counting_parent(&span_manager, "np_member_a", Some("agg_group"), 1);
+            register_counting_parent(&span_manager, "np_member_b", Some("agg_group"), 1);
+
+            // One task span per node, shaped like `create_task_span_for_node`: parented by
+            // the phase span and merely following from the node's own grouping span.
+            let task_spans = ["np_plain", "np_member_a", "np_member_b"].map(|node_key| {
+                let mut builder =
+                    SpanTreeRequest::builder(SpanLevel::Debug, attrs(node_key), None, None);
+                builder.with_parent(SpanLevel::Info, "phase");
+                builder.add_related_span(SpanLevel::Info, node_key);
+
+                span_manager
+                    .get_task_span(builder.build())
+                    .expect("task span should be created")
+            });
+
+            for label in [
+                "all_nodes",
+                "agg_group",
+                "np_plain",
+                "np_member_a",
+                "np_member_b",
+            ] {
+                label_parent(&span_manager, &recorder, label);
+            }
+
+            for task_span in task_spans {
+                span_manager.handle_task_finished(task_span, &());
+            }
+
+            // Snapshot before the span manager is dropped. A parent whose counter never
+            // reaches its total is still closed by that drop, in the same relative order,
+            // so only a snapshot taken here proves it closed because its children did.
+            recorder.closed()
+        });
+
+        let expected_labels = HashSet::from([
+            "all_nodes",
+            "agg_group",
+            "np_plain",
+            "np_member_a",
+            "np_member_b",
+        ]);
+        let actual = closed_while_running
+            .into_iter()
+            .filter(|label| expected_labels.contains(label))
+            .collect::<Vec<_>>();
+
+        // Every span closes exactly once, members before their group and the group
+        // before the outer node group.
+        assert_eq!(
+            actual,
+            vec![
+                "np_plain",
+                "np_member_a",
+                "np_member_b",
+                "agg_group",
+                "all_nodes",
             ]
         );
     }

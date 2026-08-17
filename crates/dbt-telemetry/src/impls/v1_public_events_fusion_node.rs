@@ -250,6 +250,20 @@ pub fn is_statically_checked_test(node: NodeEvent<'_>) -> bool {
     test_detail.statically_checked.unwrap_or(false)
 }
 
+/// Returns true if a test ran as part of an aggregated generic-test query.
+pub fn is_aggregated_test(node: NodeEvent<'_>) -> bool {
+    aggregated_test_unique_id(node).is_some()
+}
+
+/// Returns the unique_id of the aggregated test node whose query produced this result, if any.
+pub fn aggregated_test_unique_id(node: NodeEvent<'_>) -> Option<&str> {
+    let Some(AnyNodeOutcomeDetail::NodeTestDetail(test_detail)) = get_node_outcome_detail(node)
+    else {
+        return None;
+    };
+    test_detail.aggregation_unique_id.as_deref()
+}
+
 /// Extract cache detail from node details if available
 pub fn get_cache_detail(node: NodeEvent<'_>) -> Option<&'_ NodeCacheDetail> {
     get_node_outcome_detail(node).and_then(|detail| {

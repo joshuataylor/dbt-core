@@ -2788,6 +2788,11 @@ impl CommonArgs {
 
         options
     }
+
+    /// True when replaying a prior recorded dbt run via `--dbt-replay`, since those recordings predate fusion-only warnings.
+    pub fn skip_fusion_only_upgrades(&self) -> bool {
+        self.dbt_replay.is_some()
+    }
 }
 
 /// Generate shell completion scripts

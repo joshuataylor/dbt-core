@@ -3,7 +3,7 @@ use dbt_telemetry::{
     AnyNodeOutcomeDetail, CompiledCode, CompiledCodeInline, ExecutionPhase, NodeEvaluated,
     NodeEvent, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason, NodeType,
     SourceFreshnessOutcome, TestOutcome, get_cache_detail, get_freshness_detail,
-    get_node_outcome_detail, get_test_outcome, has_node_warning, is_aggregated_test,
+    get_node_outcome_detail, get_test_outcome, has_node_warning, is_batched_test,
     is_statically_checked_test,
 };
 
@@ -168,7 +168,7 @@ fn format_node_description(node: &NodeProcessed) -> Option<String> {
         return Some("Statically checked".to_string());
     }
 
-    let aggregated = is_aggregated_test(node.into());
+    let aggregated = is_batched_test(node.into());
 
     if matches!(node_type, NodeType::Test | NodeType::UnitTest)
         && get_test_outcome(node.into()) != Some(TestOutcome::Passed)
@@ -176,13 +176,13 @@ fn format_node_description(node: &NodeProcessed) -> Option<String> {
         let location = format_test_source_location(node);
 
         return Some(if aggregated {
-            format!("Aggregated - {location}")
+            format!("Batched - {location}")
         } else {
             location
         });
     }
 
-    aggregated.then(|| "Aggregated".to_string())
+    aggregated.then(|| "Batched".to_string())
 }
 
 /// Formats the node outcome as a status string, optionally colorized.
@@ -631,7 +631,7 @@ pub fn format_skipped_test_group(
 /// Format the header line of an aggregated generic-test group
 ///
 /// Returns formatted string in the pattern:
-/// `{worst_action} [{duration}] test {macro_name} on {model_name} ({member_count} aggregated)`
+/// `{worst_action} [{duration}] test {macro_name} on {model_name} ({member_count} batched)`
 pub fn format_aggregated_test_group_header(
     macro_name: &str,
     attached_node: &str,
@@ -665,7 +665,7 @@ pub fn format_aggregated_test_group_header(
         duration_formatted,
         format_node_type_fixed_width(NodeType::Test.as_static_ref(), colorize),
         format_qualifier_alias("", &label, colorize),
-        format_materialization_suffix(None, Some(&format!("{member_count} aggregated")))
+        format_materialization_suffix(None, Some(&format!("{member_count} batched")))
     )
 }
 
@@ -801,8 +801,8 @@ mod tests {
         node_processed::NodeOutcomeDetail as ProcessedDetail,
     };
 
-    /// Stand-in for the aggregated test node's unique_id that members are stamped with.
-    const AGGREGATION_UNIQUE_ID: &str = "test.project.aggregated_accepted_values_orders";
+    /// Stand-in for the batch's synthetic test node unique_id that members are stamped with.
+    const BATCH_UNIQUE_ID: &str = "test.project.aggregated_accepted_values_orders";
 
     fn cached_warned_test_processed() -> NodeProcessed {
         let mut node = NodeProcessed::start(
@@ -834,7 +834,7 @@ mod tests {
         outcome: TestOutcome,
         failures: i32,
         statically_checked: Option<bool>,
-        aggregation_unique_id: Option<&str>,
+        batch_unique_id: Option<&str>,
     ) -> NodeProcessed {
         let mut node = NodeProcessed::start(
             "test.project.accepted_values_orders_is_today_order__True".to_string(),
@@ -861,7 +861,7 @@ mod tests {
                 None,
                 None,
                 statically_checked,
-                aggregation_unique_id.map(str::to_string),
+                batch_unique_id.map(str::to_string),
             )));
         node
     }
@@ -927,7 +927,7 @@ mod tests {
         assert!(output.contains("Passed"));
         assert!(!output.contains("[-------]"));
         assert!(!output.contains("Statically checked"));
-        assert!(!output.contains("Aggregated"));
+        assert!(!output.contains("Batched"));
     }
 
     // `format_node_processed_end` feeds `logs/dbt.log` and `--log-format json`, which stay
@@ -935,13 +935,13 @@ mod tests {
     #[test]
     fn aggregated_passed_test_processed_shows_flat_marker_for_log_sinks() {
         let output = format_node_processed_end(
-            &test_processed(TestOutcome::Passed, 0, None, Some(AGGREGATION_UNIQUE_ID)),
+            &test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID)),
             std::time::Duration::from_millis(250),
             false,
         );
 
         assert!(output.contains("Passed"));
-        assert!(output.contains("(Aggregated)"));
+        assert!(output.contains("(Batched)"));
         // An aggregated group does issue a query, so the duration must survive.
         assert!(!output.contains("[-------]"));
     }
@@ -949,13 +949,13 @@ mod tests {
     #[test]
     fn aggregated_failed_test_processed_shows_flat_marker_and_location_for_log_sinks() {
         let output = format_node_processed_end(
-            &test_processed(TestOutcome::Failed, 3, None, Some(AGGREGATION_UNIQUE_ID)),
+            &test_processed(TestOutcome::Failed, 3, None, Some(BATCH_UNIQUE_ID)),
             std::time::Duration::from_millis(250),
             false,
         );
 
         assert!(output.contains("Failed"));
-        assert!(output.contains("(Aggregated - models/marts/orders.yml:37:13)"));
+        assert!(output.contains("(Batched - models/marts/orders.yml:37:13)"));
     }
 
     #[test]
@@ -968,7 +968,7 @@ mod tests {
 
         assert!(output.contains("Failed"));
         assert!(output.contains("(models/marts/orders.yml:37:13)"));
-        assert!(!output.contains("Aggregated"));
+        assert!(!output.contains("Batched"));
     }
 
     #[test]
@@ -984,7 +984,7 @@ mod tests {
 
         assert!(output.contains("Failed"));
         assert!(output.contains("unique on unproven_unique"));
-        assert!(output.contains("(2 aggregated)"));
+        assert!(output.contains("(2 batched)"));
     }
 
     #[test]
@@ -1034,7 +1034,7 @@ mod tests {
     #[test]
     fn aggregated_group_member_passed_has_no_bracket_and_no_marker() {
         let output = format_aggregated_test_group_member(
-            &test_processed(TestOutcome::Passed, 0, None, Some(AGGREGATION_UNIQUE_ID)),
+            &test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID)),
             false,
             false,
         );
@@ -1048,7 +1048,7 @@ mod tests {
     #[test]
     fn aggregated_group_member_failed_keeps_source_location() {
         let output = format_aggregated_test_group_member(
-            &test_processed(TestOutcome::Failed, 3, None, Some(AGGREGATION_UNIQUE_ID)),
+            &test_processed(TestOutcome::Failed, 3, None, Some(BATCH_UNIQUE_ID)),
             true,
             false,
         );
@@ -1068,11 +1068,10 @@ mod tests {
             line[..byte].chars().count()
         };
 
-        let passed = test_processed(TestOutcome::Passed, 0, None, Some(AGGREGATION_UNIQUE_ID));
+        let passed = test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID));
         // A cancelled member renders the longest reachable action label ("Cancelled"),
         // the case that legitimately shifts its own node type column.
-        let mut cancelled =
-            test_processed(TestOutcome::Passed, 0, None, Some(AGGREGATION_UNIQUE_ID));
+        let mut cancelled = test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID));
         cancelled.set_node_outcome(NodeOutcome::Canceled);
         assert!(
             format_aggregated_test_group_member(&cancelled, false, false).contains("Cancelled")
@@ -1108,7 +1107,7 @@ mod tests {
 
     #[test]
     fn aggregated_group_member_last_differs_only_by_connector() {
-        let node = test_processed(TestOutcome::Passed, 0, None, Some(AGGREGATION_UNIQUE_ID));
+        let node = test_processed(TestOutcome::Passed, 0, None, Some(BATCH_UNIQUE_ID));
         let non_last = format_aggregated_test_group_member(&node, false, false);
         let last = format_aggregated_test_group_member(&node, true, false);
 

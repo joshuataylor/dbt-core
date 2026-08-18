@@ -962,8 +962,8 @@ pub struct TestArgs {
     #[clap(flatten)]
     pub common_args: CommonArgs,
 
-    /// Aggregate compatible generic tests.
-    #[arg(long, hide = true)]
+    /// Batch compatible generic tests.
+    #[arg(long = "batch-tests", hide = true)]
     pub aggregate_tests: bool,
 
     /// Select nodes of a specific type;
@@ -1054,8 +1054,8 @@ pub struct BuildArgs {
     #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
     pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 
-    /// Aggregate compatible generic tests.
-    #[arg(long, hide = true)]
+    /// Batch compatible generic tests.
+    #[arg(long = "batch-tests", hide = true)]
     pub aggregate_tests: bool,
 
     /// Skip data tests that are proven redundant.

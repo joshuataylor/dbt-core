@@ -399,7 +399,7 @@ fn format_test_optimization_section(
     // they are inconsistent and reporting a saving would be misleading.
     if totals.aggregated_tests > 0 && totals.aggregated_queries > 0 {
         body.push(format!(
-            "{} aggregated (reduced to {})",
+            "{} batched (reduced to {})",
             count_text(totals.aggregated_tests, "test", "tests"),
             count_text(totals.aggregated_queries, "query", "queries"),
         ));
@@ -540,14 +540,14 @@ mod tests {
         let lines = section(3, 0, 0).expect("section should be present");
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[1], "3 tests statically checked (0 queries)");
-        assert!(!lines.iter().any(|line| line.contains("aggregated")));
+        assert!(!lines.iter().any(|line| line.contains("batched")));
     }
 
     #[test]
     fn test_optimization_section_aggregated_only() {
         let lines = section(0, 8, 4).expect("section should be present");
         assert_eq!(lines.len(), 2);
-        assert_eq!(lines[1], "8 tests aggregated (reduced to 4 queries)");
+        assert_eq!(lines[1], "8 tests batched (reduced to 4 queries)");
         assert!(!lines.iter().any(|line| line.contains("statically")));
     }
 
@@ -556,14 +556,14 @@ mod tests {
         let lines = section(4, 4, 2).expect("section should be present");
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[1], "4 tests statically checked (0 queries)");
-        assert_eq!(lines[2], "4 tests aggregated (reduced to 2 queries)");
+        assert_eq!(lines[2], "4 tests batched (reduced to 2 queries)");
     }
 
     #[test]
     fn test_optimization_section_singular_counts() {
         let lines = section(1, 2, 1).expect("section should be present");
         assert_eq!(lines[1], "1 test statically checked (0 queries)");
-        assert_eq!(lines[2], "2 tests aggregated (reduced to 1 query)");
+        assert_eq!(lines[2], "2 tests batched (reduced to 1 query)");
     }
 
     #[test]

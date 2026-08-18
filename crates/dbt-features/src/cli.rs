@@ -312,6 +312,16 @@ pub trait CliExtensionHooks: Send + Sync {
         None
     }
 
+    /// Returns a checker for verifying that the catalogs a project declares
+    /// are reachable from an alt/remote compute target, for use during `dbt
+    /// debug`. Returning `None` (the default) means this build has no such
+    /// check available.
+    fn alt_catalog_attach_checker(
+        &self,
+    ) -> Option<Arc<dyn dbt_tasks_core::alt_catalog_attach::AltCatalogAttachChecker>> {
+        None
+    }
+
     /// Called after tasks have been scheduled and run, but before manifest
     /// update and further phases.
     ///

@@ -295,6 +295,8 @@ impl<'a> CompilationPhasesExecutor<'a> {
         if let FsCommand::Debug | FsCommand::Init = self.arg.command {
             let mut debug_args = DebugArgs::from_eval_args(self.arg.as_ref());
             debug_args.alt_propagation_checker = feature_stack.cli.hooks.alt_propagation_checker();
+            debug_args.alt_catalog_attach_checker =
+                feature_stack.cli.hooks.alt_catalog_attach_checker();
             compilation_pipeline::loaded_project::debug(&loaded_project, debug_args, &self.token)
                 .await?;
             self.token.check_cancellation()?;

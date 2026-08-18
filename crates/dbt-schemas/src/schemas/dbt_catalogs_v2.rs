@@ -140,6 +140,32 @@ const LINKED_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
     FieldSpec::u32_plain("iceberg_version").doc("Iceberg spec version, e.g. 3 for Iceberg V3."),
 ];
 
+// Direct AWS creds for the Alt (dbt Compute) backend, which signs Glue's
+// Iceberg REST endpoint itself (SigV4) server-side rather than attaching via
+// a local DuckDB secret -- so it needs the raw credential fields, not a
+// `secret`/`endpoint_type` reference like DUCKDB_ICEBERG_FIELDS.
+const GLUE_ALT_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_id")
+        .required()
+        .non_empty()
+        .doc("Glue catalog identifier passed to ATTACH. Accepted forms: a 12-digit AWS account ID, ':' for the caller's own account, 'catalog1/catalog2', or '<account_id>:catalog1/catalog2'."),
+    FieldSpec::string("region")
+        .required()
+        .non_empty()
+        .doc("AWS region of the Glue catalog. Determines the REST endpoint and SigV4 signing region."),
+    FieldSpec::string("access_key_id")
+        .required()
+        .non_empty()
+        .doc("AWS access key ID."),
+    FieldSpec::string("secret_access_key")
+        .required()
+        .non_empty()
+        .doc("AWS secret access key."),
+    FieldSpec::string("session_token")
+        .non_empty()
+        .doc("AWS session token; only for temporary/STS credentials."),
+];
+
 const DUCKDB_ICEBERG_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("endpoint")
         .non_empty()
@@ -271,7 +297,7 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
-            PlatformBlock::new("alt", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("alt", GLUE_ALT_FIELDS),
         ],
     },
     CatalogTypeSchema {

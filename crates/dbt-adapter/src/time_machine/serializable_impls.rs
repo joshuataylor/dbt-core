@@ -402,7 +402,7 @@ mod tests {
                 "comments": {"event_id": "A UUID for this event."},
                 "persist": true
             },
-            "column_tags": {"tags": {"event_id": {"sensitivity": "internal"}}},
+            "column_tags": {"set_column_tags": {"event_id": {"sensitivity": "internal"}}},
             "comment": {"comment": "An event sent when a purchase occurs.", "persist": true},
             "tags": {
                 "set_tags": {
@@ -434,7 +434,7 @@ mod tests {
             (
                 RelationType::View,
                 serde_json::json!({
-                    "column_tags": {"tags": {"id": {"sensitivity": "internal"}}}
+                    "column_tags": {"set_column_tags": {"id": {"sensitivity": "internal"}}}
                 }),
             ),
             (

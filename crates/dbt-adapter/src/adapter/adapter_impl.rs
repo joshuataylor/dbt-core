@@ -2115,6 +2115,33 @@ impl AdapterImpl {
         }
     }
 
+    /// is_cluster_http_path https://github.com/databricks/dbt-databricks/blob/34642904170066825cd4f02a4c5f9b2c3d2d547c/dbt/adapters/databricks/utils.py
+    fn is_cluster_http_path(config: &AdapterConfig) -> Option<bool> {
+        let http_path = config.get_string("http_path")?;
+        let normalized = http_path.trim().to_ascii_lowercase();
+
+        Some(if normalized.contains("/warehouses/") {
+            false
+        } else {
+            normalized.contains("/protocolv1/")
+        })
+    }
+
+    /// Parse has no connection to read the DBR version from, so only a config
+    /// that positively identifies a SQL warehouse can answer true.
+    ///
+    /// https://github.com/databricks/dbt-databricks/blob/34642904170066825cd4f02a4c5f9b2c3d2d547c/dbt/adapters/databricks/impl.py#L306-L315
+    pub(crate) fn parse_has_dbr_capability(config: &AdapterConfig, capability_name: &str) -> bool {
+        let Ok(capability) = dbr_capabilities::DbrCapability::from_str(capability_name) else {
+            return false;
+        };
+        let Some(is_cluster) = Self::is_cluster_http_path(config) else {
+            return false;
+        };
+
+        dbr_capabilities::has_capability(capability, EngineVersion::Unset, !is_cluster)
+    }
+
     /// Determine if the current Databricks connection points to a classic
     /// cluster (as opposed to a SQL warehouse).
     ///
@@ -2127,25 +2154,12 @@ impl AdapterImpl {
             ));
         }
 
-        let http_path = self
-            .engine()
-            .get_config()
-            .get_string("http_path")
-            .ok_or_else(|| {
-                AdapterError::new(
-                    AdapterErrorKind::Configuration,
-                    "http_path is required to determine Databricks compute type",
-                )
-            })?;
-
-        let normalized = http_path.trim().to_ascii_lowercase();
-        if normalized.contains("/warehouses/") {
-            return Ok(false);
-        }
-        if normalized.contains("/protocolv1/") {
-            return Ok(true);
-        }
-        Ok(false)
+        Self::is_cluster_http_path(self.engine().get_config()).ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Configuration,
+                "http_path is required to determine Databricks compute type",
+            )
+        })
     }
 
     pub fn has_feature(
@@ -6659,6 +6673,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result, Some(true));
+    }
+
+    fn databricks_config(pairs: &[(&str, &str)]) -> AdapterConfig {
+        AdapterConfig::new(Mapping::from_iter(
+            pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())),
+        ))
+    }
+
+    #[test]
+    fn test_is_cluster_http_path() {
+        let is_cluster = |http_path: &str| {
+            AdapterImpl::is_cluster_http_path(&databricks_config(&[("http_path", http_path)]))
+        };
+
+        assert_eq!(is_cluster("/sql/1.0/warehouses/abc"), Some(false));
+        assert_eq!(is_cluster("sql/protocolv1/o/1/0101-abc"), Some(true));
+        assert_eq!(is_cluster("/custom"), Some(false));
+        assert_eq!(is_cluster("  /SQL/1.0/WAREHOUSES/abc  "), Some(false));
+
+        assert_eq!(
+            AdapterImpl::is_cluster_http_path(&databricks_config(&[])),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_has_dbr_capability() {
+        let warehouse = databricks_config(&[("http_path", "/sql/1.0/warehouses/abc")]);
+        let cluster = databricks_config(&[("http_path", "sql/protocolv1/o/1/0101-abc")]);
+
+        assert!(AdapterImpl::parse_has_dbr_capability(
+            &warehouse,
+            "timestampdiff"
+        ));
+        assert!(!AdapterImpl::parse_has_dbr_capability(
+            &cluster,
+            "timestampdiff"
+        ));
+
+        // `streaming_table_json_metadata` is the one capability warehouses do
+        // not support, so this fails if the capability is never consulted.
+        assert!(!AdapterImpl::parse_has_dbr_capability(
+            &warehouse,
+            "streaming_table_json_metadata"
+        ));
+
+        assert!(!AdapterImpl::parse_has_dbr_capability(
+            &warehouse,
+            "not_a_capability"
+        ));
+        assert!(!AdapterImpl::parse_has_dbr_capability(
+            &databricks_config(&[]),
+            "timestampdiff"
+        ));
     }
 
     fn record_batch_with_string_column(name: &str, values: Vec<&str>) -> Arc<RecordBatch> {

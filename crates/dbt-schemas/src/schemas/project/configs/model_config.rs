@@ -395,9 +395,9 @@ pub struct ProjectModelConfig {
     pub partitions: Option<PartitionsConfig>,
     #[serde(rename = "+persist_docs")]
     pub persist_docs: Option<PersistDocsConfig>,
-    #[serde(rename = "+post-hook")]
+    #[serde(rename = "+post-hook", alias = "+post_hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
-    #[serde(rename = "+pre-hook")]
+    #[serde(rename = "+pre-hook", alias = "+pre_hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
     #[serde(rename = "+predicates")]
     pub predicates: Option<Vec<String>>,
@@ -786,7 +786,9 @@ pub struct ModelConfig {
     pub lookback: Option<i32>,
     pub begin: Option<String>,
     pub persist_docs: Option<PersistDocsConfig>,
+    #[serde(alias = "post-hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
+    #[serde(alias = "pre-hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
     #[resolved(promote, expect = "apply_package_defaults guarantees quoting is set")]
     pub quoting: Option<DbtQuoting>,

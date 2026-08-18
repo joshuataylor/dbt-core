@@ -87,9 +87,9 @@ pub struct ProjectSnapshotConfig {
     pub full_refresh: Option<bool>,
     #[serde(rename = "+tags")]
     pub tags: Option<StringOrArrayOfStrings>,
-    #[serde(rename = "+pre-hook")]
+    #[serde(rename = "+pre-hook", alias = "+pre_hook")]
     pub pre_hook: Verbatim<Option<Hooks>>,
-    #[serde(rename = "+post-hook")]
+    #[serde(rename = "+post-hook", alias = "+post_hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
     #[serde(rename = "+persist_docs")]
     pub persist_docs: Option<PersistDocsConfig>,

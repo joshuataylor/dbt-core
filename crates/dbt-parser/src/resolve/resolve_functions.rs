@@ -454,6 +454,8 @@ pub async fn resolve_functions(
                 entry_point: model_config.entry_point.clone(),
                 packages: model_config.packages.clone(),
                 snowflake: model_config.snowflake.clone(),
+                pre_hook: model_config.pre_hook.clone(),
+                post_hook: model_config.post_hook.clone(),
                 ..Default::default()
             },
             __other__: BTreeMap::new(),

@@ -748,7 +748,13 @@ pub async fn resolve_data_tests(
         };
 
         let components = RelationComponents {
-            database: test_config.database.clone(),
+            database: if matches!(adapter_type, AdapterType::Databricks)
+                && test_config.__warehouse_specific_config__.catalog.is_some()
+            {
+                test_config.__warehouse_specific_config__.catalog.clone()
+            } else {
+                test_config.database.clone()
+            },
             schema: test_config.schema.clone(),
             // When test name was truncated (test_name != fqn_name), use the short form
             // for the alias (table name) per dbt-core convention. dbt-core uses:

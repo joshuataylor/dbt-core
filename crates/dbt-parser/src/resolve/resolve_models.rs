@@ -834,7 +834,13 @@ pub async fn resolve_models(
         };
 
         let components = RelationComponents {
-            database: model_config.database.clone().into_inner().unwrap_or(None),
+            database: if matches!(adapter_type, AdapterType::Databricks)
+                && model_config.__warehouse_specific_config__.catalog.is_some()
+            {
+                model_config.__warehouse_specific_config__.catalog.clone()
+            } else {
+                model_config.database.clone().into_inner().unwrap_or(None)
+            },
             schema: model_config.schema.clone().into_inner().unwrap_or(None),
             alias: model_config.alias.clone(),
             store_failures: None,

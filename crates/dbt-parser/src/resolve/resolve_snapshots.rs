@@ -583,6 +583,16 @@ pub async fn resolve_snapshots(
                 // For backwards compatibility with target_schema and target_database configs
                 database: if snapshot_config.target_database.is_some() {
                     snapshot_config.target_database.clone()
+                } else if matches!(adapter_type, AdapterType::Databricks)
+                    && snapshot_config
+                        .__warehouse_specific_config__
+                        .catalog
+                        .is_some()
+                {
+                    snapshot_config
+                        .__warehouse_specific_config__
+                        .catalog
+                        .clone()
                 } else {
                     snapshot_config.database.clone()
                 },

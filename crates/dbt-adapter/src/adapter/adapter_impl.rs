@@ -66,6 +66,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::common::{ClusterConfig, Constraint, ConstraintSupport, PartitionConfig};
 use dbt_schemas::schemas::common::{ConstraintType, normalize_quote};
+use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::manifest::BigqueryPartitionConfig;
 use dbt_schemas::schemas::profiles::DuckDBPathInfo;
@@ -4800,7 +4801,9 @@ impl AdapterImpl {
                     .get_value(&Value::from("use_managed_iceberg"))
                     .is_some_and(|flag| flag.is_true());
 
-                if use_managed_iceberg && catalog_relation.catalog_type != "unity" {
+                if use_managed_iceberg
+                    && !matches!(catalog_relation.catalog_type, CatalogType::Unity)
+                {
                     return Err(AdapterError::new(
                         AdapterErrorKind::Configuration,
                         "Managed Iceberg tables are only supported in Unity Catalog. Set 'use_uniform' adapter property to true for Hive Metastore.",

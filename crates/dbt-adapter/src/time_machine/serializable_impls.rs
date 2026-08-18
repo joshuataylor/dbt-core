@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 use dbt_schemas::schemas::relations::base::TableFormat;
 
 use crate::relation::{RelationConfig, RelationObject, do_create_relation};
@@ -257,7 +258,10 @@ impl TimeMachineSerializable for crate::catalog_relation::CatalogRelation {
             adapter_type,
             catalog_name: ext.opt_str("catalog_name"),
             integration_name: ext.opt_str("integration_name"),
-            catalog_type: ext.str_or("catalog_type", ""),
+            catalog_type: CatalogType::parse_from_str(
+                &ext.str_or("catalog_type", ""),
+                adapter_type,
+            ),
             table_format: if ext
                 .str_or("table_format", "")
                 .eq_ignore_ascii_case("iceberg")
@@ -580,7 +584,7 @@ mod tests {
             adapter_type: AdapterType::Snowflake,
             catalog_name: Some("my_catalog".to_string()),
             integration_name: Some("my_integration".to_string()),
-            catalog_type: "BUILT_IN".to_string(),
+            catalog_type: CatalogType::SnowflakeBuiltIn,
             table_format: TableFormat::Iceberg,
             adapter_properties: BTreeMap::from([("key1".to_string(), "value1".to_string())]),
             is_transient: Some(false),

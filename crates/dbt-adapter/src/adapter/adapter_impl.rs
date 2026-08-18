@@ -1168,14 +1168,8 @@ impl AdapterImpl {
 
         let last_batch = last_batch.expect("last_batch should never be None");
 
-        let rows_affected = last_batch.rows_affected(self.adapter_type());
-        let mut response = AdapterResponse::new()
-            .with_message(format!("SUCCESS {}", rows_affected))
-            .with_code("SUCCESS")
-            .with_rows_affected(rows_affected);
-        if let Some(query_id) = last_batch.query_id(self.adapter_type()) {
-            response = response.with_query_id(query_id);
-        }
+        let response = AdapterResponse::from_record_batch(&last_batch, self.adapter_type())
+            .with_connection_info(self.adapter_type(), engine.as_ref());
 
         // Deduplicate column names to match dbt-core's behavior, which renames
         // duplicate columns to `col_2`, `col_3`, etc.

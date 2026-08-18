@@ -30,6 +30,7 @@ use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::sidecar_client::SidecarClient;
 use crate::errors::adbc_error_to_adapter_error;
 use crate::record_batch::{RecordBatchExt, SchemaExt};
+use crate::response::query_id_from_record_batch;
 use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
@@ -476,7 +477,7 @@ pub(crate) fn adbc_execute_with_options(
         if let Some(attrs) = attrs.downcast_mut::<QueryExecuted>() {
             attrs.dbt_core_event_code = "E017".to_string();
             attrs.set_query_outcome(QueryOutcome::Success);
-            attrs.query_id = total_batch.query_id(adapter_type)
+            attrs.query_id = query_id_from_record_batch(&total_batch, adapter_type);
         }
     });
     log_step_duration("record_current_span_status_from_attrs", t_status.elapsed());

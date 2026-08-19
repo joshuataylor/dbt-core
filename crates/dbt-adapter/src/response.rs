@@ -214,6 +214,9 @@ pub(crate) fn query_id_from_record_batch(
 }
 
 fn rows_affected(batch: &RecordBatch, adapter_type: AdapterType) -> i64 {
+    if let Some(rows) = batch.meta_i64(crate::record_batch::ROWS_AFFECTED_META) {
+        return rows;
+    }
     if batch.num_rows() == 0 {
         return 0;
     }

@@ -20,6 +20,8 @@ pub(crate) const SNOWFLAKE_DML_COLUMNS: &[&str] = &[
     "number of rows deleted",
 ];
 
+pub(crate) const ROWS_AFFECTED_META: &str = "rows_affected";
+
 /// Information about a column that was renamed during disambiguation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenamedColumn<'a> {

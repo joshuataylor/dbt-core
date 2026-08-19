@@ -1728,13 +1728,20 @@ mod tests {
             assert!(replacements.is_none());
         }
 
+        /// Renders the diff with its coloring stripped. `diff` styles its
+        /// output through `console`, which decides whether to emit ANSI
+        /// escapes from the *process's* stdout, not from the sink it's handed
+        /// — so an identical buffer comes back plain under `cargo test |
+        /// tail` and escape-laden when the test runs attached to a terminal.
+        /// The assertions below are about the diff's text and layout, so drop
+        /// the styling rather than let a TTY decide whether they pass.
         fn diff_to_string(
             replacements: &ManifestReplacements,
             manifest: &PythonManifest,
         ) -> String {
             let mut buf = Vec::new();
             replacements.diff(manifest, &mut buf).unwrap();
-            String::from_utf8(buf).unwrap()
+            console::strip_ansi_codes(&String::from_utf8(buf).unwrap()).into_owned()
         }
 
         fn diff_err(

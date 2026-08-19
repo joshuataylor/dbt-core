@@ -19,6 +19,7 @@ run_script = { workspace = true }
 dbt-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-yaml = { workspace = true }
+
 dialoguer = { workspace = true }
 libc = { workspace = true }
 reqwest = { workspace = true }
@@ -29,6 +30,7 @@ tempfile = { workspace = true }
 toml_edit = { workspace = true }
 
 [dev-dependencies]
+console = { workspace = true }
 tokio = { workspace = true }
 
 [lib]

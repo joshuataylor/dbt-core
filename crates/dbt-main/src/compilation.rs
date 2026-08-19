@@ -280,6 +280,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             config,
             self.arg.local_execution_backend,
             !feature_stack.version_check_enabled,
+            feature_stack.cli.command_name,
         );
         self.token.check_cancellation()?;
 
@@ -2404,6 +2405,7 @@ fn spawn_version_check_if_possible(
     config: &CompilationConfig,
     compute_flag: dbt_common::io_args::LocalExecutionBackendKind,
     version_check_disabled: bool,
+    command_name: &'static str,
 ) -> Option<tokio::task::JoinHandle<Option<String>>> {
     if version_check_disabled {
         return None;
@@ -2418,7 +2420,8 @@ fn spawn_version_check_if_possible(
         let current_version = env!("CARGO_PKG_VERSION");
         if !disable_version_check {
             return Some(tokio::spawn(
-                version_check::check_version(current_version, None).in_current_span(),
+                version_check::check_version_and_build_hint(current_version, None, command_name)
+                    .in_current_span(),
             ));
         }
     }

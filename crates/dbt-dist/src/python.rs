@@ -31,6 +31,26 @@ pub enum PythonPackageManager {
     Rye,
 }
 
+impl PythonPackageManager {
+    /// Human-readable name for error/status messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pip => "pip",
+            Self::Pipx => "pipx",
+            Self::Uv => "uv",
+            Self::Poetry => "Poetry",
+            Self::Pdm => "PDM",
+            Self::Pipenv => "Pipenv",
+            Self::Hatch => "Hatch",
+            Self::Conda => "Conda",
+            Self::Asdf => "asdf",
+            Self::Mise => "mise",
+            Self::Pyenv => "pyenv",
+            Self::Rye => "Rye",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PackageVersion {
     /// Pin to this exact version.
@@ -1107,6 +1127,27 @@ mod tests {
         ];
         for (variant, expected) in cases {
             assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn label_covers_every_variant() {
+        let cases = [
+            (PythonPackageManager::Pip, "pip"),
+            (PythonPackageManager::Pipx, "pipx"),
+            (PythonPackageManager::Uv, "uv"),
+            (PythonPackageManager::Poetry, "Poetry"),
+            (PythonPackageManager::Pdm, "PDM"),
+            (PythonPackageManager::Pipenv, "Pipenv"),
+            (PythonPackageManager::Hatch, "Hatch"),
+            (PythonPackageManager::Conda, "Conda"),
+            (PythonPackageManager::Asdf, "asdf"),
+            (PythonPackageManager::Mise, "mise"),
+            (PythonPackageManager::Pyenv, "pyenv"),
+            (PythonPackageManager::Rye, "Rye"),
+        ];
+        for (variant, expected) in cases {
+            assert_eq!(variant.label(), expected);
         }
     }
 

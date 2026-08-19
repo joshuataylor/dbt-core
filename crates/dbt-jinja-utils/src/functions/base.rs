@@ -102,14 +102,7 @@ pub fn register_base_functions(env: &mut Environment, warn_error_options: WarnEr
     env.add_global("True", Value::from(true));
     env.add_global("False", Value::from(false));
 
-    // A plain global, like `dbt_version`, because trace_id is invariant for the whole
-    // invocation: safe to capture once here rather than read live, and this guarantees
-    // it's never missing from the returned value.
-    let trace_id = dbt_common::tracing::span_info::read_current_span_start_info(|info| {
-        format!("{:032x}", info.trace_id)
-    })
-    .unwrap_or_else(|| "0".repeat(32));
-    env.add_global("otel_trace_id", Value::from(trace_id));
+    env.add_function("otel_trace_id", otel_trace_id_fn());
     env.add_func_func("otel_span_id", otel_span_id);
     env.add_func_func("fromjson", fromjson);
     env.add_func_func("tojson", tojson);
@@ -350,6 +343,27 @@ pub fn env_var(
         state,
         args,
     )
+}
+
+/// Builds the `otel_trace_id()` Jinja function. Must be a callable, not a
+/// plain global, to match how dbt Core v1 exposes it. Captures the trace id
+/// once (unlike `otel_span_id()`, which re-reads live since span id does
+/// change within an invocation).
+pub fn otel_trace_id_fn() -> impl Fn(&[Value], Kwargs) -> Result<Value, Error> {
+    let trace_id = dbt_common::tracing::span_info::read_current_span_start_info(|info| {
+        format!("{:032x}", info.trace_id)
+    });
+    let trace_id = Value::from(trace_id.unwrap_or_else(|| "0".repeat(32)));
+
+    move |args: &[Value], _kwargs: Kwargs| -> Result<Value, Error> {
+        if !args.is_empty() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "otel_trace_id() takes no arguments",
+            ));
+        }
+        Ok(trace_id.clone())
+    }
 }
 
 /// Returns the current span's OTEL id (16-char hex).
@@ -1615,7 +1629,7 @@ mod tests {
             register_base_functions(&mut env, WarnErrorOptions::default());
 
             let tmpl = env
-                .template_from_str("{{ otel_trace_id }}|{{ otel_span_id()|length }}")
+                .template_from_str("{{ otel_trace_id() }}|{{ otel_span_id()|length }}")
                 .unwrap();
             let output = tmpl.render(Value::UNDEFINED, &[]).unwrap();
             assert_eq!(output, format!("{trace_id:032x}|16"));
@@ -1624,9 +1638,6 @@ mod tests {
 
     #[test]
     fn otel_trace_id_is_captured_once_and_does_not_track_later_spans() {
-        // otel_trace_id is captured at registration time (not read live per
-        // call like otel_span_id()), so it must keep returning the id of the
-        // span active when the env was built, even after that span is gone.
         use dbt_tracing::emit::create_debug_span;
         use dbt_tracing::test_support::mocks::{MockDynSpanEvent, test_data_layer};
         use tracing::level_filters::LevelFilter;
@@ -1652,7 +1663,7 @@ mod tests {
             register_base_functions(&mut env, WarnErrorOptions::default());
         });
 
-        // A later, unrelated trace is active now; otel_trace_id must still
+        // A later, unrelated trace is active now; otel_trace_id() must still
         // report the one captured above, not this one.
         let other_subscriber = dbt_tracing::init::create_tracing_subcriber_with_layer(
             LevelFilter::TRACE,
@@ -1665,7 +1676,7 @@ mod tests {
             let span = create_debug_span(MockDynSpanEvent::default());
             let _guard = span.enter();
 
-            let tmpl = env.template_from_str("{{ otel_trace_id }}").unwrap();
+            let tmpl = env.template_from_str("{{ otel_trace_id() }}").unwrap();
             let output = tmpl.render(Value::UNDEFINED, &[]).unwrap();
             assert_eq!(output, format!("{registered_trace_id:032x}"));
         });

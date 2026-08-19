@@ -17,6 +17,10 @@ pub mod auth_type {
 /// HTTP Path to connect
 pub const HTTP_PATH: &str = "databricks.http_path";
 
+/// Connection-establishment timeout (Go duration string, e.g. "600s"). Bounds the
+/// session-open and retries a cold-starting warehouse until the deadline.
+pub const CONNECT_TIMEOUT: &str = "databricks.connect_timeout";
+
 /// Optional default catalog to use when executing SQL statements
 pub const CATALOG: &str = "databricks.catalog";
 /// Optional default schema to use when executing SQL statements

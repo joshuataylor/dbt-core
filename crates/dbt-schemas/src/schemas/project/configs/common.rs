@@ -151,6 +151,7 @@ pub struct WarehouseSpecificNodeConfig {
     pub liquid_clustered_by: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub auto_liquid_cluster: Option<bool>,
+    pub zorder: Option<StringOrArrayOfStrings>,
     pub clustered_by: Option<StringOrArrayOfStrings>,
     pub buckets: Option<i64>,
     pub catalog: Option<String>,
@@ -422,6 +423,7 @@ pub fn same_warehouse_config(
         self_wh.include_full_name_in_path == other_wh.include_full_name_in_path;
     let liquid_clustered_by_eq = self_wh.liquid_clustered_by == other_wh.liquid_clustered_by;
     let auto_liquid_cluster_eq = self_wh.auto_liquid_cluster == other_wh.auto_liquid_cluster;
+    let zorder_eq = self_wh.zorder == other_wh.zorder;
     let clustered_by_eq = self_wh.clustered_by == other_wh.clustered_by;
     let buckets_eq = self_wh.buckets == other_wh.buckets;
     let catalog_eq = self_wh.catalog == other_wh.catalog;
@@ -518,6 +520,7 @@ pub fn same_warehouse_config(
         && include_full_name_in_path_eq
         && liquid_clustered_by_eq
         && auto_liquid_cluster_eq
+        && zorder_eq
         && clustered_by_eq
         && buckets_eq
         && catalog_eq
@@ -766,6 +769,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.auto_liquid_cluster),
                         format!("{:?}", &other_wh.auto_liquid_cluster),
+                    )),
+                ),
+                (
+                    "zorder",
+                    zorder_eq,
+                    Some((
+                        format!("{:?}", &self_wh.zorder),
+                        format!("{:?}", &other_wh.zorder),
                     )),
                 ),
                 (

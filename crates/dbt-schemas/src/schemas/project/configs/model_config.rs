@@ -283,6 +283,8 @@ pub struct ProjectModelConfig {
     pub labels_from_meta: Option<bool>,
     #[serde(rename = "+liquid_clustered_by")]
     pub liquid_clustered_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+zorder")]
+    pub zorder: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+location")]
     pub location: Option<String>,
     #[serde(rename = "+location_root")]
@@ -992,6 +994,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 include_full_name_in_path: config.include_full_name_in_path,
                 liquid_clustered_by: config.liquid_clustered_by,
                 auto_liquid_cluster: config.auto_liquid_cluster,
+                zorder: config.zorder,
                 clustered_by: config.clustered_by,
                 buckets: config.buckets,
                 catalog: config.catalog,
@@ -1193,6 +1196,7 @@ impl From<ModelConfig> for ProjectModelConfig {
                 .include_full_name_in_path,
             liquid_clustered_by: config.__warehouse_specific_config__.liquid_clustered_by,
             auto_liquid_cluster: config.__warehouse_specific_config__.auto_liquid_cluster,
+            zorder: config.__warehouse_specific_config__.zorder,
             clustered_by: config.__warehouse_specific_config__.clustered_by,
             buckets: config.__warehouse_specific_config__.buckets,
             catalog: config.__warehouse_specific_config__.catalog,

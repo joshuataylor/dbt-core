@@ -106,6 +106,7 @@ pub async fn resolve_functions(
             config_resolver,
             package_quoting,
             uses_snapshot_fqn: false,
+            defer_render_errors_to_compile: false,
             base_ctx: base_ctx.clone(),
             package_name: package_name.to_string(),
             adapter_type,

@@ -424,6 +424,7 @@ pub async fn resolve_data_tests(
             config_resolver,
             package_quoting,
             uses_snapshot_fqn: false,
+            defer_render_errors_to_compile: true,
             base_ctx: base_ctx.clone(),
             package_name: package_name.to_string(),
             adapter_type,
@@ -462,6 +463,7 @@ pub async fn resolve_data_tests(
         macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
+        render_error_deferred,
         patch_path: _,
         ..
     } in test_sql_resources_map.into_iter()
@@ -831,7 +833,11 @@ pub async fn resolve_data_tests(
                 ModelStatus::Disabled => {
                     disabled_tests.insert(unique_id, Arc::new(dbt_test));
                 }
-                ModelStatus::ParsingFailed => {}
+                ModelStatus::ParsingFailed => {
+                    if render_error_deferred {
+                        nodes.insert(unique_id, Arc::new(dbt_test));
+                    }
+                }
             }
         }
     }

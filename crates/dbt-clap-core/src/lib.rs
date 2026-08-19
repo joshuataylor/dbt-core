@@ -34,7 +34,8 @@ use dbt_common::io_args::{
     ClapResourceType, ClapSchemaTypes, ComputeArg, EvalArgs, InternalPackageMode, IoArgs,
     LocalExecutionBackendKind, LogFormat, LogLevel, OptimizeTestsOptions, Phases, RunCacheMode,
     ShowOptions, SystemArgs, TimeMachineModeKind, TimeMachineReplayOrdering,
-    check_key_value_cli_arg, check_selector, check_target, validate_project_name,
+    check_key_value_cli_arg, check_key_value_cli_arg_with_recovery, check_selector, check_target,
+    validate_project_name,
 };
 use dbt_common::io_args::{DisplayFormat, ListOutputFormat, StaticAnalysisKind};
 use dbt_common::row_limit::RowLimit;
@@ -1739,7 +1740,7 @@ pub struct CommonArgs {
 
     /// Supply var bindings in yml format e.g. '{key: value}' or as separate key: value pairs
     // has no ENV_VAR
-    #[arg(global = true, long, value_parser = check_key_value_cli_arg, help_heading = help_headings::PROJECT, hide_short_help = true)]
+    #[arg(global = true, long, value_parser = check_key_value_cli_arg_with_recovery, help_heading = help_headings::PROJECT, hide_short_help = true)]
     pub vars: Option<BTreeMap<String, YValue>>,
 
     /// Select nodes to run

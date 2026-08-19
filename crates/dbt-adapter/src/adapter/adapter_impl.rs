@@ -73,7 +73,7 @@ use dbt_schemas::schemas::profiles::DuckDBPathInfo;
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::properties::ModelConstraint;
 use dbt_schemas::schemas::relations::base::{BaseRelation, ComponentName, Policy};
-use dbt_schemas::schemas::serde::minijinja_value_to_typed_struct;
+use dbt_schemas::schemas::serde::{StringOrMap, minijinja_value_to_typed_struct};
 use dbt_schemas::schemas::{CommonAttributes, InternalDbtNodeAttributes, InternalDbtNodeWrapper};
 use dbt_yaml::Value as YmlValue;
 use indexmap::IndexMap;
@@ -2880,12 +2880,23 @@ impl AdapterImpl {
                     })
                     .collect::<BTreeMap<String, String>>();
 
+                // BigQuery policy tags are taxonomy resource-path strings, so mapping entries (e.g. Snowflake masking-policy config) are dropped here rather than sent to the REST API.
+                // If a column's tags are all mapping-valued, omit it entirely rather than
+                // sending an empty list, which BigQuery would interpret as clearing any
+                // existing policy tags on that column.
                 let column_to_policy_tags = nested_columns
                     .iter()
                     .filter_map(|(name, col)| {
-                        col.policy_tags
-                            .as_ref()
-                            .map(|tags| (name.to_string(), tags.clone()))
+                        col.policy_tags.as_ref().and_then(|tags| {
+                            let string_tags = tags
+                                .iter()
+                                .filter_map(|tag| match tag {
+                                    StringOrMap::StringValue(s) => Some(s.clone()),
+                                    StringOrMap::MapValue(_) => None,
+                                })
+                                .collect::<Vec<String>>();
+                            (!string_tags.is_empty()).then(|| (name.to_string(), string_tags))
+                        })
                     })
                     .collect::<BTreeMap<String, Vec<String>>>();
 

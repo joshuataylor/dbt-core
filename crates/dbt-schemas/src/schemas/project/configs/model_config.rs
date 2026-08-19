@@ -195,6 +195,12 @@ pub struct ProjectModelConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub view_update_via_alter: Option<bool>,
+    #[serde(
+        default,
+        rename = "+unique_tmp_table_suffix",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub unique_tmp_table_suffix: Option<bool>,
 
     // NOTE: This is only for BigQuery materialized views
     #[serde(rename = "+description")]
@@ -1010,6 +1016,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
                 skip_not_matched_step: config.skip_not_matched_step,
+                unique_tmp_table_suffix: config.unique_tmp_table_suffix,
                 schedule: config.schedule,
 
                 auto_refresh: config.auto_refresh,
@@ -1237,6 +1244,7 @@ impl From<ModelConfig> for ProjectModelConfig {
                 .__warehouse_specific_config__
                 .use_safer_relation_operations,
             view_update_via_alter: config.__warehouse_specific_config__.view_update_via_alter,
+            unique_tmp_table_suffix: config.__warehouse_specific_config__.unique_tmp_table_suffix,
             primary_key: config.__warehouse_specific_config__.primary_key,
             category: config.__warehouse_specific_config__.category,
             sync: config.sync,

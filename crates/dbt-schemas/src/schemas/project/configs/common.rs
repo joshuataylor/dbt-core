@@ -177,6 +177,8 @@ pub struct WarehouseSpecificNodeConfig {
     pub use_safer_relation_operations: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub view_update_via_alter: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub unique_tmp_table_suffix: Option<bool>,
 
     // Snowflake
     pub table_tag: Option<String>,
@@ -442,6 +444,8 @@ pub fn same_warehouse_config(
         self_wh.merge_with_schema_evolution == other_wh.merge_with_schema_evolution;
     let skip_matched_step_eq = self_wh.skip_matched_step == other_wh.skip_matched_step;
     let skip_not_matched_step_eq = self_wh.skip_not_matched_step == other_wh.skip_not_matched_step;
+    let unique_tmp_table_suffix_eq =
+        self_wh.unique_tmp_table_suffix == other_wh.unique_tmp_table_suffix;
     let schedule_eq = self_wh.schedule == other_wh.schedule;
     let adapter_properties_eq = self_wh.adapter_properties == other_wh.adapter_properties;
     let table_tag_eq = self_wh.table_tag == other_wh.table_tag;
@@ -536,6 +540,7 @@ pub fn same_warehouse_config(
         && merge_with_schema_evolution_eq
         && skip_matched_step_eq
         && skip_not_matched_step_eq
+        && unique_tmp_table_suffix_eq
         && schedule_eq
         && adapter_properties_eq
         && table_tag_eq
@@ -897,6 +902,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.skip_not_matched_step),
                         format!("{:?}", &other_wh.skip_not_matched_step),
+                    )),
+                ),
+                (
+                    "unique_tmp_table_suffix",
+                    unique_tmp_table_suffix_eq,
+                    Some((
+                        format!("{:?}", &self_wh.unique_tmp_table_suffix),
+                        format!("{:?}", &other_wh.unique_tmp_table_suffix),
                     )),
                 ),
                 (

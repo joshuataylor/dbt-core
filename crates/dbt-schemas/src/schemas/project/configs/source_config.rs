@@ -433,6 +433,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
                 skip_not_matched_step: config.skip_not_matched_step,
+                unique_tmp_table_suffix: None,
                 schedule: config.schedule,
 
                 auto_refresh: config.auto_refresh,

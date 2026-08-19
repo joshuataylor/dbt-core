@@ -142,6 +142,49 @@ impl DistInfo {
     }
 }
 
+/// Generates the uninstall command for a package that isn't necessarily the
+/// currently-running distribution's own package — e.g. removing `dbt-core`
+/// once a cross-distribution upgrade has installed `dbt` (Fusion) alongside
+/// or in place of it. Mirrors the uninstall half of
+/// [`crate::PathDiscovery::command_strings`]'s `Pypi` arm, but parameterized
+/// by an explicit package name instead of the hardcoded `"dbt"`.
+///
+/// Deliberately separate from `command_strings`: that function backs
+/// `dbt system update`/`uninstall`'s self-management of the *current*
+/// package and must not change behavior for this unrelated use case.
+pub fn uninstall_command_for_package(
+    channel: Channel,
+    manager: Option<PythonPackageManager>,
+    package_name: &str,
+) -> Option<String> {
+    match channel {
+        Channel::Standalone | Channel::Unclaimed => Some("dbt system uninstall".to_string()),
+        Channel::Brew => Some(format!("brew uninstall {package_name}")),
+        Channel::Winget => Some(format!(
+            "winget uninstall --id dbtLabs.{package_name} --exact"
+        )),
+        Channel::Unsupported(_) => None,
+        Channel::Pypi => {
+            let manager = manager?;
+            let command = match manager {
+                PythonPackageManager::Pip
+                | PythonPackageManager::Asdf
+                | PythonPackageManager::Mise
+                | PythonPackageManager::Pyenv => format!("pip uninstall {package_name}"),
+                PythonPackageManager::Pipx => format!("pipx uninstall {package_name}"),
+                PythonPackageManager::Uv => format!("uv tool uninstall {package_name}"),
+                PythonPackageManager::Poetry => format!("poetry remove {package_name}"),
+                PythonPackageManager::Pdm => format!("pdm remove {package_name}"),
+                PythonPackageManager::Pipenv => format!("pipenv uninstall {package_name}"),
+                PythonPackageManager::Hatch => format!("hatch run pip uninstall {package_name}"),
+                PythonPackageManager::Conda => format!("conda remove {package_name}"),
+                PythonPackageManager::Rye => format!("rye uninstall {package_name}"),
+            };
+            Some(command)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +325,94 @@ mod tests {
             info.py_package_manager = manager;
             assert_eq!(info.install_label(), expected, "channel={channel:?}");
         }
+    }
+
+    #[test]
+    fn uninstall_command_for_package_covers_every_channel_and_manager() {
+        let cases: &[(Channel, Option<PythonPackageManager>, &str)] = &[
+            (Channel::Standalone, None, "dbt system uninstall"),
+            (Channel::Unclaimed, None, "dbt system uninstall"),
+            (Channel::Brew, None, "brew uninstall dbt-core"),
+            (
+                Channel::Winget,
+                None,
+                "winget uninstall --id dbtLabs.dbt-core --exact",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Pip),
+                "pip uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Asdf),
+                "pip uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Mise),
+                "pip uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Pyenv),
+                "pip uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Pipx),
+                "pipx uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Uv),
+                "uv tool uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Poetry),
+                "poetry remove dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Pdm),
+                "pdm remove dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Pipenv),
+                "pipenv uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Hatch),
+                "hatch run pip uninstall dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Conda),
+                "conda remove dbt-core",
+            ),
+            (
+                Channel::Pypi,
+                Some(PythonPackageManager::Rye),
+                "rye uninstall dbt-core",
+            ),
+        ];
+        for (channel, manager, expected) in cases {
+            assert_eq!(
+                uninstall_command_for_package(channel.clone(), *manager, "dbt-core"),
+                Some(expected.to_string()),
+                "channel={channel:?} manager={manager:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn uninstall_command_for_package_pypi_with_no_manager_is_none() {
+        assert_eq!(
+            uninstall_command_for_package(Channel::Pypi, None, "dbt-core"),
+            None
+        );
     }
 }

@@ -1459,6 +1459,16 @@ pub struct GetDistributionInfoArgs {
     pub common_args: CommonArgs,
 }
 
+/// Args for `dbt system upgrade-distribution`. No `common_args` flatten:
+/// this is a `System` subcommand, and `SystemMgmtArgs` already flattens
+/// `CommonArgs` once (same precedent as `SystemUpdateArgs`/`SystemUninstallArgs`).
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct SystemUpgradeDistributionArgs {
+    /// Skip the confirmation prompt and proceed automatically.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+}
+
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct StateArgs {
     #[clap(flatten)]

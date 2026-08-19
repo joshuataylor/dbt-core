@@ -1,9 +1,11 @@
 //! Distribution, install channel, and self-update/uninstall detection for dbt.
 
 pub mod command;
+pub mod confirm;
 pub mod dist;
 mod proc;
 pub mod python;
+pub mod upgrade;
 use std::{
     collections::HashSet,
     env,
@@ -14,7 +16,7 @@ use std::{
 };
 
 use dbt_common::{ErrorCode, FsResult, err, error::WrappedError, fs_err};
-pub use dist::{Channel, DistInfo, Distribution, Generation};
+pub use dist::{Channel, DistInfo, Distribution, Generation, uninstall_command_for_package};
 
 use crate::proc::{GRACE_WAIT, NORMAL_WAIT, ProcessOutput, real_run};
 pub use crate::python::PythonPackageManager;

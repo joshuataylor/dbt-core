@@ -13,7 +13,10 @@ use uuid::Uuid;
 
 use dbt_adapter::Adapter;
 use dbt_clap_core::commands::{AbstractExtensionCommand, ExtensionCommandParser};
-use dbt_clap_core::{Cli, CliParser, CliParserFactory, CommonArgs, InitArgs, in_out_dir};
+use dbt_clap_core::{
+    Cli, CliParser, CliParserFactory, CommonArgs, InitArgs, SystemUpgradeDistributionArgs,
+    in_out_dir,
+};
 use dbt_cloud_config::ResolvedCloudConfig;
 use dbt_common::cancellation::{CancellationToken, CancellationTokenSource};
 use dbt_common::fail_fast::FailFast;
@@ -22,6 +25,7 @@ use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_error_log
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_compilation::config::CompilationConfig;
 use dbt_dag::schedule::Schedule;
+use dbt_dist::upgrade::exec_upgrade_distribution;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::{Nodes, StateArtifacts};
@@ -101,6 +105,8 @@ pub enum SystemCommand {
     Uninstall,
     /// Preinstall all supported database drivers into the local cache
     InstallDrivers,
+    /// Upgrade a dbt Core installation to dbt (Fusion)
+    UpgradeDistribution(SystemUpgradeDistributionArgs),
 }
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
@@ -429,7 +435,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         &self,
         cli: &Cli,
         _eval_arg: &EvalArgs,
-        _feature_stack: &Arc<FeatureStack>,
+        feature_stack: &Arc<FeatureStack>,
     ) -> FsResult<()> {
         use OSSExtensionCommand::*;
         match cli.extension_command::<OSSExtensionCommand>() {
@@ -467,6 +473,14 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
                             );
                             FsError::exit_with_status(1)
                         })
+                    }
+                    SystemCommand::UpgradeDistribution(args) => {
+                        exec_upgrade_distribution(args.yes, feature_stack.cli.command_name)
+                            .await
+                            .map_err(|e| {
+                                emit_error_log_from_fs_error(*e);
+                                FsError::exit_with_status(1)
+                            })
                     }
                 }?;
                 // handled the System command, signal to exit with success

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,9 +18,9 @@ use crate::auth::browser_flow::is_retryable_token_error;
 use crate::proto::query_cache::{
     CloneRequest, CloneResponse, ConfirmExecutionRequest, ConfirmExecutionResponse,
     GetExplainMessagesRequest, GetExplainMessagesResponse, RecordExecutionsRequest,
-    RecordExecutionsResponse, SubmitEnrichedSqlRequest, SubmitSqlResponse,
-    SubmitSqlSpeculativeResponse, SubmitTelemetryBatchRequest, SubmitTelemetryBatchResponse,
-    SubmitValuesRequest, ValidateClientVersionRequest,
+    RecordExecutionsResponse, ResolveDeferredRelationsRequest, SubmitEnrichedSqlRequest,
+    SubmitSqlResponse, SubmitSqlSpeculativeResponse, SubmitTelemetryBatchRequest,
+    SubmitTelemetryBatchResponse, SubmitValuesRequest, ValidateClientVersionRequest,
     client_validation_client::ClientValidationClient, execution_client::ExecutionClient,
     explain_client::ExplainClient, sql_client::SqlClient,
 };
@@ -354,6 +355,13 @@ pub trait RunCacheServiceClient: Send + Sync {
     ) -> Result<GetExplainMessagesResponse, RunCacheServiceError> {
         Err(RunCacheServiceError::Disabled)
     }
+
+    async fn resolve_deferred_relations(
+        &self,
+        _request: ResolveDeferredRelationsRequest,
+    ) -> Result<HashMap<String, String>, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -620,6 +628,21 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
             self.response(self.explain.clone().get_explain_messages(request).await)
         })
         .await
+    }
+
+    async fn resolve_deferred_relations(
+        &self,
+        request: ResolveDeferredRelationsRequest,
+    ) -> Result<HashMap<String, String>, RunCacheServiceError> {
+        let request = self.attach(Request::new(request)).await?;
+        let response = self.response(
+            self.execution
+                .clone()
+                .resolve_deferred_relations(request)
+                .await,
+        )?;
+
+        Ok(response.fqn_by_unique_id)
     }
 }
 

@@ -43,6 +43,7 @@ use dbt_tasks_core::{
     local_schema_builder::{init_data_store, init_schema_store},
     metricflow::MetricflowClient,
     run_cache::run_cache_service::run_cache_service_after_run_failed,
+    run_cache_lifecycle::RunCacheLifecycle,
     static_analysis_buckets::{StaticAnalysisBuckets, build_refresh_intervals},
     utils::{build_run_results_artifact, write_run_results_json, write_run_results_json_or_warn},
 };
@@ -1893,6 +1894,12 @@ impl DbtProjectCompilation {
 
         // Initialize Deferral State
         let mut defer_state = if arg.defer {
+            // we need to clone these to prevent the create_run_cache() closure below
+            // from capturing them and preventing their use elsewhere
+            let run_task_args_copy = run_task_args.clone();
+            let adapter_type = resolved_state.adapter_type;
+            let cloud_config = resolved_state.cloud_config.clone();
+
             DeferState::load(
                 arg,
                 adapter.clone(),
@@ -1901,6 +1908,16 @@ impl DbtProjectCompilation {
                 &jinja_env,
                 maybe_previous_state.clone(),
                 root_project_quoting,
+                // note: async move is required to prevent a lifetime issue with #[async_trait] in driver.rs
+                async move || {
+                    RunCacheLifecycle::get_or_initialize(
+                        run_task_args_copy.as_ref(),
+                        execute_mode,
+                        adapter_type,
+                        cloud_config.as_ref(),
+                    )
+                    .await
+                },
             )
             .await?
         } else {
@@ -2140,6 +2157,15 @@ impl DbtProjectCompilation {
             data_store.clone(),
             metricflow_server_client,
         );
+
+        let run_cache = RunCacheLifecycle::get_or_initialize(
+            run_task_args.as_ref(),
+            execute_mode,
+            resolved_state.adapter_type,
+            resolved_state.cloud_config.as_ref(),
+        )
+        .await?;
+
         let task_runner = TaskRunner::new(
             hooks,
             adapter.clone(),
@@ -2150,6 +2176,7 @@ impl DbtProjectCompilation {
             compiled_sql_cache.clone(),
             Arc::clone(&feature_stack.task_runner.task_runner_ctx_factory),
             static_analysis_buckets,
+            run_cache,
         );
         let run_task_results = {
             if run_task_args.command == FsCommand::Extension("jinja-check")

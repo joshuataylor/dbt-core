@@ -7,6 +7,7 @@ members = [
   "crates/dbt-agate",
   "crates/dbt-auth",
   "crates/dbt-base",
+  "crates/dbt-runtime",
   "crates/dbt-clap-core",
   "crates/dbt-goldie",
   "crates/dbt-docs-core",
@@ -272,6 +273,7 @@ dbt-platform-auth = { path = "crates/dbt-platform-auth" }
 dbt-pretty-table = { path = "crates/dbt-pretty-table" }
 dbt-proc-macros = { path = "crates/dbt-proc-macros" }
 dbt-profile = { path = "crates/dbt-profile" }
+dbt-runtime = { path = "crates/dbt-runtime" }
 dbt-scheduler = { path = "crates/dbt-scheduler" }
 dbt-state = { path = "crates/dbt-state" }
 

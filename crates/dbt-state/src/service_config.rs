@@ -12,6 +12,9 @@ pub const DEFAULT_API_URL: &str = "api.state.dbt.com:443";
 pub const DEFAULT_OAUTH_TOKEN_URL: &str = "https://auth.state.dbt.com/token";
 pub const DEFAULT_OAUTH_AUTH_URL: &str = "https://auth.state.dbt.com";
 pub const DEFAULT_API_CLIENT_TIMEOUT_SECONDS: u64 = 60;
+/// Total attempts per State API request when a transient (UNAVAILABLE / dropped
+/// connection) transport error occurs.
+pub const DEFAULT_API_CLIENT_MAX_ATTEMPTS: u32 = 3;
 pub const DEFAULT_FRESHNESS_TOLERANCE_SECONDS: i64 = 2700;
 pub const DEFAULT_OAUTH_CLIENT_ID: &str = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6";
 pub const DEFAULT_DEFER_TO: &str = "prod";
@@ -51,6 +54,9 @@ pub struct RunCacheServiceConfig {
     pub oauth_token_url: String,
     pub oauth_auth_url: String,
     pub timeout: Duration,
+    /// Total attempts per request on transient (dropped-connection) transport
+    /// errors. `1` disables retries; clamped to gRPC's cap of 5 by the client.
+    pub max_attempts: u32,
     pub defer_to: String,
     pub defer_log_level: String,
     pub enable_response_logging: bool,
@@ -142,6 +148,10 @@ impl RunCacheServiceConfig {
             Some(value) => Duration::from_secs(parse_u64_seconds("API_CLIENT_TIMEOUT", &value)?),
             None => Duration::from_secs(DEFAULT_API_CLIENT_TIMEOUT_SECONDS),
         };
+        let max_attempts = match config_value(&mut get_env, "API_CLIENT_MAX_ATTEMPTS") {
+            Some(value) => parse_u32("API_CLIENT_MAX_ATTEMPTS", &value)?,
+            None => DEFAULT_API_CLIENT_MAX_ATTEMPTS,
+        };
         let defer_to =
             config_value(&mut get_env, "DEFER_TO").unwrap_or_else(|| DEFAULT_DEFER_TO.to_string());
         let defer_log_level = config_value(&mut get_env, "DEFER_LOG_LEVEL")
@@ -217,6 +227,7 @@ impl RunCacheServiceConfig {
             oauth_auth_url: config_value(&mut get_env, "AUTH_URL")
                 .unwrap_or_else(|| DEFAULT_OAUTH_AUTH_URL.to_string()),
             timeout,
+            max_attempts,
             defer_to,
             defer_log_level,
             enable_response_logging,
@@ -264,6 +275,7 @@ impl RunCacheServiceConfig {
             oauth_token_url: DEFAULT_OAUTH_TOKEN_URL.to_string(),
             oauth_auth_url: DEFAULT_OAUTH_AUTH_URL.to_string(),
             timeout: Duration::from_secs(DEFAULT_API_CLIENT_TIMEOUT_SECONDS),
+            max_attempts: DEFAULT_API_CLIENT_MAX_ATTEMPTS,
             defer_to: DEFAULT_DEFER_TO.to_string(),
             defer_log_level: DEFAULT_DEFER_LOG_LEVEL.to_string(),
             enable_response_logging: true,
@@ -330,6 +342,11 @@ impl RunCacheServiceConfig {
             &mut fields,
             "api_client_timeout",
             i64::try_from(self.timeout.as_secs()).unwrap_or(i64::MAX),
+        );
+        insert_i64(
+            &mut fields,
+            "api_client_max_attempts",
+            i64::from(self.max_attempts),
         );
         insert_string(&mut fields, "defer_to", &self.defer_to);
         insert_string(&mut fields, "defer_log_level", &self.defer_log_level);
@@ -527,6 +544,16 @@ fn parse_i64_seconds(name: &'static str, value: &str) -> Result<i64, RunCacheSer
     parse_seconds(name, value)
 }
 
+fn parse_u32(name: &'static str, value: &str) -> Result<u32, RunCacheServiceConfigError> {
+    value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| RunCacheServiceConfigError::InvalidInteger {
+            name,
+            value: value.to_string(),
+        })
+}
+
 fn parse_i64(name: &'static str, value: &str) -> Result<i64, RunCacheServiceConfigError> {
     value
         .trim()
@@ -640,6 +667,7 @@ mod tests {
         assert!(config.enabled);
         assert!(config.secure);
         assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.max_attempts, DEFAULT_API_CLIENT_MAX_ATTEMPTS);
         assert_eq!(config.defer_to, "prod");
         assert_eq!(config.defer_log_level, "off");
         assert!(config.enable_response_logging);
@@ -852,6 +880,7 @@ mod tests {
             ("RUN_CACHE_API_URL", "localhost:50051"),
             ("RUN_CACHE_API_SECURE", "0"),
             ("RUN_CACHE_API_CLIENT_TIMEOUT", "2m"),
+            ("RUN_CACHE_API_CLIENT_MAX_ATTEMPTS", "5"),
             ("RUN_CACHE_FRESHNESS_TOLERANCE", "45min"),
             ("RUN_CACHE_TOLERATE_NONDETERMINISM", "yes"),
             ("RUN_CACHE_ENABLE_LENIENT_DEPENDENCIES", "off"),
@@ -864,6 +893,7 @@ mod tests {
 
         assert!(!config.secure);
         assert_eq!(config.timeout, Duration::from_secs(120));
+        assert_eq!(config.max_attempts, 5);
         assert_eq!(config.freshness_tolerance_seconds, 2700);
         assert!(config.tolerate_nondeterminism);
         assert!(!config.enable_lenient_dependencies);
@@ -876,6 +906,13 @@ mod tests {
     #[test]
     fn compare_unrendered_code_rejects_unparseable_values() {
         assert!(config_from_pairs(&[("RUN_CACHE_COMPARE_UNRENDERED_CODE", "maybe")]).is_err());
+    }
+
+    #[test]
+    fn max_attempts_rejects_non_integer_values() {
+        let err = config_from_pairs(&[("RUN_CACHE_API_CLIENT_MAX_ATTEMPTS", "lots")]).unwrap_err();
+
+        assert!(err.to_string().contains("API_CLIENT_MAX_ATTEMPTS"));
     }
 
     #[test]

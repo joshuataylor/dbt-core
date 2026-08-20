@@ -2,8 +2,9 @@ import { FC, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { twJoin } from 'tailwind-merge';
 
-import { IconButton, RyeconCopy, Sizes } from '@dbt-labs/sourdough';
+import { RyeconCopy } from '@dbt-labs/sourdough';
 
+import { Button } from '../../components/ui/Button';
 import { Tooltip } from '../../components/ui/Tooltip';
 
 export type RelationLike = {
@@ -63,9 +64,10 @@ export const RelationName: FC<RelationNameParams> = ({ relation, copy = true }) 
         )}
       </Tooltip>
       {copy && (
-        <IconButton
+        <Button
+          variant="ghost"
           ryecon={RyeconCopy}
-          size={Sizes.sm}
+          size="icon-sm"
           testId="copy-relation-name"
           tooltip="Copy to Clipboard"
         />

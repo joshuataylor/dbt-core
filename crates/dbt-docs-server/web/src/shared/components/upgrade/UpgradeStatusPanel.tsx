@@ -1,8 +1,9 @@
 import { twJoin } from 'tailwind-merge';
 
-import { Icon, InvisibleButton, RyeconClose, Sizes } from '@dbt-labs/sourdough';
+import { Icon, RyeconClose, Sizes } from '@dbt-labs/sourdough';
 
 import { Button } from '../../../components/ui/Button';
+import { InvisibleButton } from '../../../components/ui/InvisibleButton';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { getUpgradeCopy, isUpgradeCopyVisible } from './copy';
 import {

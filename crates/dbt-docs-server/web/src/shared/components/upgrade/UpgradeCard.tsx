@@ -3,7 +3,6 @@ import { twJoin } from 'tailwind-merge';
 
 import {
   Icon,
-  InvisibleButton,
   Link,
   RyeconCaretUp,
   RyeconClose,
@@ -12,6 +11,7 @@ import {
 } from '@dbt-labs/sourdough';
 
 import { Button } from '../../../components/ui/Button';
+import { InvisibleButton } from '../../../components/ui/InvisibleButton';
 import { getUpgradeCopy, isUpgradeCopyVisible } from './copy';
 import { CopyCommandSnippet } from './CopyCommandSnippet';
 import {

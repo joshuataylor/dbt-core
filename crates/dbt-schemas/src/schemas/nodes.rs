@@ -361,8 +361,16 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
     fn get_node_path_abs(&self, path_kind: NodePathKind, in_dir: &Path, out_dir: &Path) -> PathBuf {
         let common = self.common();
         let executable_filename = || {
-            // Mirror write_file's filename rule: alias if non-empty, else name. This avoids
-            // ENAMETOOLONG on Linux for generic tests with names exceeding 255 bytes.
+            // Generic test paths are synthesized and bounded before relation aliases are
+            // rendered. Keep the bounded path filename separate from the relation alias.
+            if self.resource_type() == NodeType::Test && self.defined_at().is_some() {
+                if let Some(file_stem) = common.path.file_stem() {
+                    return file_stem.to_string_lossy().into_owned();
+                }
+            }
+
+            // Mirror write_file's filename rule for other node types: alias if non-empty,
+            // else name.
             let alias = &self.base().alias;
             if alias.is_empty() {
                 common.name.clone()
@@ -6014,7 +6022,7 @@ mod tests {
 
     use super::{
         AbsorbedOverload, DbtAnalysis, DbtExposure, DbtFunction, DbtMacro, DbtSeed, DbtSnapshot,
-        DbtSource, InternalDbtNode, InternalDbtNodeAttributes, ModelConfig, NodePathKind,
+        DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, ModelConfig, NodePathKind,
         hooks_equal, normalize_description, persist_docs_configs_equal, quoting_equal,
         test_alias_config_equal,
     };
@@ -6076,6 +6084,40 @@ mod tests {
         analysis.__common_attr__.original_file_path = DbtPath::from(original_file_path);
         analysis.__base_attr__.alias = name.to_string();
         analysis
+    }
+
+    #[test]
+    fn generic_test_executable_path_uses_bounded_path_filename() {
+        let mut test = DbtTest::default();
+        test.__common_attr__.name = "full_generic_test_name".to_string();
+        test.__common_attr__.package_name = "pkg".to_string();
+        test.__common_attr__.path = DbtPath::from(
+            "generic_tests/not_null_model_column_4f8cc80baaff29183132758d312c335a.sql",
+        );
+        test.__common_attr__.original_file_path = DbtPath::from("models/schema.yml");
+        test.__base_attr__.alias = "full_generic_test_name_expanded_by_project_macro".to_string();
+        test.defined_at = Some(dbt_common::CodeLocationWithFile::new(
+            1,
+            1,
+            0,
+            "models/schema.yml",
+        ));
+
+        let actual = test.get_node_path_abs(
+            NodePathKind::Executable,
+            Path::new("/workspace"),
+            Path::new("/workspace/target"),
+        );
+
+        let expected = Path::new("/workspace")
+            .join("target")
+            .join("run")
+            .join("pkg")
+            .join("models")
+            .join("schema.yml")
+            .join("generic_tests")
+            .join("not_null_model_column_4f8cc80baaff29183132758d312c335a.sql");
+        assert_eq!(actual, expected);
     }
 
     #[test]

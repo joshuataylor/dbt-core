@@ -81,18 +81,21 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     pub macro_dependencies: Vec<String>,
 }
 
-/// Extracts model and version configuration from node properties
-fn extract_model_and_version_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
+/// Extracts the typed properties (including the `config:` block) from a node's schema.yml entry.
+/// For a versioned model this is the only properties-file config layer: the version's own
+/// `config:` is already merged into `mpe.schema_value` (see
+/// `merge_version_config_into_schema_value`), so typing it again here would apply it twice.
+fn extract_model_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
     mpe: &mut MinimalPropertiesEntry,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     dependency_package_name: Option<&str>,
-) -> FsResult<(Option<S>, Option<T>)> {
+) -> FsResult<Option<S>> {
     // Note: Duplicate checking is deferred until after we determine if the model is enabled.
     // This matches dbt-core behavior which only checks for duplicates among enabled models.
     // Can occur if a model asset is duplicated, but does not have duplicate property.yml definitions.
     if mpe.schema_value.is_null() {
-        return Ok((None, None));
+        return Ok(None);
     }
 
     // Swap the schema value for Null - we are doing this so that we don't have to clone
@@ -108,26 +111,7 @@ fn extract_model_and_version_config<T: ResolvableConfig<T>, S: GetConfig<T> + De
         dependency_package_name,
     )?;
 
-    let maybe_version_config = if let Some(version_info) = mpe.version_info.as_ref() {
-        if let Some(version_config) = version_info.version_config.as_ref() {
-            let version_config = into_typed_with_jinja_error_context::<T, _>(
-                version_config.clone(),
-                false,
-                jinja_env,
-                base_ctx,
-                &[],
-                |error| format!("While parsing version config: {}", error.context),
-                dependency_package_name,
-            )?;
-
-            Some(version_config)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    Ok((Some(maybe_model), maybe_version_config))
+    Ok(Some(maybe_model))
 }
 
 /// Appends `source()` calls discovered by static AST analysis to
@@ -305,17 +289,12 @@ where
         .map(|mpe| !mpe.duplicate_paths.is_empty())
         .unwrap_or(false);
 
-    let (maybe_model, maybe_version_config) = {
+    let maybe_model = {
         if let Some(mpe) = node_properties.get_mut(ref_name) {
-            extract_model_and_version_config::<T, S>(
-                mpe,
-                jinja_env,
-                base_ctx,
-                dependency_package_name,
-            )
-            .map_err(|e| *e)?
+            extract_model_config::<T, S>(mpe, jinja_env, base_ctx, dependency_package_name)
+                .map_err(|e| *e)?
         } else {
-            (None::<S>, None::<T>)
+            None::<S>
         }
     };
 
@@ -350,8 +329,7 @@ where
     };
 
     let model_properties_config = maybe_model.as_ref().and_then(|m| m.get_config());
-    let properties_configs: &[Option<&T>] =
-        &[model_properties_config, maybe_version_config.as_ref()];
+    let properties_configs: &[Option<&T>] = &[model_properties_config];
     let properties_config = config_resolver.with_configs(&original_fqn, properties_configs);
 
     // Early exit: the root overlay has the highest precedence for dependency packages, so if it
@@ -485,7 +463,6 @@ where
                         &fqn,
                         &[
                             model_properties_config,
-                            maybe_version_config.as_ref(),
                             temp_info.explicit_config.as_deref(),
                         ],
                     )
@@ -518,11 +495,7 @@ where
                     let cfg = config_resolver.resolve_with_configs(
                         &original_fqn,
                         &fqn,
-                        &[
-                            model_properties_config,
-                            maybe_version_config.as_ref(),
-                            info.explicit_config.as_deref(),
-                        ],
+                        &[model_properties_config, info.explicit_config.as_deref()],
                     );
                     (info, cfg)
                 };
@@ -591,11 +564,7 @@ where
                     let cfg = config_resolver.resolve_with_configs(
                         &original_fqn,
                         &fqn,
-                        &[
-                            model_properties_config,
-                            maybe_version_config.as_ref(),
-                            info.explicit_config.as_deref(),
-                        ],
+                        &[model_properties_config, info.explicit_config.as_deref()],
                     );
                     (info, cfg)
                 };

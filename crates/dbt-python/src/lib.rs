@@ -6,7 +6,7 @@ use dbt_common::tracing::dbt_init::{
     InvocationTracingGuard, ProcessTracing, init_tracing_cli_reloadable,
 };
 use dbt_features::cli::DefaultCliParserFactory;
-use dbt_features::feature_stack::FeatureStack;
+use dbt_features::feature_stack::{FeatureStack, FeatureStackConfig};
 use dbt_features::feature_stack_builder::FeatureStackBuilder;
 use dbt_features::tracing::TracingFeature;
 use dbt_main::{print_trimmed_error, run_cli_with_code};
@@ -232,13 +232,8 @@ fn dbt_core_cli_parser() -> CliParser {
     DefaultCliParserFactory.create("dbt-core", env!("CARGO_PKG_VERSION"))
 }
 
-/// This distribution's feature set. Takes the invocation's tracing feature, which
-/// is installed per invocation rather than once per process.
-fn dbt_core_feature_stack(tracing: TracingFeature, arg: &SystemArgs) -> Arc<FeatureStack> {
-    FeatureStackBuilder::new(tracing)
-        .send_anonymous_usage_stats(arg.io.send_anonymous_usage_stats)
-        .build()
-        .into()
+fn dbt_core_feature_stack(tracing: TracingFeature) -> Box<FeatureStack> {
+    FeatureStackBuilder::new(tracing).build()
 }
 
 fn invoke_inner<F>(
@@ -252,7 +247,7 @@ fn invoke_inner<F>(
     Option<String>,
 )>
 where
-    F: FnOnce(TracingFeature, &SystemArgs) -> Arc<FeatureStack>,
+    F: FnOnce(TracingFeature) -> Box<FeatureStack>,
 {
     let cli = cli_parser
         .try_parse_from(argv)
@@ -278,7 +273,13 @@ where
         &mut arg,
     )?;
 
-    let feature_stack = feature_stack_builder(tracing, &arg);
+    let feature_stack: Arc<FeatureStack> = {
+        let feature_stack = feature_stack_builder(tracing);
+        let config = FeatureStackConfig {
+            send_anonymous_usage_stats: arg.io.send_anonymous_usage_stats,
+        };
+        feature_stack.configure(&config).into()
+    };
 
     // Apply ANTLR parser config from common args, as run_cli does (main_impl.rs);
     // skipping it diverges in-process parsing from the CLI.
@@ -360,7 +361,7 @@ fn run_cli(py: Python<'_>, argv: Vec<String>) -> PyResult<()> {
 
 fn run_cli_inner<F>(argv: Vec<String>, cli_parser: &CliParser, feature_stack_builder: F) -> u8
 where
-    F: FnOnce(TracingFeature, &SystemArgs) -> Arc<FeatureStack>,
+    F: FnOnce(TracingFeature) -> Box<FeatureStack>,
 {
     // TODO: ensure .env loading is handled similarly to rust main entry point
     // argv is Python's sys.argv; parse it explicitly since the process is the
@@ -397,7 +398,13 @@ where
         arg.io.log_path = Some(resolved_file_log_path.to_path_buf());
     }
 
-    let feature_stack = feature_stack_builder(tracing, &arg);
+    let feature_stack: Arc<FeatureStack> = {
+        let feature_stack = feature_stack_builder(tracing);
+        let config = FeatureStackConfig {
+            send_anonymous_usage_stats: arg.io.send_anonymous_usage_stats,
+        };
+        feature_stack.configure(&config).into()
+    };
 
     run_cli_with_code(cli, arg, feature_stack)
 }

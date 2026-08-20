@@ -23,6 +23,13 @@ pub struct InstrumentationFeature {
     // TODO: add more instrumentation services here
 }
 
+impl InstrumentationFeature {
+    fn configure(&mut self, config: &FeatureStackConfig) {
+        self.event_emitter
+            .configure(config.send_anonymous_usage_stats);
+    }
+}
+
 /// A feature stack is an object that can be initialized with containers of
 /// type-erased objects that implement feature-specific services.
 ///
@@ -62,6 +69,24 @@ pub struct FeatureStack {
     pub login_hooks: Arc<dyn LoginHooks>,
     // TODO: add more features here
     pub version_check_enabled: bool,
+}
+
+/// Configuration that can only be known after [FeatureStack] is built.
+///
+/// For instance, we need the [CliFeature] to parse the CLI arguments to know if
+/// we should send anonymous usage stats or not. The [FeatureStack] should be
+/// constructred before everything else, so we need the ability to defer a
+/// small set of configuration knobs.
+#[derive(Default)]
+pub struct FeatureStackConfig {
+    pub send_anonymous_usage_stats: bool,
+}
+
+impl FeatureStack {
+    pub fn configure(mut self, config: &FeatureStackConfig) -> Self {
+        self.instrumentation.configure(config);
+        self
+    }
 }
 
 impl fmt::Debug for FeatureStack {

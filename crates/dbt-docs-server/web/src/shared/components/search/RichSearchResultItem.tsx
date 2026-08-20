@@ -10,12 +10,12 @@ import {
 import {
   Icon,
   Link,
-  LoadingBlock,
   RyeconDatabaseEnvironment,
   RyeconProjects,
   RyeconTableColumn,
 } from '@dbt-labs/sourdough';
 
+import { LoadingBlock } from '../../../components/ui/LoadingBlock';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { TrustSignals } from '../../typings/trustSignals';
 import { toTitleCase } from '../../util/string';

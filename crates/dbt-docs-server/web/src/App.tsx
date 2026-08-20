@@ -2,12 +2,7 @@ import type { ComponentType } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
-import {
-  Badge,
-  Icon,
-  RyeconColorDbt,
-  RyeconMagnifyingGlass,
-} from '@dbt-labs/sourdough';
+import { Icon, RyeconColorDbt, RyeconMagnifyingGlass } from '@dbt-labs/sourdough';
 
 import { AnalysisFilterView } from './components/AnalysisFilterView';
 import FullLineagePage from './components/FullLineagePage';
@@ -27,6 +22,7 @@ import {
 import { SourceCollectionPage } from './components/SourceCollectionPage';
 import { SourceFilterView } from './components/SourceFilterView';
 import { TestFilterView } from './components/TestFilterView';
+import { Badge } from './components/ui/Badge';
 import { Tooltip } from './components/ui/Tooltip';
 import { useAllNodes } from './hooks/useAllNodes';
 import { deriveUpgradeCapabilities } from './hooks/useCapabilities';
@@ -634,7 +630,7 @@ function Topbar({
               <div className="topbar-v2__brand-name">
                 {project.name}
                 <Tooltip content="This docs site is in beta." placement="bottom">
-                  <Badge text="beta" type="purple" size="xs" />
+                  <Badge text="beta" variant="default" size="xs" />
                 </Tooltip>
               </div>
               <div className="topbar-v2__brand-sub">

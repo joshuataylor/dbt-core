@@ -1,8 +1,10 @@
 import type { FC, PropsWithChildren } from 'react';
 
 import { ResourceType } from '@dbt-labs/dbt-dag';
-import { Card, Link, LoadingBlock, SkeletonContextProvider } from '@dbt-labs/sourdough';
+import { Link, SkeletonContextProvider } from '@dbt-labs/sourdough';
 
+import { Card } from '../../components/ui/Card';
+import { LoadingBlock } from '../../components/ui/LoadingBlock';
 import { ResourceChip } from './ResourceChip';
 
 type ResourceTypeCardProps = {

@@ -299,7 +299,11 @@ export function LocatePane({
         <div className="flex w-full justify-center">
           <SegmentedButton
             segments={[
-              { label: 'Light', value: 'light', startIcon: { ryecon: RyeconThemeLight } },
+              {
+                label: 'Light',
+                value: 'light',
+                startIcon: { ryecon: RyeconThemeLight },
+              },
               { label: 'Dark', value: 'dark', startIcon: { ryecon: RyeconThemeDark } },
               {
                 label: 'System',

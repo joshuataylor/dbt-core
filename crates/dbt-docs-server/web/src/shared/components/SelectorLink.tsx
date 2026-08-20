@@ -1,4 +1,6 @@
-import { Button, Link } from '@dbt-labs/sourdough';
+import { Link } from '@dbt-labs/sourdough';
+
+import { Button } from '../../components/ui/Button';
 
 interface Props {
   selector: string;
@@ -8,7 +10,7 @@ interface Props {
 export function SelectorLink({ selector, label }: Props) {
   return (
     <Link isInternal to={`?select=${encodeURIComponent(selector)}`}>
-      <Button type="secondary" className="mt-6" text={label} />
+      <Button variant="outline" className="mt-6" text={label} />
     </Link>
   );
 }

@@ -1,6 +1,8 @@
 import { FC, ReactNode } from 'react';
 
-import { Card, CardProps, Heading } from '@dbt-labs/sourdough';
+import { Heading } from '@dbt-labs/sourdough';
+
+import { Card, type CardProps } from '../../components/ui/Card';
 
 type SectionProps = {
   heading?: string;

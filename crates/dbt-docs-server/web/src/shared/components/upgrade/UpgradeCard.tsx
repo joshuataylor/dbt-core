@@ -2,7 +2,6 @@ import { FC, useEffect, useRef } from 'react';
 import { twJoin } from 'tailwind-merge';
 
 import {
-  Button,
   Icon,
   InvisibleButton,
   Link,
@@ -12,6 +11,7 @@ import {
   Sizes,
 } from '@dbt-labs/sourdough';
 
+import { Button } from '../../../components/ui/Button';
 import { getUpgradeCopy, isUpgradeCopyVisible } from './copy';
 import { CopyCommandSnippet } from './CopyCommandSnippet';
 import {
@@ -449,7 +449,7 @@ function CtaForSpec({ spec, emit, decorate, fullWidth, testId }: CtaProps) {
   const { label, href } = spec.cta;
   return (
     <Button
-      type="primary"
+      variant="default"
       size={Sizes.sm}
       text={label}
       className={fullWidth ? 'w-full justify-center' : undefined}

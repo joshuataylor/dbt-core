@@ -1,6 +1,8 @@
 import { FC, memo, ReactNode, useState } from 'react';
 
-import { Badge, FloatingTabs } from '@dbt-labs/sourdough';
+import { FloatingTabs } from '@dbt-labs/sourdough';
+
+import { Badge } from '../../components/ui/Badge';
 
 export const tabTypes = [
   'general',
@@ -105,7 +107,7 @@ const DetailTabs: FC<TabsParams> = ({
                     tabDetails.count === undefined && (
                       <Badge
                         text={tabAnnotationMap[tabDetails.type]!}
-                        type="purple"
+                        variant="default"
                         size="xs"
                       />
                     )}

@@ -94,21 +94,26 @@ impl RunCacheProfileResolver {
         let defer_base_context = run_cache_defer_base_context(resolved_state, jinja_env);
         let mut defer_nodes = resolved_state.nodes.deep_clone();
 
-        // Prefer state-resolved FQNs
-        let state_resolved_ids = Self::get_state_resolved_ids(
-            run_cache_client,
-            unselected_node_ids,
-            &auto_defer,
-            resolved_state.adapter_type,
-            &resolved_state.dbt_profile.profile,
-            &resolved_state.root_project_name,
-            resolved_state
-                .cloud_config
-                .as_ref()
-                .and_then(|c| c.project_id.as_deref()),
-            &mut defer_nodes,
-        )
-        .await;
+        // Compile must keep profile-resolved relations. State FQNs apply to
+        // non-compile commands only.
+        let state_resolved_ids = if arg.command == FsCommand::Compile {
+            BTreeSet::new()
+        } else {
+            Self::get_state_resolved_ids(
+                run_cache_client,
+                unselected_node_ids,
+                &auto_defer,
+                resolved_state.adapter_type,
+                &resolved_state.dbt_profile.profile,
+                &resolved_state.root_project_name,
+                resolved_state
+                    .cloud_config
+                    .as_ref()
+                    .and_then(|c| c.project_id.as_deref()),
+                &mut defer_nodes,
+            )
+            .await
+        };
 
         update_run_cache_defer_nodes(
             &mut defer_nodes,

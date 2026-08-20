@@ -1541,6 +1541,7 @@ impl DbtProjectCompilation {
         task_runner_hooks_factory: &dyn TaskRunnerHooksFactory,
         token: &CancellationToken,
         previous_batch_results: HashMap<String, dbt_schemas::schemas::BatchResults>,
+        artifacts_sink: &mut DbtCommandExecutionArtifacts,
     ) -> FsResult<DbtRunTasksResult> {
         token.check_cancellation()?;
 
@@ -2004,6 +2005,7 @@ impl DbtProjectCompilation {
                 &schedule,
                 Arc::clone(&adapter),
                 &base_context,
+                artifacts_sink,
             )
             .await?
         } else {

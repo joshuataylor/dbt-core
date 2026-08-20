@@ -819,7 +819,7 @@ impl<'a> AllPhasesExecutor<'a> {
     /// Run tasks based on the arguments.
     /// This can be called multiple times on the same compilation.
     async fn run_tasks(
-        &self,
+        &mut self,
         compilation: &mut DbtProjectCompilation,
         jinja_env: JinjaEnv,
         compilation_cache_changes: Option<&DbtProjectCompilationCacheChanges>,
@@ -841,6 +841,7 @@ impl<'a> AllPhasesExecutor<'a> {
                 self.task_runner_hooks_factory.as_ref(),
                 token,
                 self.previous_batch_results.clone(),
+                &mut self.captured_artifacts,
             )
             .await
     }

@@ -98,7 +98,7 @@ fn begin_invocation(
 struct DbtRunnerResult {
     success: bool,
     exit_code: u8,
-    /// `manifest`, `list` or `run_results`; `None` if nothing was captured.
+    /// `manifest`, `list`, `sources` or `run_results`; `None` if nothing was captured.
     result_kind: Option<String>,
     result_msgpack: Option<Py<PyBytes>>,
     /// Kept off `result` so that stays dbt-core-compatible; `--write-catalog` is
@@ -135,6 +135,12 @@ fn build_result_msgpack(
             .list_items
             .take()
             .map(|items| contracts::to_msgpack(py, &items).map(|b| ("list", b))),
+        // `source freshness` writes sources.json instead of run_results.json, so
+        // that artifact is what it reports.
+        FsCommand::Source => exec
+            .sources
+            .take()
+            .map(|s| contracts::to_msgpack(py, &s).map(|b| ("sources", b))),
         // Everything else reports run_results, as dbt-core does; the catalog is
         // surfaced separately.
         _ => exec
@@ -312,9 +318,10 @@ where
             let error = failure.error;
             let artifacts = failure.artifacts;
             let exit_code = error.exit_status().unwrap_or(1) as u8;
-            // A handled failure (a failing test, an errored node) is fully
-            // accounted for by run_results, so it carries no exception.
-            let exception = if artifacts.run_results.is_some() {
+            // A handled failure (a failing test, an errored node, a stale source) is
+            // fully accounted for by the command's result artifact, so it carries no
+            // exception.
+            let exception = if artifacts.run_results.is_some() || artifacts.sources.is_some() {
                 None
             } else {
                 Some(describe_engine_error(

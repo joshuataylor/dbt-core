@@ -14,9 +14,9 @@ import {
   RyeconDatabaseEnvironment,
   RyeconProjects,
   RyeconTableColumn,
-  Tooltip,
 } from '@dbt-labs/sourdough';
 
+import { Tooltip } from '../../../components/ui/Tooltip';
 import { TrustSignals } from '../../typings/trustSignals';
 import { toTitleCase } from '../../util/string';
 import { DataPlatformChip } from '../DataPlatformChip';

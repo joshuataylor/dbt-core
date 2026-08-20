@@ -10,7 +10,6 @@ import {
   RyeconClock,
   RyeconShare,
   RyeconTable,
-  Tooltip,
 } from '@dbt-labs/sourdough';
 
 import type { FreshnessStatusValue, SourceAsset } from '../shared';
@@ -28,6 +27,7 @@ import {
 } from '../shared';
 import { type NodeSummary } from '../types';
 import { ResourceFilterTable } from './ResourceFilterTable';
+import { Tooltip } from './ui/Tooltip';
 
 interface Props {
   nodes: NodeSummary[];

@@ -7,7 +7,6 @@ import {
   Icon,
   RyeconColorDbt,
   RyeconMagnifyingGlass,
-  Tooltip,
 } from '@dbt-labs/sourdough';
 
 import { AnalysisFilterView } from './components/AnalysisFilterView';
@@ -28,6 +27,7 @@ import {
 import { SourceCollectionPage } from './components/SourceCollectionPage';
 import { SourceFilterView } from './components/SourceFilterView';
 import { TestFilterView } from './components/TestFilterView';
+import { Tooltip } from './components/ui/Tooltip';
 import { useAllNodes } from './hooks/useAllNodes';
 import { deriveUpgradeCapabilities } from './hooks/useCapabilities';
 import { useIdentity } from './hooks/useIdentity';

@@ -1,7 +1,8 @@
 import { FC } from 'react';
 
-import { Badge, Link, Tooltip } from '@dbt-labs/sourdough';
+import { Badge, Link } from '@dbt-labs/sourdough';
 
+import { Tooltip } from '../../../components/ui/Tooltip';
 import { toTitleCase } from '../../util/string';
 import { BOLD_TAG_REGEX, SanitizeBoldText } from './BoldedText';
 import { MatchedField } from './types';

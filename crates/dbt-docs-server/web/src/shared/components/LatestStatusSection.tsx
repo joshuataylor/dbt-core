@@ -12,9 +12,9 @@ import {
   RyeconStatusSkipped,
   RyeconStatusSuccess,
   RyeconStatusWarning,
-  Tooltip,
 } from '@dbt-labs/sourdough';
 
+import { Tooltip } from '../../components/ui/Tooltip';
 import { CollapsibleSection } from './CollapsibleSection';
 import { DetailsSection } from './SectionWithCard';
 import { TimestampDisplay } from './Timestamp';

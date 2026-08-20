@@ -11,9 +11,9 @@ import {
   RyeconStatusSkipped,
   RyeconStatusSuccess,
   RyeconStatusWarning,
-  Tooltip,
 } from '@dbt-labs/sourdough';
 
+import { Tooltip } from '../../components/ui/Tooltip';
 import type { RunStatus } from '../typings/domain/executionInfo';
 import type { FreshnessStatusValue, TestStatusValue } from '../typings/domain/status';
 import { toTitleCase } from '../util/string';

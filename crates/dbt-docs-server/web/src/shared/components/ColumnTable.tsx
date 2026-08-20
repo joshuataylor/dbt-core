@@ -1,8 +1,9 @@
 import { FC, isValidElement } from 'react';
 import { twMerge } from 'tailwind-merge';
 
-import { Link, Tooltip } from '@dbt-labs/sourdough';
+import { Link } from '@dbt-labs/sourdough';
 
+import { Tooltip } from '../../components/ui/Tooltip';
 import type { RunStatus } from '../typings/domain/executionInfo';
 import { formatDateCommon } from '../util/dateUtils';
 import { camelToTitleCase } from '../util/string';

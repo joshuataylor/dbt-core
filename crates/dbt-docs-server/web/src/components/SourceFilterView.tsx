@@ -4,7 +4,7 @@ import { type ColumnDef } from '@tanstack/react-table';
 
 import { resourceIconMap } from '@dbt-labs/dbt-dag';
 import type { DropdownOption } from '@dbt-labs/sourdough';
-import { Icon, Tooltip } from '@dbt-labs/sourdough';
+import { Icon } from '@dbt-labs/sourdough';
 
 import { paths } from '../routes';
 import type { SourceSummary } from '../shared';
@@ -18,6 +18,7 @@ import {
   useResourceLink,
 } from '../shared';
 import { ResourceFilterTable } from './ResourceFilterTable';
+import { Tooltip } from './ui/Tooltip';
 
 type SourceCollection = {
   sourceName: string;

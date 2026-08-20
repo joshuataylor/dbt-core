@@ -2,7 +2,9 @@ import { FC, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { twJoin } from 'tailwind-merge';
 
-import { IconButton, RyeconCopy, Sizes, Tooltip } from '@dbt-labs/sourdough';
+import { IconButton, RyeconCopy, Sizes } from '@dbt-labs/sourdough';
+
+import { Tooltip } from '../../components/ui/Tooltip';
 
 export type RelationLike = {
   database?: string | null;

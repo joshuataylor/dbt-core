@@ -87,6 +87,7 @@ members = [
   "crates/dbt-login",
   "crates/dbt-platform-auth",
 
+  # COPYBARA-END-PRIVATE
 ]
 exclude = [
   "wizard/wizard-app/src-tauri",

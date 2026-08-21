@@ -355,6 +355,12 @@ pub trait ResolvableConfig<T>:
     /// Returns whether this node is enabled, defaulting to `true` if unset.
     fn get_enabled_with_default(&self) -> bool;
 
+    /// The explicitly-configured `enabled` value, or `None` when unset. Unlike
+    /// `get_enabled_with_default`, this distinguishes unset from an explicit `true`.
+    fn get_enabled(&self) -> Option<bool> {
+        None
+    }
+
     fn apply_package_defaults(&mut self, defaults: Self::PackageDefaults);
 
     /// Called after all config layers (project, properties, inline) are merged and the root

@@ -364,9 +364,14 @@ where
     // package-relative asset path so config-block reads of `model.path` match.
     let model_path = dbt_common::path::strip_resource_paths(&dbt_asset.path, resource_paths);
 
+    // A dependency package's inline `config(enabled=false)` must not abort rendering when the
+    // root project re-enables the node; the overlay outranks it.
+    let root_overlay_forces_enabled = config_resolver.is_enabled_by_root_overlay(&fqn);
+
     let mut resolve_model_context = base_ctx.clone();
     resolve_model_context.extend(build_resolve_model_context(
         &properties_config,
+        root_overlay_forces_enabled,
         *adapter_type,
         database,
         schema,

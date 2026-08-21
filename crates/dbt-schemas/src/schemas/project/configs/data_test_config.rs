@@ -764,6 +764,10 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
         self.enabled.unwrap_or(true)
     }
 
+    fn get_enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
     fn disable(&mut self) {
         self.enabled = Some(false);
     }

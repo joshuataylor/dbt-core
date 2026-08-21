@@ -58,6 +58,7 @@ use super::sql_resource::SqlResource;
 #[allow(clippy::too_many_arguments)]
 pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>(
     config: &T,
+    root_overlay_forces_enabled: bool,
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
@@ -174,6 +175,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     let is_enabled = config.get_enabled_with_default();
     let config_value = MinijinjaValue::from_object(ParseConfig {
         enabled: is_enabled,
+        root_overlay_forces_enabled,
         sql_resources: sql_resources.clone(),
         package_dependency: package_dependency.clone(),
         error_path: Some(display_path.to_path_buf()),
@@ -182,6 +184,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         "config".to_string(),
         MinijinjaValue::from_object(ParseConfig {
             enabled: is_enabled,
+            root_overlay_forces_enabled,
             sql_resources,
             package_dependency,
             error_path: Some(display_path.to_path_buf()),
@@ -638,6 +641,8 @@ pub struct ParseConfig<T: ResolvableConfig<T> + 'static> {
     pub sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
     /// Whether the model is enabled (based on upstream config)
     pub enabled: bool,
+    /// Whether the root project's config overlay explicitly sets `enabled: true` for this node.
+    pub root_overlay_forces_enabled: bool,
     // Current package name
     pub package_dependency: Option<String>,
     /// Error path to be used for error reporting
@@ -734,7 +739,9 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
             .lock()
             .unwrap()
             .push(SqlResource::ConfigCall(Box::new(config)));
-        if !enabled {
+        // The root project's overlay outranks this inline config, so skipping the rest of the
+        // render would drop refs, rendered SQL and macro spans the enabled node still needs.
+        if !enabled && !self.root_overlay_forces_enabled {
             return Err(MinijinjaError::new(
                 MinijinjaErrorKind::DisabledModel,
                 "Model is disabled".to_string(),
@@ -962,6 +969,7 @@ mod test {
         ParseConfig {
             sql_resources: Arc::new(Mutex::new(Vec::new())),
             enabled: true,
+            root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
         }

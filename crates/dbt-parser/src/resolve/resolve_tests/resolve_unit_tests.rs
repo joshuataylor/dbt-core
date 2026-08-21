@@ -455,6 +455,7 @@ fn resolve_given_seed(
     let mut resolve_model_context = base_ctx.clone();
     resolve_model_context.extend(build_resolve_model_context(
         &UnitTestConfig::default(),
+        false,
         adapter_type,
         database,
         schema,

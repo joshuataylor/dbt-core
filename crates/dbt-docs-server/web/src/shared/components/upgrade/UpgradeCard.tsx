@@ -1,13 +1,7 @@
 import { FC, useEffect, useRef } from 'react';
 import { twJoin } from 'tailwind-merge';
 
-import {
-  Icon,
-  RyeconCaretUp,
-  RyeconClose,
-  RyeconColorDbt,
-  Sizes,
-} from '@dbt-labs/sourdough';
+import { Icon, RyeconCaretUp, RyeconClose, Sizes } from '@dbt-labs/sourdough';
 
 import { Button } from '../../../components/ui/Button';
 import { InvisibleButton } from '../../../components/ui/InvisibleButton';
@@ -375,7 +369,6 @@ function RailCard({
           className="flex !w-auto min-w-0 flex-1 items-center gap-2 text-left text-fgMain"
           testId={testId ? `${testId}-toggle` : undefined}
         >
-          <Icon ryecon={RyeconColorDbt} size="xs" alt="" />
           <span className="min-w-0 flex-1 text-[13px] font-bold leading-[18px] text-fgMain">
             {spec.title}
           </span>

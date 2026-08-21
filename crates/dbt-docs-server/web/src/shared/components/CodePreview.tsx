@@ -1,7 +1,6 @@
 import { FC, useState } from 'react';
 
-import { CodeSnippet } from '@dbt-labs/sourdough';
-
+import { CodeSnippet } from '../../components/ui/CodeSnippet';
 import { FloatingTab, FloatingTabs } from '../../components/ui/FloatingTabs';
 
 type CodePreviewParams = {

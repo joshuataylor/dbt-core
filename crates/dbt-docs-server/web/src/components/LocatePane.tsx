@@ -16,7 +16,6 @@ import {
   RyeconThemeDark,
   RyeconThemeLight,
   RyeconThemeSystem,
-  SegmentedButton,
 } from '@dbt-labs/sourdough';
 
 import type { AssetFilters } from '../App';
@@ -40,6 +39,7 @@ import {
 } from '../shared';
 import type { NodeSummary } from '../types';
 import { SEARCHABLE_RESOURCE_TYPES } from '../types';
+import { SegmentedButton } from './ui/SegmentedButton';
 
 export type LocatePaneMode = 'assets' | 'files' | 'filter';
 

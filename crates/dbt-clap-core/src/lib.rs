@@ -2753,6 +2753,7 @@ impl CommonArgs {
             skip_creating_generic_tests: false,
             write_lineage: self.write_lineage,
             force_enable_linter: false,
+            force_enable_formatter_diagnostics: false,
             maximum_seed_size_mib: self.resolve_maximum_seed_size_mib(in_dir),
             command_entrypoint: arg.command,
         }

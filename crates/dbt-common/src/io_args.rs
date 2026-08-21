@@ -619,6 +619,8 @@ pub struct EvalArgs {
     pub write_lineage: bool,
     /// Always enable the linter.
     pub force_enable_linter: bool,
+    /// Always enable formatter-fix diagnostics.
+    pub force_enable_formatter_diagnostics: bool,
     /// Command that originated the execution.
     /// Used for extension commands that execute core commands like compilation.
     pub command_entrypoint: FsCommand,

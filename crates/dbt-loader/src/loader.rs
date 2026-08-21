@@ -806,12 +806,6 @@ pub async fn load_simplified_project_and_profiles(
     let simplified_dbt_project: DbtProjectSimplified =
         into_typed_with_jinja(raw_dbt_project_in_val, true, &env, &ctx, &[], None, true)?;
 
-    if simplified_dbt_project.data_paths.is_some() {
-        return err!(
-            ErrorCode::InvalidConfig,
-            "'data-paths' cannot be specified in dbt_project.yml",
-        );
-    }
     if simplified_dbt_project.source_paths.is_some() {
         return err!(
             ErrorCode::InvalidConfig,

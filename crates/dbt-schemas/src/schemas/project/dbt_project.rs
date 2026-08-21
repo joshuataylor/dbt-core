@@ -84,8 +84,6 @@ pub struct DbtProjectSimplified {
 
     // Deprecated paths
     // When present in the db_project.yml file we will raise an error
-    #[serde(rename = "data-paths")]
-    pub data_paths: Verbatim<Option<Vec<String>>>,
     #[serde(rename = "source-paths")]
     pub source_paths: Verbatim<Option<Vec<String>>>,
     #[serde(rename = "log-path")]
@@ -133,7 +131,7 @@ pub struct DbtProject {
     pub model_paths: Option<Vec<String>>,
     #[serde(rename = "function-paths")]
     pub function_paths: Option<Vec<String>>,
-    #[serde(rename = "seed-paths")]
+    #[serde(rename = "seed-paths", alias = "data-paths")]
     pub seed_paths: Option<Vec<String>>,
     #[serde(rename = "snapshot-paths")]
     pub snapshot_paths: Option<Vec<String>>,
@@ -458,6 +456,38 @@ dbt-cloud:
 
         let dbt_cloud = project.dbt_cloud.expect("dbt-cloud config");
         assert_eq!(dbt_cloud.state_org_id, Some(StringOrInteger::Integer(789)));
+    }
+
+    /// Regression for fs#13343: Core accepts the legacy `data-paths` key as an
+    /// alias for `seed-paths`; Fusion must not reject it during YAML load.
+    #[test]
+    fn project_accepts_legacy_data_paths_as_seed_paths_alias() {
+        let project: DbtProject = dbt_yaml::from_str(
+            r#"
+name: test
+data-paths: ["data"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(project.seed_paths, Some(vec!["data".to_string()]));
+    }
+
+    /// Regression for fs#13343: the pre-profile-load `DbtProjectSimplified` pass
+    /// must not reject a `data-paths` project either (it no longer tracks the
+    /// key at all — the alias is resolved on the full `DbtProject` above).
+    #[test]
+    fn simplified_project_ignores_legacy_data_paths() {
+        let project: DbtProjectSimplified = dbt_yaml::from_str(
+            r#"
+name: test
+data-paths: ["data"]
+__ignored__: {}
+"#,
+        )
+        .unwrap();
+
+        assert!(project.source_paths.is_none());
     }
 
     #[test]

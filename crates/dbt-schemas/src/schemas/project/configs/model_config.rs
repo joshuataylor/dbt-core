@@ -41,9 +41,9 @@ use crate::schemas::properties::model_properties::ModelConstraint;
 use crate::schemas::properties::{ModelFreshness, ModelState};
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
-    IndexesConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool, default_type,
-    f64_or_string_f64, hours_to_expiration_or_string_omissible, string_or_number_to_string,
-    u64_or_string_u64,
+    IndexesConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool, column_types_map,
+    default_type, event_time_or_map_to_string, f64_or_string_f64,
+    hours_to_expiration_or_string_omissible, string_or_number_to_string, u64_or_string_u64,
 };
 use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::ShouldBe;
@@ -119,7 +119,11 @@ pub struct ProjectModelConfig {
     pub cluster_by: Option<ClusterConfig>,
     #[serde(rename = "+clustered_by")]
     pub clustered_by: Option<StringOrArrayOfStrings>,
-    #[serde(rename = "+column_types")]
+    #[serde(
+        default,
+        rename = "+column_types",
+        deserialize_with = "column_types_map"
+    )]
     pub column_types: Option<BTreeMap<Spanned<String>, String>>,
     #[serde(rename = "+compute")]
     pub compute: Option<ComputeArg>,
@@ -217,7 +221,11 @@ pub struct ProjectModelConfig {
     pub enable_refresh: Option<bool>,
     #[serde(default, rename = "+enabled", deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
-    #[serde(rename = "+event_time")]
+    #[serde(
+        default,
+        rename = "+event_time",
+        deserialize_with = "event_time_or_map_to_string"
+    )]
     pub event_time: Option<String>,
     #[serde(rename = "+external_volume")]
     pub external_volume: Option<String>,
@@ -800,6 +808,7 @@ pub struct ModelConfig {
     pub pre_hook: Verbatim<Option<Hooks>>,
     #[resolved(promote, expect = "apply_package_defaults guarantees quoting is set")]
     pub quoting: Option<DbtQuoting>,
+    #[serde(default, deserialize_with = "column_types_map")]
     pub column_types: Option<BTreeMap<Spanned<String>, String>>,
     pub compute: Option<ComputeArg>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -820,6 +829,7 @@ pub struct ModelConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub use_anonymous_sproc: Option<bool>,
     pub contract: Option<DbtContract>,
+    #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub concurrent_batches: Option<bool>,
@@ -1978,6 +1988,46 @@ __warehouse_specific_config__: {}
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
         assert_eq!(state.execute_hooks_on_any_reuse, Some(true));
+    }
+
+    /// Regression for fs#13343: Core accepts a sequence-valued `column_types` entry
+    /// (e.g. produced by a templated macro); Fusion must not reject it during YAML load.
+    #[test]
+    fn test_model_config_column_types_accepts_sequence_value() {
+        let config: ModelConfig = dbt_yaml::from_str(
+            r#"
+column_types:
+  id:
+    - integer
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        let column_types = config.column_types.expect("column_types should parse");
+        assert_eq!(
+            column_types.get(&dbt_yaml::Spanned::from("id".to_string())),
+            Some(&"integer".to_string())
+        );
+    }
+
+    /// Regression for fs#13343: Core accepts a mapping-valued `event_time`; Fusion
+    /// must not reject it during YAML load.
+    #[test]
+    fn test_model_config_event_time_accepts_mapping_value() {
+        let config: ModelConfig = dbt_yaml::from_str(
+            r#"
+event_time:
+  column: event_at
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.event_time.as_deref(),
+            Some(r#"{"column":"event_at"}"#)
+        );
     }
 
     #[test]

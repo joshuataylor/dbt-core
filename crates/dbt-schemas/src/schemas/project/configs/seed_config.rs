@@ -34,8 +34,9 @@ use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
 use crate::schemas::serde::{
-    IndexesConfig, PrimaryKeyConfig, StringOrInteger, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    IndexesConfig, PrimaryKeyConfig, StringOrInteger, column_types_map,
+    event_time_or_map_to_string, f64_or_string_f64, hours_to_expiration_or_string_omissible,
+    u64_or_string_u64,
 };
 use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::DefaultTo;
@@ -43,7 +44,11 @@ use dbt_proc_macros::DefaultTo;
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ProjectSeedConfig {
-    #[serde(rename = "+column_types")]
+    #[serde(
+        default,
+        rename = "+column_types",
+        deserialize_with = "column_types_map"
+    )]
     pub column_types: Option<BTreeMap<Spanned<String>, String>>,
     #[serde(rename = "+copy_grants")]
     pub copy_grants: Option<bool>,
@@ -57,7 +62,11 @@ pub struct ProjectSeedConfig {
     pub docs: Option<DocsConfig>,
     #[serde(default, rename = "+enabled", deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
-    #[serde(rename = "+event_time")]
+    #[serde(
+        default,
+        rename = "+event_time",
+        deserialize_with = "event_time_or_map_to_string"
+    )]
     pub event_time: Option<String>,
     #[serde(rename = "+full_refresh")]
     pub full_refresh: Option<bool>,
@@ -408,6 +417,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
     Resolvable, DefaultTo, Deserialize, Serialize, Debug, Default, PartialEq, Clone, DbtSchema,
 )]
 pub struct SeedConfig {
+    #[serde(default, deserialize_with = "column_types_map")]
     pub column_types: Option<BTreeMap<Spanned<String>, String>>,
     #[serde(alias = "project", alias = "data_space")]
     pub database: Option<String>,
@@ -427,6 +437,7 @@ pub struct SeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
     pub group: Option<String>,

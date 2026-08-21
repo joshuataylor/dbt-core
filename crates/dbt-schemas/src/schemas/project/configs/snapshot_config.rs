@@ -37,8 +37,8 @@ use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
 use crate::schemas::serde::{
-    IndexesConfig, PrimaryKeyConfig, StringOrInteger, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    IndexesConfig, PrimaryKeyConfig, StringOrInteger, event_time_or_map_to_string,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
 };
 use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::DefaultTo;
@@ -95,7 +95,11 @@ pub struct ProjectSnapshotConfig {
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(rename = "+grants")]
     pub grants: OmissibleGrantConfig,
-    #[serde(rename = "+event_time")]
+    #[serde(
+        default,
+        rename = "+event_time",
+        deserialize_with = "event_time_or_map_to_string"
+    )]
     pub event_time: Option<String>,
     #[serde(rename = "+quoting")]
     pub quoting: Option<DbtQuoting>,
@@ -520,6 +524,7 @@ pub struct SnapshotConfig {
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(default)]
     pub grants: OmissibleGrantConfig,
+    #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     #[resolved(promote, expect = "quoting set by apply_package_defaults")]
     pub quoting: Option<DbtQuoting>,

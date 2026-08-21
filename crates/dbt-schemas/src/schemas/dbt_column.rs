@@ -15,7 +15,7 @@ type YmlValue = dbt_yaml::Value;
 use crate::schemas::{
     common::DimensionValidityParams,
     semantic_layer::semantic_manifest::SemanticLayerElementConfig,
-    serde::{StringOrArrayOfStrings, StringOrMap},
+    serde::{StringOrArrayOfStrings, StringOrMap, policy_tags_from_scalar_or_list},
 };
 
 use super::{common::Constraint, data_tests::DataTests};
@@ -121,6 +121,7 @@ pub struct ColumnProperties {
     pub tests: Option<Vec<DataTests>>,
     pub data_tests: Option<Vec<DataTests>>,
     pub granularity: Option<Granularity>,
+    #[serde(default, deserialize_with = "policy_tags_from_scalar_or_list")]
     pub policy_tags: Option<Vec<StringOrMap>>,
     pub classifiers: Option<Vec<String>>,
     pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
@@ -148,6 +149,7 @@ pub struct VersionColumnProperties {
     pub tests: Option<Vec<DataTests>>,
     pub data_tests: Option<Vec<DataTests>>,
     pub granularity: Option<Granularity>,
+    #[serde(default, deserialize_with = "policy_tags_from_scalar_or_list")]
     pub policy_tags: Option<Vec<StringOrMap>>,
     pub classifiers: Option<Vec<String>>,
     pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
@@ -216,6 +218,7 @@ pub struct ColumnConfig {
     pub tags: Option<StringOrArrayOfStrings>,
     pub meta: Option<IndexMap<String, YmlValue>>,
     pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    #[serde(default, deserialize_with = "policy_tags_from_scalar_or_list")]
     pub policy_tags: Option<Vec<StringOrMap>>,
 }
 
@@ -508,6 +511,23 @@ policy_tags:
                 );
             }
             StringOrMap::StringValue(_) => panic!("expected MapValue for second entry"),
+        }
+    }
+
+    /// Regression for fs#13343: a scalar (non-list) `policy_tags` value must deserialize
+    /// as a single-element list, not be rejected.
+    #[test]
+    fn test_column_properties_policy_tags_accepts_scalar_string() {
+        let yaml = "\
+name: id
+policy_tags: governance.tags.PII
+";
+        let parsed: ColumnProperties = dbt_yaml::from_str(yaml).unwrap();
+        let tags = parsed.policy_tags.expect("policy_tags preserved");
+        assert_eq!(tags.len(), 1);
+        match &tags[0] {
+            StringOrMap::StringValue(s) => assert_eq!(s, "governance.tags.PII"),
+            StringOrMap::MapValue(_) => panic!("expected StringValue"),
         }
     }
 }

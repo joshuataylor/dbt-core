@@ -23,6 +23,7 @@ import { SourceCollectionPage } from './components/SourceCollectionPage';
 import { SourceFilterView } from './components/SourceFilterView';
 import { TestFilterView } from './components/TestFilterView';
 import { Badge } from './components/ui/Badge';
+import { Input } from './components/ui/Input';
 import { Tooltip } from './components/ui/Tooltip';
 import { useAllNodes } from './hooks/useAllNodes';
 import { deriveUpgradeCapabilities } from './hooks/useCapabilities';
@@ -641,22 +642,21 @@ function Topbar({
           )}
         </div>
       </div>
-      <label className="topbar-v2__search">
-        <Icon ryecon={RyeconMagnifyingGlass} size="sm" alt="Search" />
-        <input
-          type="search"
-          placeholder="Search models, sources, tests, metrics…"
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              onSubmitSearch?.();
-            }
-          }}
-          aria-label={project ? `Search ${project.name}` : 'Search project'}
-        />
-      </label>
+      <Input
+        type="search"
+        startIcon={{ ryecon: RyeconMagnifyingGlass }}
+        placeholder="Search models, sources, tests, metrics…"
+        value={search}
+        onChange={(e) => onSearch(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onSubmitSearch?.();
+          }
+        }}
+        aria-label={project ? `Search ${project.name}` : 'Search project'}
+        className="w-full"
+      />
     </header>
   );
 }

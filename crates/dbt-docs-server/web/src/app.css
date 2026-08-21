@@ -168,38 +168,6 @@ button {
     /* dark base */
     var(--bgNavHeader);
 }
-.topbar-v2__search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  justify-self: center;
-  height: 32px;
-  padding: 0 10px 0 12px;
-  border-radius: 6px;
-  background: var(--bgMain);
-  border: 1px solid var(--borderMain);
-  color: var(--fgAlt);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-.topbar-v2__search:focus-within {
-  border-color: var(--borderBrand);
-  box-shadow: 0 0 0 3px var(--focusHalo);
-}
-.topbar-v2__search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--fgMain);
-  font-size: 13px;
-  font-family: inherit;
-}
-.topbar-v2__search input::placeholder {
-  color: var(--fgAlt);
-}
 .topbar {
   display: grid;
   grid-template-columns: 280px 1fr 280px;

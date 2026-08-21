@@ -1,11 +1,12 @@
 import {
   ColumnDef,
   DefaultTData,
-  Pagination,
   PaginationFooterProps,
   Table,
   TableProps,
 } from '@dbt-labs/sourdough';
+
+import { Pagination } from '../../components/ui/Pagination';
 
 const ROW_HEIGHT_PX = 52;
 

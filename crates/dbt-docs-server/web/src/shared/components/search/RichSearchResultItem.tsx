@@ -9,12 +9,12 @@ import {
 } from '@dbt-labs/dbt-dag';
 import {
   Icon,
-  Link,
   RyeconDatabaseEnvironment,
   RyeconProjects,
   RyeconTableColumn,
 } from '@dbt-labs/sourdough';
 
+import { Link } from '../../../components/ui/Link';
 import { LoadingBlock } from '../../../components/ui/LoadingBlock';
 import { Tooltip } from '../../../components/ui/Tooltip';
 import { TrustSignals } from '../../typings/trustSignals';

@@ -37,6 +37,7 @@
     "hyparquet": "^1.28.1",
     "hyparquet-compressors": "^1.1.1",
     "lodash": "^4.17.21",
+    "lucide-react": "^1.33.0",
     "pretty-bytes": "^6.1.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

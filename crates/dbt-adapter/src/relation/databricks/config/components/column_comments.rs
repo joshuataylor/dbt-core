@@ -53,11 +53,19 @@ fn normalized_keys_diff(
     desired_state: &IndexMap<String, String>,
     current_state: &IndexMap<String, String>,
 ) -> Option<IndexMap<String, String>> {
-    diff::changed_keys(
-        &normalized_keys(desired_state),
-        &normalized_keys(current_state),
-    )
-    .map(|v| {
+    // Consider "" and <not present> to be equivalent. We don't want to issue
+    // spurious COMMENT ON queries that set comments to the empty string, so we
+    // drop empty comments from both states before diffing.
+    let desired: IndexMap<String, &str> = normalized_keys(desired_state)
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+    let current: IndexMap<String, &str> = normalized_keys(current_state)
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .collect();
+
+    diff::changed_keys(&desired, &current).map(|v| {
         v.iter()
             .map(|(k, v)| (k.to_string(), (*v).to_string()))
             .collect()

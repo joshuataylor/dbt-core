@@ -186,8 +186,11 @@ pub struct ResolveModelCtx {
     #[schemars(with = "serde_json::Value")]
     pub builtins: MinijinjaValue,
 
-    /// `{{ graph }}` — `Value::UNDEFINED` at parse-model scope; the real
-    /// flat graph is set at compile time.
+    /// `{{ graph }}` — the invocation-wide mutable mapping, empty at
+    /// parse-model scope; the flat graph is merged into that same mapping at
+    /// compile time. Mirrors dbt-core, where `graph` is `manifest.flat_graph`:
+    /// one dict for the whole invocation, `{}` until `build_flat_graph()` runs,
+    /// so macros can use it as scratch state throughout. dbt-labs/fs#13454.
     #[schemars(with = "serde_json::Value")]
     pub graph: MinijinjaValue,
 

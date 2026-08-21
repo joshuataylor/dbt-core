@@ -50,7 +50,9 @@ use dbt_jinja_ctx::{
     JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap, to_model_context_map,
 };
 
-use crate::{phases::MacroLookupContext, serde::into_typed_with_error};
+use crate::{
+    invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
+};
 
 use super::sql_resource::SqlResource;
 
@@ -299,7 +301,13 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         config: config_value,
         model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
         builtins: MinijinjaValue::from_object(builtins),
-        graph: MinijinjaValue::UNDEFINED,
+        // The invocation-wide `graph` mapping, empty at this point — matching
+        // dbt-core, where parse-time `graph` is `manifest.flat_graph` before
+        // `build_flat_graph()` has filled it in. Handing out the shared
+        // mapping (rather than `UNDEFINED`) is what lets a macro stash scratch
+        // state on `graph` during parsing and read it back from a later parse
+        // render or from a hook. dbt-labs/fs#13454.
+        graph: MinijinjaValue::from_dyn_object(invocation_graph()),
         store_result: MinijinjaValue::from_function(result_store.store_result()),
         load_result: MinijinjaValue::from_function(result_store.load_result()),
         store_raw_result: MinijinjaValue::from_function(result_store.store_raw_result()),

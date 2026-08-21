@@ -52,6 +52,8 @@ use dbt_schemas::schemas::NodeBaseAttributes;
 use dbt_schemas::schemas::TimeSpine;
 use dbt_schemas::schemas::TimeSpinePrimaryColumn;
 use dbt_schemas::schemas::common::Access;
+use indexmap::IndexMap;
+
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::common::ModelFreshnessRules;
@@ -61,6 +63,7 @@ use dbt_schemas::schemas::common::Versions;
 use dbt_schemas::schemas::dbt_column::ColumnInheritanceRules;
 use dbt_schemas::schemas::dbt_column::ColumnProperties;
 use dbt_schemas::schemas::dbt_column::DbtColumnRef;
+use dbt_schemas::schemas::dbt_column::VersionColumnProperties;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::macros::DbtMacro;
 use dbt_schemas::schemas::manifest::semantic_model::NodeRelation;
@@ -1145,36 +1148,38 @@ fn process_versioned_columns(
 ) -> Result<Vec<DbtColumnRef>, Box<dbt_common::FsError>> {
     for version in versions.iter() {
         if maybe_version.is_some_and(|v| Some(v) == version.get_version().as_ref())
-            && let Some(column_props) = version.__additional_properties__.get("columns")
+            // Typed and already Jinja-rendered -- see the doc comment on `Versions::columns`.
+            && let Some(version_columns) = version.columns.as_deref()
         {
-            let column_map: Vec<ColumnProperties> = column_props
-                .as_sequence()
-                .map(|cols| {
-                    cols.iter()
-                        .filter_map(|col| col.as_mapping())
-                        .filter(|map| !(map.contains_key("include") || map.contains_key("exclude")))
-                        .filter_map(|map| {
-                            dbt_yaml::from_value::<ColumnProperties>(map.clone().into()).ok()
-                        })
-                        .collect()
-                })
+            // dbt-core: a version with no include/exclude directive defaults to
+            // `IncludeExclude(include="*")`, i.e. inherit every model-level column.
+            let rules = ColumnInheritanceRules::from_version_column_props(version_columns)
                 .unwrap_or_default();
 
-            let mut versioned_columns = process_columns(
-                Some(&column_map),
+            let version_column_props: Vec<ColumnProperties> = version_columns
+                .iter()
+                .filter_map(VersionColumnProperties::to_column_properties)
+                .collect();
+            let version_columns = process_columns(
+                Some(&version_column_props),
                 model_config.meta.clone(),
                 model_config.tags.inner().clone().map(|tags| tags.into()),
             )?;
 
-            if let Some(rules) = ColumnInheritanceRules::from_version_columns(column_props) {
-                columns
-                    .iter()
-                    .filter(|col| rules.should_include_column(&col.name))
-                    .for_each(|col| {
-                        versioned_columns.push(col.clone());
-                    });
+            // dbt-core `UnparsedModelUpdate.get_columns_for_version`: filtered model-level columns
+            // first, then the version-local ones. `ParserRef.from_versioned_target` then folds that
+            // list into a name-keyed dict, so a version column shadowing a model-level column takes
+            // the model-level column's *position* and the version's *value* -- which is exactly what
+            // `IndexMap::insert` on an existing key does.
+            let mut merged: IndexMap<String, DbtColumnRef> = columns
+                .into_iter()
+                .filter(|col| rules.should_include_column(&col.name))
+                .map(|col| (col.name.clone(), col))
+                .collect();
+            for col in version_columns {
+                merged.insert(col.name.clone(), col);
             }
-            return Ok(versioned_columns);
+            return Ok(merged.into_values().collect());
         }
     }
 

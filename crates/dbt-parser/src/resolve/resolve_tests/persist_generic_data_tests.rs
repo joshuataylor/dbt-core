@@ -19,6 +19,7 @@ use dbt_schemas::schemas::data_tests::{CustomTest, DataTests};
 
 use dbt_schemas::schemas::dbt_column::ColumnInheritanceRules;
 use dbt_schemas::schemas::dbt_column::ColumnProperties;
+use dbt_schemas::schemas::dbt_column::VersionColumnProperties;
 use dbt_schemas::schemas::project::DataTestConfig;
 use dbt_schemas::schemas::properties::Tables;
 use dbt_schemas::schemas::properties::{ModelProperties, SeedProperties, SnapshotProperties};
@@ -1483,9 +1484,9 @@ fn collect_versioned_model_tests(
         }
 
         // Handle version-specific column tests and inheritance
-        if let Some(columns) = version.__additional_properties__.get("columns") {
+        if let Some(columns) = version.columns.as_deref() {
             let mut column_tests = if let Some(inheritance_rules) =
-                ColumnInheritanceRules::from_version_columns(columns)
+                ColumnInheritanceRules::from_version_column_props(columns)
             {
                 // Apply inheritance rules
                 base_test_config
@@ -1509,33 +1510,36 @@ fn collect_versioned_model_tests(
                 base_test_config.column_tests.clone().unwrap_or_default()
             };
 
-            // Then handle any explicit column test definitions
-            if let Ok(column_map) = dbt_yaml::from_value::<Vec<ColumnProperties>>(columns.clone()) {
-                for col in column_map {
-                    if col.tests.is_some() && col.data_tests.is_some() {
-                        return err!(
-                            ErrorCode::InvalidConfig,
-                            "Cannot have both 'tests' and 'data_tests' defined"
-                        );
-                    }
-                    // In properties files, column tests may be specified via either `tests` or
-                    // `data_tests`. Treat them equivalently (same as non-versioned columns).
-                    if let Some(tests) = col.tests.as_ref().or(col.data_tests.as_ref()) {
-                        let tags = col
-                            .config
-                            .as_ref()
-                            .and_then(|c| c.tags.clone())
-                            .map(|t| t.into())
-                            .unwrap_or_default();
-                        column_tests.insert(
-                            col.name.clone(),
-                            ColumnTestEntry {
-                                quote: col.quote.unwrap_or(false),
-                                tests: tests.clone(),
-                                tags,
-                            },
-                        );
-                    }
+            // Then handle any explicit column test definitions. Directive-only entries
+            // (`include:`/`exclude:`, no `name:`) yield `None` and are skipped here -- they were
+            // already consumed as inheritance rules above.
+            for col in columns
+                .iter()
+                .filter_map(VersionColumnProperties::to_column_properties)
+            {
+                if col.tests.is_some() && col.data_tests.is_some() {
+                    return err!(
+                        ErrorCode::InvalidConfig,
+                        "Cannot have both 'tests' and 'data_tests' defined"
+                    );
+                }
+                // In properties files, column tests may be specified via either `tests` or
+                // `data_tests`. Treat them equivalently (same as non-versioned columns).
+                if let Some(tests) = col.tests.as_ref().or(col.data_tests.as_ref()) {
+                    let tags = col
+                        .config
+                        .as_ref()
+                        .and_then(|c| c.tags.clone())
+                        .map(|t| t.into())
+                        .unwrap_or_default();
+                    column_tests.insert(
+                        col.name.clone(),
+                        ColumnTestEntry {
+                            quote: col.quote.unwrap_or(false),
+                            tests: tests.clone(),
+                            tags,
+                        },
+                    );
                 }
             }
 
@@ -2041,7 +2045,8 @@ mod tests {
         // the assignment, leaving the cloned base config (with all tests) intact.
 
         use dbt_schemas::schemas::common::Versions;
-        use dbt_yaml::{Mapping, Verbatim};
+        use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
+        use dbt_yaml::Verbatim;
 
         // Build a base config: one column "cost_center_bkey" with a `unique` test.
         let unique_test = DataTests::String(Spanned::from("unique".to_string()));
@@ -2063,29 +2068,18 @@ mod tests {
             source_name: None,
         };
 
-        // Helper: build `columns` YAML value for a version spec.
-        let make_columns_value = |include: &str, exclude: Vec<&str>| -> dbt_yaml::Value {
-            let mut entry = Mapping::new();
-            entry.insert(
-                dbt_yaml::Value::string("include".to_string()),
-                dbt_yaml::Value::string(include.to_string()),
-            );
-            if !exclude.is_empty() {
-                let seq = exclude
-                    .iter()
-                    .map(|s| dbt_yaml::Value::string((*s).to_string()))
-                    .collect();
-                entry.insert(
-                    dbt_yaml::Value::string("exclude".to_string()),
-                    dbt_yaml::Value::sequence(seq),
-                );
-            }
-            dbt_yaml::Value::sequence(vec![dbt_yaml::Value::mapping(entry)])
+        // Helper: build the `columns` list of a version spec, carrying only the
+        // include/exclude directive entry.
+        let make_columns = |include: &str, exclude: Vec<&str>| -> Vec<VersionColumnProperties> {
+            vec![VersionColumnProperties {
+                include: Some(StringOrArrayOfStrings::String(include.to_string())),
+                exclude: (!exclude.is_empty())
+                    .then(|| exclude.iter().map(|s| (*s).to_string()).collect()),
+                ..Default::default()
+            }]
         };
 
-        let make_version = |v: i64, columns_value: dbt_yaml::Value| -> Versions {
-            let mut extra: HashMap<String, dbt_yaml::Value> = HashMap::new();
-            extra.insert("columns".to_string(), columns_value);
+        let make_version = |v: i64, columns: Vec<VersionColumnProperties>| -> Versions {
             Versions {
                 v: dbt_yaml::Value::Number(dbt_yaml::Number::from(v), Span::zero()),
                 deprecation_date: None,
@@ -2096,15 +2090,15 @@ mod tests {
                 constraints: None,
                 data_tests: None,
                 tests: None,
-                columns: None,
-                __additional_properties__: Verbatim::from(extra),
+                columns: Some(columns),
+                __additional_properties__: Verbatim::from(HashMap::new()),
             }
         };
 
         // v1: include all (no exclusions) — test must be present
-        let v1 = make_version(1, make_columns_value("all", vec![]));
+        let v1 = make_version(1, make_columns("all", vec![]));
         // v2: include all, exclude cost_center_bkey — test must be absent
-        let v2 = make_version(2, make_columns_value("all", vec!["cost_center_bkey"]));
+        let v2 = make_version(2, make_columns("all", vec!["cost_center_bkey"]));
 
         let result =
             collect_versioned_model_tests(&base_config, &[v1, v2]).expect("should not fail");

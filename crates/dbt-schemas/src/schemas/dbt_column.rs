@@ -149,12 +149,41 @@ pub struct VersionColumnProperties {
     pub data_tests: Option<Vec<DataTests>>,
     pub granularity: Option<Granularity>,
     pub policy_tags: Option<Vec<StringOrMap>>,
+    pub classifiers: Option<Vec<String>>,
     pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
     pub column_mask: Option<ColumnMask>,
     pub quote: Option<bool>,
     pub config: Option<ColumnConfig>,
     pub entity: Option<Entity>,
     pub dimension: Option<ColumnPropertiesDimension>,
+}
+
+impl VersionColumnProperties {
+    /// A version column entry is a real column definition iff it carries a `name`. Entries without
+    /// one are the `include`/`exclude` inheritance directive, which is consumed by
+    /// [`ColumnInheritanceRules::from_version_column_props`] instead.
+    ///
+    /// Mirrors dbt-core's `UnparsedVersion.__post_init__` split of `columns` into
+    /// `_include_exclude` and `_unparsed_columns` (`dbt/contracts/graph/unparsed.py`).
+    pub fn to_column_properties(&self) -> Option<ColumnProperties> {
+        Some(ColumnProperties {
+            name: self.name.clone()?,
+            data_type: self.data_type.clone(),
+            description: self.description.clone(),
+            constraints: self.constraints.clone(),
+            tests: self.tests.clone(),
+            data_tests: self.data_tests.clone(),
+            granularity: self.granularity.clone(),
+            policy_tags: self.policy_tags.clone(),
+            classifiers: self.classifiers.clone(),
+            databricks_tags: self.databricks_tags.clone(),
+            column_mask: self.column_mask.clone(),
+            quote: self.quote,
+            config: self.config.clone(),
+            entity: self.entity.clone(),
+            dimension: self.dimension.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, DbtSchema, Eq, PartialEq)]
@@ -197,56 +226,45 @@ pub struct ColumnInheritanceRules {
     excludes: Vec<String>,
 }
 
-impl ColumnInheritanceRules {
-    // Given a column block in a versioned model, return the includes and excludes for that model
-    pub fn from_version_columns(columns: &dbt_yaml::Value) -> Option<Self> {
-        if let dbt_yaml::Value::Sequence(cols, _) = columns {
-            for col in cols {
-                if let dbt_yaml::Value::Mapping(map, _) = col {
-                    // Only create inheritance rules if there's an include or exclude
-                    let include_key = dbt_yaml::Value::string("include".to_string());
-                    let exclude_key = dbt_yaml::Value::string("exclude".to_string());
-
-                    if map.contains_key(&include_key) || map.contains_key(&exclude_key) {
-                        let includes = map
-                            .get(&include_key)
-                            .map(|v| match v {
-                                dbt_yaml::Value::String(s, _) if s == "*" || s == "all" => {
-                                    Vec::new()
-                                } // Empty vec means include all
-                                dbt_yaml::Value::Sequence(arr, _) => arr
-                                    .iter()
-                                    .filter_map(|v| match v {
-                                        dbt_yaml::Value::String(s, _) => Some(s.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                dbt_yaml::Value::String(s, _) => vec![s.clone()],
-                                _ => Vec::new(),
-                            })
-                            .unwrap_or_default(); // Default to empty vec (include all)
-
-                        let excludes = map
-                            .get(&exclude_key)
-                            .map(|v| match v {
-                                dbt_yaml::Value::Sequence(arr, _) => arr
-                                    .iter()
-                                    .filter_map(|v| match v {
-                                        dbt_yaml::Value::String(s, _) => Some(s.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                dbt_yaml::Value::String(s, _) => vec![s.clone()],
-                                _ => Vec::new(),
-                            })
-                            .unwrap_or_default();
-
-                        return Some(ColumnInheritanceRules { includes, excludes });
-                    }
-                }
-            }
+/// dbt-core's default when a version supplies no `include`/`exclude` directive is
+/// `IncludeExclude(include="*")` — inherit every model-level column (see
+/// `UnparsedVersion.__post_init__` in `dbt/contracts/graph/unparsed.py`).
+///
+/// Making that dbt-core default the `Default` impl lets callers write
+/// `from_version_column_props(..).unwrap_or_default()` instead of hand-rolling the `None` arm,
+/// which is how dbt-labs/fs#13334 (every inherited column silently dropped) happened.
+impl Default for ColumnInheritanceRules {
+    fn default() -> Self {
+        Self {
+            includes: Vec::new(), // empty == include all
+            excludes: Vec::new(),
         }
-        None // No inheritance rules specified means use default (inherit all)
+    }
+}
+
+impl ColumnInheritanceRules {
+    /// Given the `columns:` list of a versioned model, return the include/exclude directive it
+    /// carries, or `None` when it carries none (in which case callers must use [`Default`], i.e.
+    /// inherit all).
+    ///
+    /// dbt-core reads the *first* directive entry and errors on a second one; Fusion takes the
+    /// first and ignores the rest.
+    pub fn from_version_column_props(columns: &[VersionColumnProperties]) -> Option<Self> {
+        let directive = columns
+            .iter()
+            .find(|col| col.include.is_some() || col.exclude.is_some())?;
+
+        let includes = match directive.include.as_ref() {
+            // `all` / `*` means include everything, represented as an empty `includes`.
+            Some(StringOrArrayOfStrings::String(s)) if s == "*" || s == "all" => Vec::new(),
+            Some(StringOrArrayOfStrings::String(s)) => vec![s.clone()],
+            Some(StringOrArrayOfStrings::ArrayOfStrings(names)) => names.clone(),
+            // `exclude` without `include` behaves as include-all-except.
+            None => Vec::new(),
+        };
+        let excludes = directive.exclude.clone().unwrap_or_default();
+
+        Some(ColumnInheritanceRules { includes, excludes })
     }
 
     /// given a column name, return true if it should be included in the tests based on the includes and excludes and inheritance rules

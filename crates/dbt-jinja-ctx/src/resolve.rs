@@ -69,6 +69,10 @@ pub struct ResolveBaseCtx {
     /// (PR 5+).
     pub execute: bool,
 
+    /// `{{ context }}` — `MacroLookupContext` used by naming macros for
+    /// root-project metadata and macro dispatch.
+    pub context: JinjaObject<MacroLookupContext>,
+
     /// `{{ node }}` — `Value::NONE` at base scope; populated per-model.
     #[schemars(with = "serde_json::Value")]
     pub node: MinijinjaValue,

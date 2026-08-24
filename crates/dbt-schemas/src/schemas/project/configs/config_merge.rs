@@ -320,6 +320,7 @@ impl ReplaceIfNone for crate::schemas::common::OnSchemaChange {}
 impl ReplaceIfNone for crate::schemas::common::PartitionConfig {}
 impl ReplaceIfNone for crate::schemas::common::PersistDocsConfig {}
 impl ReplaceIfNone for crate::schemas::common::Schedule {}
+impl ReplaceIfNone for crate::schemas::common::RowFilterConfig {}
 impl ReplaceIfNone for crate::schemas::common::SchemaOrigin {}
 impl ReplaceIfNone for crate::schemas::common::Severity {}
 impl ReplaceIfNone for crate::schemas::common::StoreFailuresAs {}

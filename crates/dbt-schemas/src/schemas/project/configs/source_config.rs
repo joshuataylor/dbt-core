@@ -440,6 +440,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 skip_not_matched_step: config.skip_not_matched_step,
                 unique_tmp_table_suffix: None,
                 schedule: config.schedule,
+                row_filter: None,
 
                 auto_refresh: config.auto_refresh,
                 backup: config.backup,

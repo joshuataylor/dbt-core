@@ -512,7 +512,7 @@ impl MacroTestHarnessBuilder {
         self
     }
 
-    /// Register Jinja stub functions (`write`, `log`, `store_result`)
+    /// Register Jinja stub functions (`write`, `log`, `store_result`, `load_result`)
     /// typically needed by materialization macros.
     pub fn with_stub_functions(mut self) -> Self {
         self.stub_functions = true;
@@ -592,6 +592,12 @@ impl MacroTestHarnessBuilder {
                 "store_result",
                 |_name: Value, _kwargs: minijinja::value::Kwargs| Ok(Value::UNDEFINED),
             );
+            env.env.add_function("load_result", |_name: Value| {
+                Ok(Value::from_serialize(BTreeMap::from([(
+                    "table",
+                    Vec::<Vec<Value>>::new(),
+                )])))
+            });
         }
 
         for (key, value) in self.globals {

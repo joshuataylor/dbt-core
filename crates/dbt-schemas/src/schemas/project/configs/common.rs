@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use dbt_common::tracing::emit::emit_trace_event;
 use dbt_telemetry::StateModifiedDiff;
 
-use crate::schemas::common::PartitionConfig;
 use crate::schemas::common::{ClusterConfig, DocsConfig, Schedule};
+use crate::schemas::common::{PartitionConfig, RowFilterConfig};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::model_config::DataLakeObjectCategory;
 use crate::schemas::project::dbt_project::{ResolvableConfig, ResolvedConfig};
@@ -179,6 +179,7 @@ pub struct WarehouseSpecificNodeConfig {
     pub view_update_via_alter: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub unique_tmp_table_suffix: Option<bool>,
+    pub row_filter: Option<RowFilterConfig>,
 
     // Snowflake
     pub table_tag: Option<String>,

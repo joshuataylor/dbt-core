@@ -1209,7 +1209,7 @@ pub struct PersistDocsConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema, Default)]
 pub struct ScheduleConfig {
     pub cron: Option<String>,
     pub time_zone_value: Option<String>,
@@ -1237,6 +1237,13 @@ impl Schedule {
             Schedule::ScheduleConfig(config) => config.clone(),
         }
     }
+}
+
+#[skip_serializing_none]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
+pub struct RowFilterConfig {
+    pub function: Option<String>,
+    pub columns: Option<StringOrArrayOfStrings>,
 }
 
 #[derive(UntaggedEnumDeserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]

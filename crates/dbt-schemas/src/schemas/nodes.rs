@@ -15,7 +15,9 @@ use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeProcessed, NodeType};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 type YmlValue = dbt_yaml::Value;
-use crate::schemas::common::{ExternalTable, PersistDocsConfig, hooks_equal, normalize_sql};
+use crate::schemas::common::{
+    ExternalTable, PersistDocsConfig, RowFilterConfig, hooks_equal, normalize_sql,
+};
 use crate::schemas::dbt_column::{DbtColumnRef, deserialize_dbt_columns, serialize_dbt_columns};
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
@@ -5749,6 +5751,7 @@ impl AdapterAttr {
                     skip_matched_step: config.skip_matched_step,
                     skip_not_matched_step: config.skip_not_matched_step,
                     unique_tmp_table_suffix: config.unique_tmp_table_suffix,
+                    row_filter: config.row_filter.clone(),
                     schedule: config.schedule.as_ref().map(|s| s.to_schedule_config()),
                 })))
             }
@@ -5856,6 +5859,7 @@ impl AdapterAttr {
                         skip_matched_step: config.skip_matched_step,
                         skip_not_matched_step: config.skip_not_matched_step,
                         unique_tmp_table_suffix: config.unique_tmp_table_suffix,
+                        row_filter: config.row_filter.clone(),
                         schedule: config.schedule.as_ref().map(|s| s.to_schedule_config()),
                     })))
             }
@@ -5927,6 +5931,7 @@ pub struct DatabricksAttr {
     pub merge_with_schema_evolution: Option<bool>,
     pub skip_matched_step: Option<bool>,
     pub skip_not_matched_step: Option<bool>,
+    pub row_filter: Option<RowFilterConfig>,
     pub unique_tmp_table_suffix: Option<bool>,
     pub schedule: Option<ScheduleConfig>,
 }

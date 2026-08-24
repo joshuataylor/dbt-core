@@ -24,6 +24,7 @@ use crate::schemas::common::DbtMaterialization;
 use crate::schemas::common::DbtUniqueKey;
 use crate::schemas::common::PartitionConfig;
 use crate::schemas::common::PersistDocsConfig;
+use crate::schemas::common::RowFilterConfig;
 use crate::schemas::common::SyncConfig;
 use crate::schemas::common::{Access, DbtQuoting, Schedule};
 use crate::schemas::common::{DocsConfig, OnConfigurationChange, OnError};
@@ -523,6 +524,10 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+schedule")]
     pub schedule: Option<Schedule>,
 
+    // Row filter (Databricks)
+    #[serde(rename = "+row_filter")]
+    pub row_filter: Option<RowFilterConfig>,
+
     // Primary Key (Salesforce)
     #[serde(default, rename = "+primary_key")]
     pub primary_key: PrimaryKeyConfig,
@@ -768,6 +773,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.indexes.is_some()
             || self.unlogged.is_some()
             || self.schedule.is_some()
+            || self.row_filter.is_some()
             || self.primary_key.is_some()
             || self.category.is_some()
             || self.sync.is_some()
@@ -1044,6 +1050,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 skip_not_matched_step: config.skip_not_matched_step,
                 unique_tmp_table_suffix: config.unique_tmp_table_suffix,
                 schedule: config.schedule,
+                row_filter: config.row_filter,
 
                 auto_refresh: config.auto_refresh,
                 backup: config.backup,
@@ -1267,6 +1274,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             indexes: config.__warehouse_specific_config__.indexes,
             unlogged: config.__warehouse_specific_config__.unlogged,
             schedule: config.__warehouse_specific_config__.schedule,
+            row_filter: config.__warehouse_specific_config__.row_filter,
             incremental_apply_config_changes: config
                 .__warehouse_specific_config__
                 .incremental_apply_config_changes,

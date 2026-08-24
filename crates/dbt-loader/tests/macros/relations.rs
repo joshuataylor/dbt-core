@@ -37,9 +37,10 @@ mod databricks {
     // `databricks__create_table_as` calls these clause helpers (defined in other asset files)
     // unconditionally. Each must resolve, but the only thing under test here is the
     // create/replace branch, so we register them as no-ops.
-    const CLAUSE_STUBS: [&str; 7] = [
+    const CLAUSE_STUBS: [&str; 8] = [
         "file_format_clause",
         "partition_cols",
+        "get_create_row_filter_clause",
         "liquid_clustered_cols",
         "clustered_cols",
         "location_clause",

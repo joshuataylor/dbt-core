@@ -889,7 +889,7 @@ impl DbtLoadedProject {
             DEFAULT_RESOLVED_QUOTING,
             None,
             token,
-            None, // cloud_config — debug only runs `select 1`, cloud query comments not needed
+            None, // cloud_config — debug only runs `select 1`, no cloud connection needed
             None, // threads
         )
     }

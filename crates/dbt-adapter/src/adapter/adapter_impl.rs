@@ -6083,6 +6083,7 @@ mod tests {
             Arc::new(RelationCache::default()),
             behavior_flag_overrides,
             None,
+            None,
         ))
     }
 

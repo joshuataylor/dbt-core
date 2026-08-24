@@ -1240,8 +1240,29 @@ impl<'env> Vm<'env> {
                         });
 
                         state.record_pending_call_site(listeners, this_span);
-                        let rv = call_wrapper(listeners, || func.call(state, args, listeners))
-                            .map_err(|err| state.with_span_error(err, this_span))?;
+
+                        // An overridden argument short-circuits a plain (non-macro)
+                        // callable the same way `ApplyFilter`/`PerformTest`/`In` already
+                        // short-circuit filters/tests/membership tests: a native function
+                        // like `range()` expects a concretely-typed argument (e.g. `i32`)
+                        // and has no taint-awareness of its own, so calling it with a
+                        // fabricated stub value would otherwise raise a hard render error
+                        // (e.g. "cannot convert plain object to i32") instead of degrading
+                        // like every other operation on tainted values. Macro calls are
+                        // exempted -- their own call-boundary taint rule (`Macro::call`)
+                        // requires the macro body to actually execute so it can absorb
+                        // taint from real internal logic, not just re-push an argument.
+                        let overridden = if func.downcast_object::<Macro>().is_none() {
+                            override_listener
+                                .and_then(|l| args.iter().find_map(|v| l.override_value(v)))
+                        } else {
+                            None
+                        };
+                        let rv = match overridden {
+                            Some(v) => v,
+                            None => call_wrapper(listeners, || func.call(state, args, listeners))
+                                .map_err(|err| state.with_span_error(err, this_span))?,
+                        };
 
                         listeners.iter().for_each(|listener| {
                             listener.on_function_call_end(&function_name);

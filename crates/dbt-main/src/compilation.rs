@@ -38,6 +38,7 @@ use dbt_schema_store::{
     SchemaStoreTrait,
     store::{DataStore, SchemaStore},
 };
+use dbt_schemas::schemas::selection_override::resolve_selection_override;
 use dbt_tasks_core::{
     CompiledSqlCache, RunTaskResults,
     local_schema_builder::{init_data_store, init_schema_store},
@@ -1459,8 +1460,13 @@ impl DbtProjectCompilation {
 
         // For Pull command, use its select args for scheduling
         let pull_select = cli.sample_select();
+        let selection_override = resolve_selection_override(arg)?;
         let scheduler_args =
-            SchedulerArgs::from_eval_args_with_exclude_unique_ids(arg, exclude_unique_ids);
+            SchedulerArgs::from_eval_args_with_exclude_unique_ids_and_selection_override(
+                arg,
+                exclude_unique_ids,
+                selection_override,
+            );
 
         let schedule = if let Some(ref pull_select_args) = pull_select {
             let pull_exclude = cli.sample_exclude();

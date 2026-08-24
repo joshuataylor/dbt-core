@@ -124,7 +124,10 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     "DBT_ENGINE_EXPERIMENTAL_LIST_UDFS",
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
     "DBT_ENGINE_MANAGE_STATE",
+    "DBT_ENGINE_MANTLE_ARTIFACTS",
     "DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION",
+    "DBT_ENGINE_OVERRIDE_SELECTION_FROM_RECORDING",
+    "DBT_ENGINE_OVERRIDE_SELECTION_FROM_RUN_RESULTS",
     "DBT_ENGINE_RECORDER_FILE_PATH",
     "DBT_ENGINE_RECORDER_MODE",
     "DBT_ENGINE_RECORDER_ROW_LIMIT",
@@ -282,6 +285,35 @@ mod tests {
             std::env::remove_var("DBT_ENGINE_BETA_PARSING");
         }
         assert!(result.is_ok(), "known engine env var should not error");
+    }
+
+    #[test]
+    fn validate_engine_env_vars_allows_selection_override_vars() {
+        // Regression: these are read straight from the environment, which is invisible to the
+        // reserved-prefix check. Setting them must not be rejected as user-authored.
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let vars = [
+            ("DBT_ENGINE_MANTLE_ARTIFACTS", "/tmp/mantle"),
+            ("DBT_ENGINE_OVERRIDE_SELECTION_FROM_RUN_RESULTS", "1"),
+            ("DBT_ENGINE_OVERRIDE_SELECTION_FROM_RECORDING", "1"),
+        ];
+        for (key, value) in vars {
+            unsafe {
+                #[allow(clippy::disallowed_methods)]
+                std::env::set_var(key, value);
+            }
+        }
+        let result = validate_engine_env_vars();
+        for (key, _) in vars {
+            unsafe {
+                #[allow(clippy::disallowed_methods)]
+                std::env::remove_var(key);
+            }
+        }
+        assert!(
+            result.is_ok(),
+            "selection-override vars should be known engine env vars: {result:?}"
+        );
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub mod schemas {
     pub mod ref_and_source;
     pub mod relations;
     mod run_results;
+    pub mod selection_override;
     pub mod selectors;
     pub mod serde;
     mod sources;

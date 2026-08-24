@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -66,13 +66,16 @@ use dbt_loader::{
 use dbt_login::{execute_login, execute_login_status};
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
+use dbt_schemas::schemas::selection_override::{
+    SAMPLE_CAP, format_sample, reconcile_reported_nodes, resolve_selection_override,
+};
 use dbt_schemas::{
     man::execute_man_command,
     schemas::legacy_catalog::{DbtCatalog, build_catalog},
 };
 use dbt_schemas::{
     schemas::{
-        DbtModel, InternalDbtNodeAttributes,
+        DbtModel, InternalDbtNodeAttributes, Nodes, RunResultsArtifact,
         common::{DbtMaterialization, ResolvedQuoting},
         relations::base::BaseRelation,
     },
@@ -1267,6 +1270,12 @@ impl<'a> AllPhasesExecutor<'a> {
         if self.arg.write_json && self.arg.command != FsCommand::Parse {
             write_run_results_json_or_warn(&run_results_artifact, self.arg.as_ref());
         }
+
+        report_selection_override_reconciliation(
+            self.arg.as_ref(),
+            &run_results_artifact,
+            &resolved_state.nodes,
+        );
 
         // Save artifact for callers
         self.captured_artifacts.run_results = Some(run_results_artifact);
@@ -2562,6 +2571,65 @@ pub async fn write_catalog_json(
     )?;
     emit_info_log_message("Successfully wrote catalog.json");
     Ok(catalog)
+}
+
+/// Report how the nodes this run reported compare against the externally supplied node set.
+///
+/// This is the actual invariant check, and the primary signal. The counters emitted when the
+/// schedule was built describe a different level: they can look clean while this one fails, because
+/// a node can be scheduled correctly and then never produce a result row.
+///
+/// Re-resolves the supplied set rather than threading it down from schedule time; the artifact is
+/// small, and a read failure here cannot happen without the run having already failed at schedule
+/// time.
+fn report_selection_override_reconciliation(
+    arg: &EvalArgs,
+    run_results: &RunResultsArtifact,
+    nodes: &Nodes,
+) {
+    let Ok(Some(over)) = resolve_selection_override(arg) else {
+        return;
+    };
+
+    let reported: BTreeSet<String> = run_results
+        .results
+        .iter()
+        .map(|result| result.unique_id.clone())
+        .collect();
+    let report = reconcile_reported_nodes(over.ids(), &reported, nodes);
+
+    let mut message = format!(
+        "Nodes reported by this run against the externally supplied node set: \
+         reported={} injected={} ran_not_injected={} injected_not_ran={}",
+        report.reported,
+        report.injected,
+        report.ran_not_injected.len(),
+        report.injected_not_ran.len(),
+    );
+    if !report.ran_not_injected.is_empty() {
+        message.push_str(&format!(
+            "; ran but not supplied: {}",
+            format_sample(
+                &report.ran_not_injected[..report.ran_not_injected.len().min(SAMPLE_CAP)],
+                report.ran_not_injected.len()
+            )
+        ));
+    }
+    if !report.injected_not_ran.is_empty() {
+        message.push_str(&format!(
+            "; supplied but not run: {}",
+            format_sample(
+                &report.injected_not_ran[..report.injected_not_ran.len().min(SAMPLE_CAP)],
+                report.injected_not_ran.len()
+            )
+        ));
+    }
+
+    if report.is_clean() {
+        emit_info_log_message(message);
+    } else {
+        emit_warn_log_message(ErrorCode::SelectionOverrideDivergence, message);
+    }
 }
 
 fn write_catalog_columns_epoch(catalog: &DbtCatalog, arg: &EvalArgs) {

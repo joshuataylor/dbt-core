@@ -1456,6 +1456,31 @@ fn parse_boolish_env(value: &OsStr) -> Option<bool> {
         .ok()
 }
 
+/// Read a boolean environment variable, using the same value grammar as the boolean CLI flags
+/// (`1`/`0`, `true`/`false`, `yes`/`no`, …).
+///
+/// Unset reads as `false`; set-but-unparseable is an error rather than a silent `false`, so a typo
+/// cannot quietly turn a feature off.
+pub fn env_flag_enabled(name: &str) -> crate::FsResult<bool> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(false);
+    };
+    parse_boolish_env(value.as_ref()).ok_or_else(|| {
+        crate::fs_err!(
+            crate::ErrorCode::InvalidConfig,
+            "{name} must be a boolean (1/0, true/false, yes/no), got '{}'",
+            value.to_string_lossy()
+        )
+    })
+}
+
+/// Read an environment variable holding a path, treating empty as unset.
+pub fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
     "DBT_LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT";
 

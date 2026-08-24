@@ -1988,7 +1988,7 @@ impl AdapterImpl {
         // Replay fast-path: consult trace-derived cache if available
         if let Replay(..) = self.inner_adapter() {
             // TODO: move this logic to the [ReplayAdapter]
-            if let Some(exists) = self.schema_exists_from_trace(database, schema) {
+            if let Some(exists) = self.schema_exists_from_trace(state, database, schema) {
                 return Ok(Value::from(exists));
             }
         }
@@ -5337,9 +5337,14 @@ impl AdapterImpl {
     /// when available.
     ///
     /// Default is None for non-replay adapters.
-    pub fn schema_exists_from_trace(&self, database: &str, schema: &str) -> Option<bool> {
+    pub fn schema_exists_from_trace(
+        &self,
+        state: &State,
+        database: &str,
+        schema: &str,
+    ) -> Option<bool> {
         match self.inner_adapter() {
-            Replay(_, replay) => replay.replay_schema_exists_from_trace(database, schema),
+            Replay(_, replay) => replay.replay_schema_exists_from_trace(state, database, schema),
             Impl(_, _engine) => None,
         }
     }
@@ -5941,7 +5946,12 @@ pub trait Replayer: fmt::Debug + Send + Sync {
 
     fn replay_describe_relation(&self, state: &State) -> AdapterResult<Option<serde_json::Value>>;
 
-    fn replay_schema_exists_from_trace(&self, database: &str, schema: &str) -> Option<bool>;
+    fn replay_schema_exists_from_trace(
+        &self,
+        state: &State,
+        database: &str,
+        schema: &str,
+    ) -> Option<bool>;
 
     fn replay_get_missing_columns(
         &self,

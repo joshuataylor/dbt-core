@@ -1,3 +1,8 @@
+// `DbtProfile::adapters` is a public `IndexMap`, so downstream crates need to be
+// able to name it to construct a profile without taking an `indexmap` dependency
+// of their own.
+pub use indexmap::IndexMap;
+
 pub mod constants;
 pub mod dbt_types;
 pub mod dbt_utils;
@@ -182,8 +187,9 @@ pub mod schemas {
             ProjectUnitTestConfig, ResolvedUnitTestConfig, UnitTestConfig,
         };
         pub use dbt_project::{
-            DbtProject, DbtProjectNameOnly, DbtProjectSimplified, ProjectDbtCloudConfig,
-            QueryComment, ResolvableConfig, ResolvedConfig, TypedRecursiveConfig,
+            AdapterProjectConfig, DbtProject, DbtProjectNameOnly, DbtProjectSimplified,
+            ProjectDbtCloudConfig, QueryComment, ResolvableConfig, ResolvedConfig,
+            TypedRecursiveConfig,
         };
     }
 

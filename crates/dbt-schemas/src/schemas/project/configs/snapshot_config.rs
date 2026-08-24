@@ -1,6 +1,7 @@
 use crate::schemas::common::ClusterConfig;
 use crate::schemas::serde::OmissibleGrantConfig;
 use crate::schemas::serde::QueryTag;
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_yaml::DbtSchema;
@@ -276,6 +277,9 @@ pub struct ProjectSnapshotConfig {
     pub file_format: Option<String>,
     #[serde(rename = "+catalog_name")]
     pub catalog_name: Option<String>,
+    #[serde(rename = "+adapter")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     #[serde(
         default,
         rename = "+include_full_name_in_path",
@@ -457,6 +461,7 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.databricks_tags.is_some()
             || self.file_format.is_some()
             || self.catalog_name.is_some()
+            || self.adapter.is_some()
             || self.include_full_name_in_path.is_some()
             || self.liquid_clustered_by.is_some()
             || self.location_root.is_some()
@@ -509,6 +514,10 @@ pub struct SnapshotConfig {
     pub target_database: Option<String>,
     pub target_schema: Option<String>,
     pub compute: Option<ComputeArg>,
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     // General Configuration
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -678,6 +687,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             target_database: config.target_database,
             target_schema: config.target_schema,
             compute: config.compute,
+            adapter: config.adapter,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: Tags(config.tags),
@@ -840,6 +850,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             target_database: config.target_database,
             target_schema: config.target_schema,
             compute: config.compute,
+            adapter: config.adapter,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: config.tags.into_inner(),
@@ -1032,7 +1043,7 @@ impl ConfigKeys for SnapshotConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectSnapshotConfig, SnapshotConfig};
+    use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig};
     use crate::schemas::common::{FreshnessPeriod, UpdatesOn};
     use crate::schemas::properties::{ModelState, StatePreClone};
 
@@ -1175,5 +1186,41 @@ __warehouse_specific_config__: {}
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
+    }
+
+    /// `+adapter` names an adapter *type*, so the value is typed rather than a
+    /// free string -- anything that is not a supported adapter fails here, at
+    /// deserialization. Mirrors the seed and model cases.
+    #[test]
+    fn test_project_snapshot_config_adapter_parses_and_round_trips() {
+        let project_config: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++adapter: bigquery
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(project_config.adapter, Some(AdapterType::Bigquery));
+
+        let config: SnapshotConfig = project_config.into();
+        assert_eq!(config.adapter, Some(AdapterType::Bigquery));
+
+        let round_tripped: ProjectSnapshotConfig = config.into();
+        assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+    }
+
+    #[test]
+    fn test_project_snapshot_config_rejects_a_value_that_is_not_an_adapter() {
+        let err = dbt_yaml::from_str::<ProjectSnapshotConfig>(
+            r#"
++adapter: compute
+__additional_properties__: {}
+"#,
+        )
+        .expect_err("`compute` is not an adapter type");
+        assert!(
+            format!("{err}").contains("compute"),
+            "error should name the offending value: {err}"
+        );
     }
 }

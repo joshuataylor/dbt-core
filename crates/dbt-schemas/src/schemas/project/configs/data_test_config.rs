@@ -1,3 +1,4 @@
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::serde_utils::Omissible;
@@ -37,6 +38,9 @@ pub const DEFAULT_DATA_TEST_WARN_IF: &str = "!= 0";
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ProjectDataTestConfig {
+    #[serde(rename = "+adapter")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     #[serde(rename = "+alias")]
     pub alias: Option<String>,
     #[serde(rename = "+compute")]
@@ -333,7 +337,8 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
     }
 
     fn has_set_fields(&self) -> bool {
-        self.alias.is_some()
+        self.adapter.is_some()
+            || self.alias.is_some()
             || self.compute.is_some()
             || self.database.is_some()
             || self.enabled.is_some()
@@ -430,6 +435,10 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
     Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, DbtSchema, PartialEq,
 )]
 pub struct DataTestConfig {
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     pub alias: Option<String>,
     pub compute: Option<ComputeArg>,
     #[serde(alias = "project", alias = "data_space")]
@@ -480,6 +489,7 @@ pub struct DataTestConfig {
 impl From<ProjectDataTestConfig> for DataTestConfig {
     fn from(config: ProjectDataTestConfig) -> Self {
         Self {
+            adapter: config.adapter,
             alias: config.alias,
             compute: config.compute,
             database: config.database,
@@ -634,6 +644,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
 impl From<DataTestConfig> for ProjectDataTestConfig {
     fn from(config: DataTestConfig) -> Self {
         Self {
+            adapter: config.adapter,
             alias: config.alias,
             compute: config.compute,
             database: config.database,
@@ -841,7 +852,7 @@ impl ConfigKeys for DataTestConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{DataTestConfig, ProjectDataTestConfig};
+    use super::{AdapterType, DataTestConfig, ProjectDataTestConfig};
     use crate::schemas::common::UpdatesOn;
 
     #[test]
@@ -926,5 +937,41 @@ execute_hooks_on_any_reuse: true
 
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.evaluate_volatile_sql, Some(true));
+    }
+
+    /// `+adapter` names an adapter *type*, so the value is typed rather than a
+    /// free string -- anything that is not a supported adapter fails here, at
+    /// deserialization. Mirrors the seed and model cases.
+    #[test]
+    fn test_project_data_test_config_adapter_parses_and_round_trips() {
+        let project_config: ProjectDataTestConfig = dbt_yaml::from_str(
+            r#"
++adapter: bigquery
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(project_config.adapter, Some(AdapterType::Bigquery));
+
+        let config: DataTestConfig = project_config.into();
+        assert_eq!(config.adapter, Some(AdapterType::Bigquery));
+
+        let round_tripped: ProjectDataTestConfig = config.into();
+        assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+    }
+
+    #[test]
+    fn test_project_data_test_config_rejects_a_value_that_is_not_an_adapter() {
+        let err = dbt_yaml::from_str::<ProjectDataTestConfig>(
+            r#"
++adapter: compute
+__additional_properties__: {}
+"#,
+        )
+        .expect_err("`compute` is not an adapter type");
+        assert!(
+            format!("{err}").contains("compute"),
+            "error should name the offending value: {err}"
+        );
     }
 }

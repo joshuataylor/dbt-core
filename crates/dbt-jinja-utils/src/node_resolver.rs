@@ -103,7 +103,21 @@ impl NodeResolver {
             ..Default::default()
         };
         for (_, node) in nodes.iter() {
+            // A node's relation is rendered with *its own* adapter, not the
+            // target's default. `ref('x')` returns x's relation, and x lives in
+            // x's adapter's warehouse, so it must render with x's rules however it
+            // is referenced. Both inputs are per-node: the node carries its own
+            // quoting (resolved against its `+adapter` during resolve) and the
+            // adapter type decides `include_policy` -- DuckDB suppresses the
+            // database component for `main`/`memory` while others do not.
+            //
+            // Each relation stays cached one-per-node; only the adapter type used
+            // to build it changes.
+            let node_adapter_type = node.node_adapter();
+
             if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
+                // Sources have no `+adapter`: they are external data, so they take
+                // the target's default.
                 node_resolver.insert_source(
                     &node.common().package_name,
                     source,
@@ -111,12 +125,11 @@ impl NodeResolver {
                     ModelStatus::Enabled,
                 )?;
             } else if let Some(function) = node.as_any().downcast_ref::<DbtFunction>() {
-                node_resolver.insert_function(function, adapter_type, ModelStatus::Enabled)?;
+                node_resolver.insert_function(function, node_adapter_type, ModelStatus::Enabled)?;
             } else {
                 match node.resource_type() {
-                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => {
-                        node_resolver.insert_ref(node, adapter_type, ModelStatus::Enabled, false)?
-                    }
+                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => node_resolver
+                        .insert_ref(node, node_adapter_type, ModelStatus::Enabled, false)?,
                     _ => (),
                 }
             }

@@ -217,6 +217,9 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             schema: schema.to_string(),
             alias: model_name.to_string(),
             relation_name: None,
+            // A placeholder node built during parse, before `+adapter` is resolved;
+            // the target default is the only answer available here.
+            adapter: adapter_type,
             materialized: ModelConfig::default_materialized(),
             static_analysis: global_static_analysis.unwrap_or_default().into(),
             static_analysis_off_reason: None,
@@ -254,7 +257,6 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             contract: None,
             event_time: None,
             catalog_name: None,
-            alt_compute: None,
             table_format: None,
             sync: None,
             compiled_code: None,

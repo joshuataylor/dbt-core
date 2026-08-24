@@ -185,6 +185,7 @@ pub async fn resolve_exposures(
                     meta: exposure_properties_config.meta.clone().unwrap_or_default(),
                 },
                 __base_attr__: NodeBaseAttributes {
+                    adapter: adapter_type,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),

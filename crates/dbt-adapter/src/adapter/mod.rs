@@ -277,6 +277,27 @@ impl Adapter {
         }
     }
 
+    /// The adapter type a node's macros should *behave* as.
+    ///
+    /// A node that selected a non-default adapter via `+adapter` has that
+    /// adapter's dialect in its render context, so type-sensitive macro helpers
+    /// answer for the adapter the node runs on rather than the target's default.
+    /// Falls back to this adapter's own type when the node selected nothing.
+    ///
+    /// Note this deliberately does *not* swap the adapter object itself — the
+    /// engine and connection remain the default adapter's. Only the type-derived
+    /// answers change. Methods whose behaviour comes from the connection rather
+    /// than the type (`external_root`, `external_read_location`) are therefore
+    /// unaffected and remain a known gap.
+    pub fn effective_adapter_type(&self, state: &State) -> AdapterType {
+        // `try_resolve_dialect`, not `resolve_dialect`: the latter defaults to
+        // "postgres", which parses successfully, so this adapter's own type would
+        // never be reached and every method would behave as Postgres.
+        minijinja::dispatch_object::try_resolve_dialect(state)
+            .and_then(|dialect| dialect.parse().ok())
+            .unwrap_or_else(|| self.adapter_type())
+    }
+
     pub fn engine(&self) -> &Arc<dyn crate::AdapterEngine> {
         match &self.inner {
             Typed { adapter, .. } => adapter.engine(),
@@ -663,7 +684,7 @@ impl Adapter {
     /// When the flag is off (or in parse mode) a plain `(a = b)` is returned.
     pub fn render_equals(
         &self,
-        _state: &State,
+        state: &State,
         expr1: &str,
         expr2: &str,
     ) -> Result<Value, minijinja::Error> {
@@ -677,14 +698,15 @@ impl Adapter {
         let sql = if !flag_enabled {
             format!("({expr1} = {expr2})")
         } else {
-            match self.adapter_type() {
+            match self.effective_adapter_type(state) {
                 AdapterType::Snowflake
                 | AdapterType::Bigquery
                 | AdapterType::Postgres
                 | AdapterType::Redshift
                 | AdapterType::Spark
                 | AdapterType::Databricks
-                | AdapterType::DuckDB => {
+                | AdapterType::DuckDB
+                | AdapterType::Alt => {
                     format!("({expr1} IS NOT DISTINCT FROM {expr2})")
                 }
                 _ => format!(
@@ -3765,7 +3787,7 @@ impl Adapter {
             // relation: BaseRelation, include_transient: bool = False
             "describe_dynamic_table" => self.describe_dynamic_table(state, args),
             "get_catalog_integration" => self.get_catalog_integration(state, args),
-            "type" => Ok(Value::from(self.adapter_type().to_string())),
+            "type" => Ok(Value::from(self.effective_adapter_type(state).to_string())),
             // config: dict
             "get_hard_deletes_behavior" => self.get_hard_deletes_behavior(state, args),
             "cache_added" => {

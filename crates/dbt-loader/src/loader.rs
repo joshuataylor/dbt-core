@@ -104,7 +104,7 @@ fn resolve_and_set_threads(
     iarg: &InvocationArgs,
 ) -> FsResult<Option<usize>> {
     let final_threads = if iarg.num_threads.is_none() {
-        if let Some(threads) = dbt_profile.db_config.get_threads() {
+        if let Some(threads) = dbt_profile.default_db_config().get_threads() {
             // Convert StringOrInteger to Option<usize>
             match threads {
                 StringOrInteger::Integer(n) => Some(*n as usize),
@@ -123,11 +123,14 @@ fn resolve_and_set_threads(
     };
 
     dbt_profile.threads = final_threads;
-    dbt_profile
-        .db_config
-        .set_threads(Some(StringOrInteger::Integer(
+    // Thread count is a target-wide concurrency setting, so it applies to every
+    // connection of every adapter the target declares -- not just the default one,
+    // which would leave a node running on a non-default adapter with none.
+    for adapter in dbt_profile.adapters_mut() {
+        adapter.set_threads(Some(StringOrInteger::Integer(
             final_threads.unwrap_or(0) as i64
         )));
+    }
 
     Ok(final_threads)
 }
@@ -328,8 +331,8 @@ pub async fn load(
     let env = initialize_load_jinja_environment(
         &dbt_state.dbt_profile.profile,
         &dbt_state.dbt_profile.target,
-        dbt_state.dbt_profile.db_config.adapter_type(),
-        dbt_state.dbt_profile.db_config.clone(),
+        dbt_state.dbt_profile.default_db_config().adapter_type(),
+        dbt_state.dbt_profile.default_db_config().clone(),
         dbt_state.run_started_at,
         &flags,
         iarg.warn_error_options.clone(),
@@ -345,7 +348,7 @@ pub async fn load(
         &simplified_dbt_project,
     );
 
-    let adapter_type = dbt_state.dbt_profile.db_config.adapter_type();
+    let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
     let arg_ref = &arg;
     if let Some(prev_dbt_state) = arg.prev_dbt_state.clone() {
         let prev_root_package = prev_dbt_state.root_package();
@@ -465,7 +468,8 @@ pub async fn load(
         // Internal packages (dbt built-ins: get_where_subquery, etc.) are embedded in the
         // binary and never written to the parquet cache, so they are absent from
         // prev_dbt_state.packages. Always load them fresh on the incremental path too.
-        let internal_pkgs = construct_internal_packages(adapter_type, &arg.io.in_dir)?;
+        let internal_pkgs =
+            construct_internal_packages(dbt_state.dbt_profile.adapter_types(), &arg.io.in_dir)?;
         dbt_state.packages.extend(internal_pkgs);
 
         // Inject inline SQL even on the incremental path.
@@ -553,7 +557,10 @@ pub async fn load(
         let internal_pkgs = match &arg.internal_package_mode {
             InternalPackageMode::Embedded => {
                 #[allow(unused_mut)]
-                let mut pkgs = construct_internal_packages(adapter_type, &arg.io.in_dir)?;
+                let mut pkgs = construct_internal_packages(
+                    dbt_state.dbt_profile.adapter_types(),
+                    &arg.io.in_dir,
+                )?;
                 loader_hooks
                     .will_load_internal_packages(&arg, &mut pkgs)
                     .await?;
@@ -1464,6 +1471,8 @@ async fn prepare_inline_sql(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::profiles::DbConfig;
+    use dbt_schemas::state::ProfileAdapter;
     use dbt_schemas::state::ResourcePathKind;
     use std::collections::HashMap;
     use std::fs::File;
@@ -1473,19 +1482,21 @@ mod tests {
 
     #[test]
     fn resolve_threads_sets_profile_threads_from_target() {
-        let db_config = dbt_yaml::from_str(
+        let db_config: DbConfig = dbt_yaml::from_str(
             "type: duckdb\n\
              path: db.duckdb\n\
              threads: 4",
         )
         .expect("valid DuckDB profile");
+        let default_adapter = db_config.adapter_type();
+        let adapters = IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]);
         let mut dbt_profile = DbtProfile {
             profile: "test".to_string(),
             target: "duckdb".to_string(),
             defer_to_target: None,
             allow_clones: true,
-            db_config,
-            alt_target_db_config: None,
+            adapters,
+            default_adapter,
             schema: "main".to_string(),
             database: "db".to_string(),
             relative_profile_path: PathBuf::from("profiles.yml"),

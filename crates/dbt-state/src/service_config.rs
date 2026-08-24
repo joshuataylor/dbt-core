@@ -627,18 +627,23 @@ fn parse_seconds(name: &'static str, value: &str) -> Result<i64, RunCacheService
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::IndexMap;
     use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig};
+    use dbt_schemas::state::ProfileAdapter;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        let db_config = DbConfig::DuckDB(Box::<DuckDbConfig>::default());
+        let default_adapter = db_config.adapter_type();
+        let adapters = IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]);
         DbtProfile {
             profile: "default".to_string(),
             target: target.to_string(),
             defer_to_target: defer_to_target.map(|target| target.to_string()),
             allow_clones: true,
-            db_config: DbConfig::DuckDB(Box::<DuckDbConfig>::default()),
-            alt_target_db_config: None,
+            adapters,
+            default_adapter,
             schema: "dbt_test".to_string(),
             database: "db".to_string(),
             relative_profile_path: PathBuf::new(),

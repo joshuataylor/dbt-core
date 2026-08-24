@@ -99,6 +99,7 @@ mod tests {
                 ..Default::default()
             })
             .into(),
+            vec![AdapterType::Postgres],
             DEFAULT_DBT_QUOTING,
             BTreeMap::new(),
             BTreeMap::new(),

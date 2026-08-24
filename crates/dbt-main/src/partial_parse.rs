@@ -180,7 +180,7 @@ pub fn try_load_prev_compilation(
         warn_error_options: Default::default(),
     });
 
-    let adapter_type = dbt_state.dbt_profile.db_config.adapter_type();
+    let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
     let dbt_quoting = dbt_schemas::dbt_utils::resolve_package_quoting(
         *dbt_state.root_project().quoting,
         adapter_type,

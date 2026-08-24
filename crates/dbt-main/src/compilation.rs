@@ -2462,7 +2462,7 @@ fn set_eval_args_threads_and_target(arg: &EvalArgs, dbt_state: &DbtState) -> Eva
         .with_additional(
             dbt_state.dbt_profile.target.to_string(),
             dbt_state.dbt_profile.threads,
-            dbt_state.dbt_profile.db_config.adapter_type(),
+            dbt_state.dbt_profile.default_db_config().adapter_type(),
         )
         .build()
 }
@@ -2489,10 +2489,14 @@ fn send_vortex_telemetry_if_possible(
         }
         adapter_info_event(
             arg.io.invocation_id.to_string(),
-            dbt_state.dbt_profile.db_config.adapter_type().to_string(),
             dbt_state
                 .dbt_profile
-                .db_config
+                .default_db_config()
+                .adapter_type()
+                .to_string(),
+            dbt_state
+                .dbt_profile
+                .default_db_config()
                 .get_adapter_unique_id()
                 .unwrap(),
         );

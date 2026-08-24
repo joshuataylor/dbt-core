@@ -65,7 +65,7 @@ fn load_profile_with_loader(
     };
 
     let dbt_profile = load_profiles(&load_args, &dbt_project)?;
-    Ok(dbt_profile.db_config)
+    Ok(dbt_profile.default_db_config().clone())
 }
 
 #[derive(Debug, Clone)]

@@ -265,3 +265,25 @@ mod tests {
         assert_eq!(DBT_EXECUTION_PHASES, ["render", "analyze", "run"]);
     }
 }
+
+#[cfg(test)]
+mod dialect_string_tests {
+    use super::*;
+    use strum::IntoEnumIterator;
+
+    /// The Jinja dialect string is produced by `as_ref()` in some places and
+    /// `to_string()` in others (namespace keys vs. context values). `AdapterType`
+    /// derives both `Display` and `AsRefStr`, and `Postgres` carries a
+    /// `to_string`/`serialize` override — so if the two impls ever diverge,
+    /// per-dialect macro lookup would silently miss. Keep them identical.
+    #[test]
+    fn as_ref_and_display_agree_for_every_adapter() {
+        for adapter_type in AdapterType::iter() {
+            assert_eq!(
+                adapter_type.as_ref(),
+                adapter_type.to_string(),
+                "as_ref() and Display disagree for {adapter_type:?}; dialect keys would not match"
+            );
+        }
+    }
+}

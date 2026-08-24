@@ -307,7 +307,7 @@ impl ReplaceIfNone for dbt_common::io_args::ComputeArg {}
 // crate::schemas::common types
 impl ReplaceIfNone for crate::schemas::common::Access {}
 impl ReplaceIfNone for crate::schemas::common::ClusterConfig {}
-impl ReplaceIfNone for crate::schemas::common::ComputePlatform {}
+impl ReplaceIfNone for dbt_adapter_core::AdapterType {}
 impl ReplaceIfNone for crate::schemas::common::DbtBatchSize {}
 impl ReplaceIfNone for crate::schemas::common::DbtContract {}
 impl ReplaceIfNone for crate::schemas::common::DbtIncrementalStrategy {}

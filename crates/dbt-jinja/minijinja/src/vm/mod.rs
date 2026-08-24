@@ -1462,7 +1462,20 @@ impl<'env> Vm<'env> {
                     self.build_macro(&mut stack, state, *offset, name, *flags);
                 }
                 #[cfg(feature = "macros")]
-                Instruction::Return { explicit } => {
+                Instruction::Return {
+                    explicit,
+                    arg_count,
+                } => {
+                    if let Some(arg_count) = arg_count {
+                        let args = stack.get_call_args(*arg_count);
+                        let arg_count = args.len();
+                        if arg_count != 1 {
+                            return Err(Error::new(
+                                crate::error::ErrorKind::InvalidOperation,
+                                "Incorrect return argument count",
+                            ));
+                        }
+                    }
                     is_explicit_return = *explicit;
                     if *explicit && current_macro_name == Some("caller".to_string()) {
                         is_caller_return = true;

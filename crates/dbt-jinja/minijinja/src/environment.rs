@@ -821,7 +821,10 @@ impl<'source> Environment<'source> {
         parse_expr(expr).and_then(|ast| {
             let mut gen = CodeGenerator::new("<expression>", expr, self.profile.clone());
             gen.compile_expr(&ast)?;
-            gen.add(crate::machinery::Instruction::Return { explicit: true });
+            gen.add(crate::machinery::Instruction::Return {
+                explicit: true,
+                arg_count: None,
+            });
             Ok(gen.finish().0)
         })
     }

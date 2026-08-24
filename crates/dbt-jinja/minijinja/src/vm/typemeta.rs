@@ -1963,7 +1963,7 @@ impl<'src> TypeChecker<'src> {
                     }
                 }
                 #[cfg(feature = "macros")]
-                Instruction::Return { explicit } => {
+                Instruction::Return { explicit, .. } => {
                     // TYPECHECK: NO
                     // do nothing instead of break because we want to cover all instructions
                     if *explicit {

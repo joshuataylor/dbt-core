@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn adapter_label_names_the_adapter_when_several_are_declared() {
         assert_eq!(adapter_label(AdapterType::Snowflake, true), "snowflake ");
-        assert_eq!(adapter_label(AdapterType::Alt, true), "alt ");
+        assert_eq!(adapter_label(AdapterType::Alt, true), "lake_compute ");
     }
 
     /// The VS Code extension decides whether to show the `allow_id_token` tip by

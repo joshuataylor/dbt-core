@@ -49,6 +49,32 @@ pub enum DbConfig {
     Databricks(Box<DatabricksDbConfig>),
     Salesforce(Box<SalesforceDbConfig>),
     DuckDB(Box<DuckDbConfig>),
+    // Doc comments on these variants are published verbatim as the JSON
+    // schema's `description`, so the implementation note lives here instead.
+    //
+    // The rename is `schemars`-only on purpose. `UntaggedEnumDeserialize`
+    // rejects *any* `#[serde(..)]` attribute on a variant and derives the tag
+    // from the variant identifier alone, so this enum's wire tag is `alt` and
+    // cannot be changed here. `lake_compute` is mapped onto it by
+    // `dbt_profile::adapters::canonicalize_adapter_type`, before the mapping
+    // reaches this enum -- see the test of the same name there.
+    //
+    // That the tag is `alt` does *not* make `alt` an accepted profiles.yml
+    // spelling: `canonicalize_adapter_type` rejects it outright. The tag stays
+    // `alt` only because `Serialize` uses it too, and our own serialized state
+    // (`ProfileConnection`, `DbtRuntimeConfigInner`) has to round trip.
+    //
+    // What the `schemars` rename does fix is the generated schema, which is
+    // published to dbt-jsonschema and drives editor validation and autocomplete
+    // for profiles.yml: authors are shown the name they should write.
+    // `Serialize` still emits `type: alt`, which keeps our own
+    // serialize/deserialize round trip consistent.
+    //
+    // Once `dbt-yaml`'s derive honours variant renames this collapses into a
+    // plain `#[serde(rename = "lake_compute")]`, matching `AdapterType::Alt`,
+    // and the mapping in `dbt-profile` goes away.
+    /// The dbt lake compute engine.
+    #[schemars(rename = "lake_compute")]
     Alt(Box<AltConfig>),
     // Hive,
     Exasol(Box<ExasolDbConfig>),

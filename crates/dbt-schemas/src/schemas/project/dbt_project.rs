@@ -490,7 +490,7 @@ quoting:
   schema: false
   identifier: false
 adapters:
-  alt:
+  lake_compute:
     quoting:
       database: true
       schema: true
@@ -509,7 +509,7 @@ adapters:
         assert_eq!(
             adapters[&AdapterType::Alt]
                 .quoting
-                .expect("alt quoting")
+                .expect("lake_compute quoting")
                 .identifier,
             Some(true)
         );
@@ -522,6 +522,22 @@ adapters:
             Some(false),
             "the top-level block is unaffected"
         );
+    }
+
+    /// `lake_compute` is the only name for `AdapterType::Alt`. `alt` was the
+    /// external name before the rename and is not kept as an alias, so it has to
+    /// be rejected here like any other unknown adapter.
+    #[test]
+    fn the_adapters_block_rejects_the_retired_alt_name() {
+        let result: Result<DbtProject, _> = dbt_yaml::from_str(
+            r#"
+name: test
+adapters:
+  alt: {}
+"#,
+        );
+
+        assert!(result.is_err(), "`alt` is not an adapter type any more");
     }
 
     /// A key that is not an adapter type is rejected at deserialization, against

@@ -376,13 +376,13 @@ impl AdbcEngine {
         let Ok(view) = catalogs.view_v2() else {
             return Ok(Vec::new());
         };
-        // The compute engine (Alt) attaches via each catalog's `alt` block when
-        // present; the base DuckDB adapter uses the `duckdb` block. Both fall back
-        // to `duckdb`.
+        // The compute engine (Alt) attaches via each catalog's `lake_compute`
+        // block when present; the base DuckDB adapter uses the `duckdb` block.
+        // Both fall back to `duckdb`.
         let platform = if self.adapter_type == AdapterType::Alt {
-            "alt"
+            AdapterType::Alt.as_ref()
         } else {
-            "duckdb"
+            AdapterType::DuckDB.as_ref()
         };
         super::duckdb_attach::compose_v2_catalog_attach_stmts(&view, platform)
     }

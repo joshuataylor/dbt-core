@@ -37,7 +37,7 @@ const RENDER_STUB: &str = r#"
 ///
 /// Loads the real internal packages, so this also exercises
 /// `construct_internal_packages` over the union of both adapters' chains --
-/// `dbt-adapters`, `dbt-snowflake`, `dbt-alt`, `dbt-duckdb`.
+/// `dbt-adapters`, `dbt-snowflake`, `dbt-lake_compute`, `dbt-duckdb`.
 fn snowflake_plus_alt() -> MacroTestHarness {
     MacroTestHarness::for_adapter(AdapterType::Snowflake)
         .with_extra_adapters([AdapterType::Alt])

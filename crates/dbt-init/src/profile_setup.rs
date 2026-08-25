@@ -392,10 +392,10 @@ impl ProfileSetup {
                 ));
             }
             AdapterType::Alt => {
-                // TODO: Create proper Alt profile setup
+                // TODO: Create proper lake compute profile setup
                 return Err(fs_err!(
                     ErrorCode::Generic,
-                    "Alt profile setup not yet implemented."
+                    "lake_compute profile setup not yet implemented."
                 ));
             }
             AdapterType::ClickHouse => {

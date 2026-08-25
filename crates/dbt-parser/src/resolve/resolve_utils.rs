@@ -347,12 +347,13 @@ pub(crate) fn validate_node_adapter(
     if selected_type != AdapterType::Alt {
         return Ok(Some(selected_type));
     }
+    // The external name (`lake_compute`), so diagnostics quote what the author wrote.
     let name = selected_type.as_ref();
 
     // Rule 4: Python models are not supported.
     if is_python {
         return Err(err(format!(
-            "adapter: '{name}' is of type 'alt', which does not support Python models in v1"
+            "adapter: '{name}' does not support Python models in v1"
         )));
     }
 
@@ -362,19 +363,19 @@ pub(crate) fn validate_node_adapter(
         AdapterType::Snowflake | AdapterType::DuckDB | AdapterType::Alt
     ) {
         return Err(err(format!(
-            "adapter: '{name}' is of type 'alt', which in v1 supports Snowflake and alt only;              the target's default adapter is '{adapter_type}'"
+            "adapter: '{name}' in v1 supports Snowflake and lake compute only;              the target's default adapter is '{adapter_type}'"
         )));
     }
 
     // Rule 1: catalogs v2 + a resolvable catalog_name.
     if !use_catalogs_v2 {
         return Err(err(format!(
-            "adapter: '{name}' is of type 'alt', which requires catalogs v2              (set the 'use_catalogs_v2' flag)"
+            "adapter: '{name}' requires catalogs v2              (set the 'use_catalogs_v2' flag)"
         )));
     }
     if catalog_name.is_none() {
         return Err(err(format!(
-            "adapter: '{name}' is of type 'alt', which requires a 'catalog_name' that resolves              to an attachable catalog"
+            "adapter: '{name}' requires a 'catalog_name' that resolves              to an attachable catalog"
         )));
     }
 
@@ -387,7 +388,7 @@ pub(crate) fn validate_node_adapter(
         | DbtMaterialization::Unknown(_) => {}
         other => {
             return Err(err(format!(
-                "adapter: '{name}' is of type 'alt', which supports table, view, and incremental                  materializations in v1; got '{other}'"
+                "adapter: '{name}' supports table, view, and incremental                  materializations in v1; got '{other}'"
             )));
         }
     }

@@ -356,7 +356,9 @@ pub fn get_adapter_prefixes(dialect: &str) -> Vec<String> {
     match dialect {
         "redshift" => prefixes.push("postgres".to_string()),
         "databricks" => prefixes.push("spark".to_string()),
-        "alt" => prefixes.push("duckdb".to_string()),
+        // `AdapterType::Alt` renders as `lake_compute`; lake compute defines no
+        // macros of its own and inherits DuckDB's.
+        "lake_compute" => prefixes.push("duckdb".to_string()),
         // Add other adapter hierarchies as needed
         _ => {}
     }
@@ -421,7 +423,8 @@ pub fn get_internal_packages(dialect: &str) -> Vec<String> {
     match dialect {
         "redshift" => internal_packages.push("dbt_postgres".to_string()),
         "databricks" => internal_packages.push("dbt_spark".to_string()),
-        "alt" => internal_packages.push("dbt_duckdb".to_string()),
+        // See `get_adapter_prefixes`: lake compute has no macro package of its own.
+        "lake_compute" => internal_packages.push("dbt_duckdb".to_string()),
         // Add other adapter hierarchies as needed
         _ => {}
     }

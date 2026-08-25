@@ -1154,12 +1154,14 @@ pub fn check_compute_platform_upstreams(
             if !reachable {
                 return err!(
                     ErrorCode::InvalidConfig,
-                    "Model '{}' runs on adapter: 'alt' but its upstream '{}' is not \
+                    "Model '{}' runs on adapter: '{}' but its upstream '{}' is not \
                      reachable through a catalog. Materialize '{}' into a catalog (set \
-                     'catalog_name') or place it on adapter: 'alt'.",
+                     'catalog_name') or place it on adapter: '{}'.",
                     unique_id,
+                    AdapterType::Alt.as_ref(),
                     upstream_id,
-                    upstream_id
+                    upstream_id,
+                    AdapterType::Alt.as_ref()
                 );
             }
         }

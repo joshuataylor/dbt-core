@@ -33,6 +33,12 @@ pub enum ProfileError {
     #[error("missing 'type' field in resolved profile output")]
     NoAdapterType,
 
+    #[error("adapter type '{written}' is no longer recognized; it was renamed to '{replacement}'")]
+    RetiredAdapterType {
+        written: String,
+        replacement: String,
+    },
+
     // ----------------------------------------------------------------------
     // Adapter-type-keyed targets: `outputs.<target>` as a map of adapter type
     // to a list of connections.

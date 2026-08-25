@@ -44,6 +44,50 @@ pub const DEFAULT_CONNECTION_NAME: &str = "default";
 /// since `DbConfig` is tagged by it.
 const TYPE_KEY: &str = "type";
 
+/// The lake compute adapter, as authors write it.
+const LAKE_COMPUTE_TYPE: &str = "lake_compute";
+/// The tag `DbConfig` is actually keyed by for lake compute.
+///
+/// `DbConfig::Alt` is spelled `Alt` in Rust, and `UntaggedEnumDeserialize`
+/// derives its tag from the variant identifier alone -- it *rejects* any
+/// per-variant `#[serde(..)]` attribute outright, and no available rename policy
+/// turns `Alt` into `lake_compute`. So the external name is mapped to the
+/// internal tag here, before the mapping reaches `DbConfig`. Remove this once
+/// `dbt-yaml`'s derive honours variant renames.
+const LAKE_COMPUTE_INTERNAL_TAG: &str = "alt";
+
+/// Canonicalize a connection's `type:` and rewrite it in place.
+///
+/// Returns the name to report the adapter by and leaves `credentials[TYPE_KEY]`
+/// holding the tag `DbConfig` deserializes by. Only lake compute needs the
+/// split; every other adapter's external name and `DbConfig` tag are the same
+/// string, so they pass straight through.
+///
+/// `alt` was lake compute's external name before the rename and is *not* an
+/// accepted alias. It has to be rejected here explicitly: it is still
+/// `DbConfig`'s internal tag, so left alone it would deserialize successfully
+/// and quietly keep working.
+fn canonicalize_adapter_type(
+    credentials: &mut dbt_yaml::Mapping,
+    adapter_type: &str,
+) -> Result<String> {
+    if adapter_type.eq_ignore_ascii_case(LAKE_COMPUTE_INTERNAL_TAG) {
+        return Err(ProfileError::RetiredAdapterType {
+            written: adapter_type.to_owned(),
+            replacement: LAKE_COMPUTE_TYPE.to_owned(),
+        });
+    }
+    if !adapter_type.eq_ignore_ascii_case(LAKE_COMPUTE_TYPE) {
+        return Ok(adapter_type.to_owned());
+    }
+
+    credentials.insert(
+        dbt_yaml::Value::from(TYPE_KEY),
+        dbt_yaml::Value::from(LAKE_COMPUTE_INTERNAL_TAG),
+    );
+    Ok(LAKE_COMPUTE_TYPE.to_owned())
+}
+
 /// One connection under an adapter: a rendered credential set.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetConnection {
@@ -235,6 +279,7 @@ fn parse_connection(
             target: target.to_owned(),
             index,
         })?;
+    let adapter_type = canonicalize_adapter_type(&mut credentials, &adapter_type)?;
 
     let (name, named) = match credentials.shift_remove(NAME_KEY) {
         Some(dbt_yaml::Value::String(name, _)) if !name.trim().is_empty() => (name, true),
@@ -279,12 +324,13 @@ fn parse_legacy_target(
     raw: &dbt_yaml::Value,
     penv: &ProfileEnvironment,
 ) -> Result<Vec<AdapterConnections>> {
-    let credentials = render_target(raw, penv)?;
+    let mut credentials = render_target(raw, penv)?;
     let adapter_type = credentials
         .get(TYPE_KEY)
         .and_then(|v| v.as_str())
         .ok_or(ProfileError::NoAdapterType)?
         .to_owned();
+    let adapter_type = canonicalize_adapter_type(&mut credentials, &adapter_type)?;
 
     Ok(vec![AdapterConnections {
         adapter_type,
@@ -417,11 +463,14 @@ mod connection_tests {
         let adapters = parse(
             "- type: snowflake\n  default: true\n  account: abc\n\
              - type: bigquery\n  method: service-account\n\
-             - type: alt\n  base_url: https://example.invalid\n",
+             - type: lake_compute\n  base_url: https://example.invalid\n",
         )
         .expect("list shape should parse");
 
-        assert_eq!(types(&adapters), vec!["snowflake", "bigquery", "alt"]);
+        assert_eq!(
+            types(&adapters),
+            vec!["snowflake", "bigquery", "lake_compute"]
+        );
         assert!(adapters.iter().all(|a| a.connections.len() == 1));
         assert_eq!(
             default_of(&adapters),
@@ -491,6 +540,84 @@ mod connection_tests {
                 .and_then(|v| v.as_str()),
             Some("duckdb"),
             "`DbConfig` is tagged by `type:`, so it must stay in the config"
+        );
+    }
+
+    /// Lake compute is the one adapter whose external name and `DbConfig` tag
+    /// differ: authors write `lake_compute`, `DbConfig::Alt` is tagged `alt`.
+    /// So the credentials handed on must always carry the internal tag, while
+    /// the adapter reports under the external one.
+    #[test]
+    fn lake_compute_is_the_external_name_for_alt() {
+        for written in ["lake_compute", "LAKE_COMPUTE"] {
+            let adapters = parse(&format!(
+                "- type: {written}
+  base_url: https://example.invalid
+"
+            ))
+            .unwrap_or_else(|e| panic!("`type: {written}` should parse: {e}"));
+
+            assert_eq!(
+                types(&adapters),
+                vec!["lake_compute"],
+                "`type: {written}` must report as the external name"
+            );
+            assert_eq!(
+                adapters[0]
+                    .default_connection()
+                    .credentials
+                    .get("type")
+                    .and_then(|v| v.as_str()),
+                Some("alt"),
+                "`type: {written}` must be handed to `DbConfig` as its internal tag"
+            );
+        }
+    }
+
+    /// `alt` is `DbConfig`'s internal tag, so a profile that writes it would
+    /// deserialize fine if it were passed through. It has to be rejected
+    /// explicitly, in both target shapes, or the retired name keeps working.
+    #[test]
+    fn the_retired_alt_type_is_rejected() {
+        for yaml in [
+            "- type: alt
+  base_url: https://example.invalid
+",
+            "type: alt
+base_url: https://example.invalid
+",
+        ] {
+            let err = parse(yaml).expect_err("`type: alt` must be rejected");
+            assert!(
+                matches!(
+                    &err,
+                    ProfileError::RetiredAdapterType { replacement, .. }
+                        if replacement == "lake_compute"
+                ),
+                "expected a retired-type error naming the replacement, got: {err}"
+            );
+        }
+    }
+
+    /// The legacy mapping shape goes through a separate code path, so it needs
+    /// the same canonicalization.
+    #[test]
+    fn lake_compute_is_canonicalized_in_the_legacy_shape_too() {
+        let adapters = parse(
+            "type: lake_compute
+base_url: https://example.invalid
+",
+        )
+        .expect("should parse");
+
+        assert_eq!(types(&adapters), vec!["lake_compute"]);
+        assert_eq!(
+            adapters[0]
+                .default_connection()
+                .credentials
+                .get("type")
+                .and_then(|v| v.as_str()),
+            Some("alt")
         );
     }
 

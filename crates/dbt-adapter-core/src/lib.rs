@@ -81,15 +81,24 @@ pub enum AdapterType {
     Dremio,
     /// Oracle
     Oracle,
-    /// Alt
+    /// The dbt lake compute engine.
+    ///
+    /// The variant is `Alt` for historical reasons; externally the name is
+    /// `lake_compute` and nothing else -- profiles.yml `type:`, `+adapter:`,
+    /// `adapters:` keys, catalogs.yml config blocks, the manifest's
+    /// `adapter_type`, and the Jinja dispatch dialect. `alt` is not accepted on
+    /// input; see `test_alt_is_not_accepted_on_input`.
+    #[strum(to_string = "lake_compute")]
+    #[serde(rename = "lake_compute")]
     Alt,
 }
 
 impl AdapterType {
     /// Returns an iterator of `(AdapterType, &'static str)` pairs.
     ///
-    /// The string is the lowercased name of the variant. `Postgres` is
-    /// rendered as `"postgresql"`.
+    /// The string is the lowercased name of the variant, except `Postgres`,
+    /// which is rendered as `"postgresql"`, and `Alt`, which carries an explicit
+    /// `lake_compute` override.
     pub fn iter_with_names() -> impl Iterator<Item = (AdapterType, &'static str)> {
         Self::iter().map(|v| {
             let name: &'static str = match v {
@@ -172,7 +181,7 @@ mod tests {
             ("sTarburst", AdapterType::Starburst),
             ("tRino", AdapterType::Trino),
             ("dAtafusion", AdapterType::Datafusion),
-            ("aLt", AdapterType::Alt),
+            ("lAke_Compute", AdapterType::Alt),
         ];
         for (input, expected) in cases {
             let res = input.parse::<AdapterType>();
@@ -194,6 +203,50 @@ mod tests {
         assert_eq!(pg.as_ref(), "postgres");
         let s: &'static str = pg.into();
         assert_eq!(s, "postgres");
+    }
+
+    /// `Alt` is the Rust name; `lake_compute` is the only name that leaves the
+    /// process. Display/AsRef/IntoStaticStr all have to agree on it, because the
+    /// Jinja dialect key is built from `as_ref()` in some places and
+    /// `to_string()` in others.
+    #[test]
+    fn test_alt_is_externally_lake_compute() {
+        let alt = AdapterType::Alt;
+        assert_eq!(alt.to_string(), "lake_compute");
+        assert_eq!(alt.as_ref(), "lake_compute");
+        let s: &'static str = alt.into();
+        assert_eq!(s, "lake_compute");
+
+        assert_eq!("lake_compute".parse::<AdapterType>().unwrap(), alt);
+    }
+
+    /// `alt` was the external name before the rename and is deliberately not
+    /// kept as an alias: it must fail to parse rather than resolve silently, on
+    /// both the strum and serde paths.
+    #[test]
+    fn test_alt_is_not_accepted_on_input() {
+        assert!(
+            "alt".parse::<AdapterType>().is_err(),
+            "`alt` must not parse as an adapter type"
+        );
+        assert!(
+            serde_json::from_str::<AdapterType>("\"alt\"").is_err(),
+            "`alt` must not deserialize as an adapter type"
+        );
+    }
+
+    /// serde is a separate mechanism from strum and drives `+adapter:`, the
+    /// `adapters:` map key, and the manifest's `adapter_type`. It must land on
+    /// the same string.
+    #[test]
+    fn test_alt_serde_round_trip_is_lake_compute() {
+        let json = serde_json::to_string(&AdapterType::Alt).unwrap();
+        assert_eq!(json, "\"lake_compute\"");
+
+        assert_eq!(
+            serde_json::from_str::<AdapterType>("\"lake_compute\"").unwrap(),
+            AdapterType::Alt
+        );
     }
 
     #[test]
@@ -219,7 +272,7 @@ mod tests {
                 (AdapterType::Datafusion, "datafusion"),
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
-                (AdapterType::Alt, "alt"),
+                (AdapterType::Alt, "lake_compute"),
             ]
         );
     }

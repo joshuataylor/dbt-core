@@ -419,7 +419,15 @@ impl<'a> CompilationPhasesExecutor<'a> {
         // delta epoch for the loaded+changed nodes; missing changed nodes get picked up on the
         // next full-load run. When nothing changed, changed_nodes is Some(empty) and save() is
         // a no-op (early return inside parquet_incremental::save).
-        if self.cli.common_args.effective_partial_parse() {
+        //
+        // Also when the index is being written, even if partial parse is off: these epochs are
+        // the input the index ingest converts into the `dbt.*` layers, so without them the
+        // ingest finds nothing to convert and leaves a half-built index (run_results only).
+        // Reading `EvalArgs` here rather than the raw `CommonArgs` is what lets `build` default
+        // the index on without also turning incremental reuse on — the two read sites below
+        // stay on `effective_partial_parse()`. Writing this state and *consuming* it to skip
+        // work are separable, and only the consuming side carries the staleness risk.
+        if self.cli.common_args.effective_partial_parse() || self.arg.write_index {
             let dbt_state = loaded_project.dbt_state();
             let env_vars = dbt_jinja_utils::utils::ENV_VARS
                 .lock()

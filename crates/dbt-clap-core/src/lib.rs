@@ -440,6 +440,24 @@ got {:?}, expected an instance of {}",
         if arg.write_index && arg.static_analysis == Some(StaticAnalysisKind::Strict) {
             arg.write_lineage = true;
         }
+        // `build` and `run` write the index by default.
+        //
+        // After the lineage block above so a defaulted index does not turn on `write_lineage`.
+        // Explicit `--write-index` still does. Set on `EvalArgs`, not `Cli.common_args`:
+        // `effective_partial_parse()` / `effective_partial_load()` read the raw flag, so
+        // leaving it unset keeps partial parse/load off for a plain `dbt build`/`run`.
+        // Skip if the caller already set metadata, index, or catalog so `--write-metadata`
+        // stays epochs-without-index and `--write-catalog` stays explicit.
+        if matches!(arg.command, FsCommand::Build | FsCommand::Run)
+            && !common_args.write_index
+            && !common_args.write_metadata
+            && !common_args.write_catalog
+            && !common_args.no_write_index
+        {
+            arg.write_metadata = true;
+            arg.write_index = true;
+            arg.write_index_implied = true;
+        }
         Ok(arg)
     }
 
@@ -1878,6 +1896,10 @@ pub struct CommonArgs {
     /// column schemas and column-level lineage.
     #[arg(global = true, long = "write-index", alias = "use-index", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_USE_INDEX", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
     pub write_index: bool,
+    /// Opt out of the index that `build` writes by default. `--write-index` is `SetTrue` with
+    /// no negation, so without this flag defaulting it on would leave no way back.
+    #[arg(global = true, long, action = ArgAction::SetTrue, default_value_t=false, value_parser = BoolishValueParser::new(), hide = true)]
+    pub no_write_index: bool,
 
     /// Directory for metadata parquet output (default: <target>/metadata/)
     #[arg(
@@ -2550,7 +2572,7 @@ impl CommonArgs {
     /// `--write-index` → `--write-metadata` → `--partial-parse`
     pub fn effective_partial_parse(&self) -> bool {
         self.write_metadata
-            || self.write_index
+            || self.effective_write_index()
             || self.partial_parse
             || self.partial_load
             || self.verify_partial_load
@@ -2561,7 +2583,21 @@ impl CommonArgs {
     /// `--verify-partial-load` implies `--partial-load`. `--write-metadata` implies both.
     /// `--write-index` implies `--write-metadata` implies both.
     pub fn effective_partial_load(&self) -> bool {
-        self.write_metadata || self.write_index || self.partial_load || self.verify_partial_load
+        self.write_metadata
+            || self.effective_write_index()
+            || self.partial_load
+            || self.verify_partial_load
+    }
+
+    /// `--write-index` after `--no-write-index` cancels it.
+    ///
+    /// Both `effective_partial_*` gates go through this rather than reading `write_index`
+    /// directly, because those implications exist only to serve the index. Cancelling the index
+    /// without cancelling them would leave the caller with no index *and* the partial-load fast
+    /// path, which cannot see files it has not already recorded — the worst of both. An explicit
+    /// `--write-metadata` still implies both on its own; `--no-write-index` only cancels the index.
+    pub fn effective_write_index(&self) -> bool {
+        self.write_index && !self.no_write_index
     }
 
     /// Resolve the effective value of `--quiet` / `--no-quiet`.
@@ -2705,8 +2741,14 @@ impl CommonArgs {
                 self.write_json
             },
             write_catalog: self.write_catalog,
-            write_metadata: self.write_metadata || self.write_index,
-            write_index: self.write_index,
+            // `--no-write-index` is authoritative over `--write-index`, the way
+            // `--no-write-json` is over `--write-json`. It cancels only the index, so
+            // `--write-metadata --no-write-index` still means epochs-without-index.
+            write_metadata: self.write_metadata || self.effective_write_index(),
+            write_index: self.effective_write_index(),
+            // Set by `Cli::to_eval_args` for the commands that default the index on; a
+            // per-command conversion cannot know it was a default rather than a request.
+            write_index_implied: false,
             classify_with_warehouse_tags: self.classify_with_warehouse_tags,
             index_dir: self.index_dir.clone(),
             metadata_dir: self.metadata_dir.clone(),
@@ -3021,6 +3063,40 @@ mod tests {
             user_settings_path,
             default,
         )
+    }
+
+    #[test]
+    fn no_write_index_cancels_the_index_and_its_implications() {
+        // `--write-index` alone: index on, and it implies partial parse + partial load.
+        let mut args = CommonArgs {
+            write_index: true,
+            ..Default::default()
+        };
+        assert!(args.effective_write_index());
+        assert!(args.effective_partial_parse());
+        assert!(args.effective_partial_load());
+
+        // Adding `--no-write-index` must cancel all three together. Cancelling only the index
+        // would leave the caller with no index *and* the partial-load fast path, which cannot
+        // see files it has not already recorded.
+        args.no_write_index = true;
+        assert!(!args.effective_write_index());
+        assert!(!args.effective_partial_parse());
+        assert!(!args.effective_partial_load());
+    }
+
+    #[test]
+    fn no_write_index_leaves_explicit_write_metadata_alone() {
+        // `--write-metadata` implies partial parse/load on its own, so `--no-write-index`
+        // cancels only the index: this stays epochs-without-index.
+        let args = CommonArgs {
+            write_metadata: true,
+            no_write_index: true,
+            ..Default::default()
+        };
+        assert!(!args.effective_write_index());
+        assert!(args.effective_partial_parse());
+        assert!(args.effective_partial_load());
     }
 
     #[test]

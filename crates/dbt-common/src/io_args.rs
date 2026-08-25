@@ -608,6 +608,11 @@ pub struct EvalArgs {
     pub write_metadata: bool,
     /// Also write snapshot index parquet to target/index/ (implies write_metadata)
     pub write_index: bool,
+    /// True when `write_index` came from a command's default rather than from the command
+    /// line. The index itself is identical either way; this only suppresses the advisory
+    /// naming the extra flags that would enrich it, which is noise for a user who never
+    /// asked for an index (and fails the command under `--warn-error`).
+    pub write_index_implied: bool,
     /// Directory for index parquet output (default: <target>/index/)
     pub index_dir: Option<PathBuf>,
     /// Directory for metadata parquet output (default: <target>/metadata/)

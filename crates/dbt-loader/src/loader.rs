@@ -6,7 +6,8 @@ use dbt_cloud_config::{
 };
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{
-    DBT_CATALOGS_YML, DBT_DEPENDENCIES_YML, DBT_PACKAGES_LOCK_FILE, DBT_PACKAGES_YML, DBT_VARS_YML,
+    DBT_CATALOGS_YML, DBT_DEPENDENCIES_YML, DBT_PACKAGES_LOCK_FILE, DBT_PACKAGES_YML,
+    DBT_PROFILES_YML, DBT_SELECTORS_YML, DBT_VARS_YML,
 };
 use dbt_common::io_args::{InternalPackageMode, ReplayMode, TimeMachineMode};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
@@ -1012,6 +1013,7 @@ pub async fn load_inner(
             dbt_properties.push(item.clone());
         }
     }
+    drop_nested_project_config_files(&mut dbt_properties);
 
     let analysis_files = find_files_by_kind_and_extension(
         package_path,
@@ -1135,6 +1137,39 @@ fn run_started_at() -> DateTime<Tz> {
         let tz_now: DateTime<Tz> = utc_now.with_timezone(&Tz::UTC);
         tz_now
     }
+}
+
+/// dbt config files that are only meaningful at a project root, never resource properties.
+const PROJECT_ROOT_ONLY_YML_NAMES: [&str; 8] = [
+    DBT_PROJECT_YML,
+    DBT_DEPENDENCIES_YML,
+    DBT_PACKAGES_YML,
+    DBT_PACKAGES_LOCK_FILE,
+    DBT_CATALOGS_YML,
+    DBT_VARS_YML,
+    DBT_PROFILES_YML,
+    DBT_SELECTORS_YML,
+];
+
+/// Drops a project's own config files when an outer project's resource path walks into that
+/// project. Only files next to a `dbt_project.yml` are config; elsewhere they are properties.
+fn drop_nested_project_config_files(properties: &mut Vec<DbtAsset>) {
+    let project_roots: HashSet<PathBuf> = properties
+        .iter()
+        .filter(|asset| asset.path.file_name() == Some(OsStr::new(DBT_PROJECT_YML)))
+        .filter_map(|asset| asset.path.parent().map(Path::to_path_buf))
+        .collect();
+
+    properties.retain(|asset| {
+        let Some(file_name) = asset.path.file_name().and_then(OsStr::to_str) else {
+            return true;
+        };
+        !PROJECT_ROOT_ONLY_YML_NAMES.contains(&file_name)
+            || !asset
+                .path
+                .parent()
+                .is_some_and(|parent| project_roots.contains(parent))
+    });
 }
 
 fn should_exclude_path(kind: &ResourcePathKind, path: &Path) -> bool {
@@ -1682,6 +1717,89 @@ mod tests {
             &ResourcePathKind::SeedPaths,
             &PathBuf::from("seeds/generic/seed.csv")
         ));
+    }
+
+    fn dbt_properties(paths: &[&str]) -> Vec<DbtAsset> {
+        paths
+            .iter()
+            .map(|path| DbtAsset {
+                package_name: "test_project".to_string(),
+                base_path: PathBuf::from("/project"),
+                path: PathBuf::from(path),
+                original_path: PathBuf::from(path),
+            })
+            .collect()
+    }
+
+    fn surviving_paths(properties: &[DbtAsset]) -> Vec<PathBuf> {
+        properties.iter().map(|asset| asset.path.clone()).collect()
+    }
+
+    #[test]
+    fn test_drop_nested_project_config_files_excludes_nested_project_root() {
+        let mut properties = dbt_properties(&[
+            "packages/lib/dbt_project.yml",
+            "packages/lib/packages.yml",
+            "packages/lib/package-lock.yml",
+            "packages/lib/macros/schema.yml",
+        ]);
+
+        drop_nested_project_config_files(&mut properties);
+
+        // The nested project's config files drop out; its properties files still belong to us.
+        assert_eq!(
+            surviving_paths(&properties),
+            vec![PathBuf::from("packages/lib/macros/schema.yml")]
+        );
+    }
+
+    #[test]
+    fn test_drop_nested_project_config_files_keeps_properties_without_sibling_project() {
+        let paths = [
+            "models/packages.yml",
+            "models/nested/dependencies.yml",
+            "models/schema.yml",
+        ];
+        let mut properties = dbt_properties(&paths);
+
+        drop_nested_project_config_files(&mut properties);
+
+        // Without a sibling dbt_project.yml these are ordinary properties documents.
+        assert_eq!(
+            surviving_paths(&properties),
+            paths.iter().map(PathBuf::from).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_drop_nested_project_config_files_excludes_root_project_configs() {
+        let mut properties = dbt_properties(&[
+            "dbt_project.yml",
+            "profiles.yml",
+            "selectors.yml",
+            "dependencies.yml",
+            "catalogs.yml",
+            "vars.yml",
+            "one.yml",
+        ]);
+
+        drop_nested_project_config_files(&mut properties);
+
+        // A resource path resolving to the project root, e.g. `model-paths: ["."]`.
+        assert_eq!(surviving_paths(&properties), vec![PathBuf::from("one.yml")]);
+    }
+
+    #[test]
+    fn test_drop_nested_project_config_files_excludes_project_yml_without_siblings() {
+        let mut properties = dbt_properties(&["models/dbt_project.yml", "models/schema.yml"]);
+
+        drop_nested_project_config_files(&mut properties);
+
+        // A file named dbt_project.yml is always project config, never properties.
+        assert_eq!(
+            surviving_paths(&properties),
+            vec![PathBuf::from("models/schema.yml")]
+        );
     }
 
     #[test]

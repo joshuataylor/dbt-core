@@ -494,15 +494,15 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
     ) -> FsResult<(MinijinjaValue, Option<MinijinjaValue>)>;
     fn lookup_source(
         &self,
-        package_name: &str,
+        node_package_name: &str,
         source_name: &str,
         table_name: &str,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)>;
     fn lookup_function(
         &self,
-        maybe_package_name: &Option<String>,
+        target_package: &Option<String>,
         function_name: &str,
-        maybe_node_package_name: &Option<String>,
+        node_package: &Option<String>,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)>;
     fn compile_or_test(&self) -> bool;
     fn update_ref_with_deferral(
@@ -605,7 +605,7 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
 
     fn lookup_source(
         &self,
-        _package_name: &str,
+        _node_package_name: &str,
         source_name: &str,
         table_name: &str,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)> {
@@ -619,9 +619,9 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
 
     fn lookup_function(
         &self,
-        _maybe_package_name: &Option<String>,
+        _target_package: &Option<String>,
         function_name: &str,
-        _maybe_node_package_name: &Option<String>,
+        _node_package: &Option<String>,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)> {
         Err(fs_err!(
             ErrorCode::NotImplemented,

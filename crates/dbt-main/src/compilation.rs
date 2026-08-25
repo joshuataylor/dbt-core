@@ -28,7 +28,7 @@ use dbt_jinja_utils::{
     invocation_args::InvocationArgs,
     jinja_environment::JinjaEnv,
     listener::JinjaTypeCheckingEventListenerFactory,
-    node_resolver::NodeResolver,
+    node_resolver::{NodeResolver, PackageSearchOrder},
     phases::{build_operation_context_btreemap, configure_compile_and_run_jinja_environment},
 };
 use dbt_loader::args::*;
@@ -667,6 +667,9 @@ impl<'a> CompilationPhasesExecutor<'a> {
                     RunFilter::try_from(self.arg.empty, self.arg.sample.clone())?,
                     BTreeMap::new(), // renaming
                     compile_or_test,
+                    PackageSearchOrder::from_project_flags(
+                        loaded_project.dbt_state().root_project().flags.as_ref(),
+                    ),
                 )?;
                 Arc::new(node_resolver)
             };

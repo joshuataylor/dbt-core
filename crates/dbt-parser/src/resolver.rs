@@ -16,7 +16,7 @@ use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::invocation_graph::reset_invocation_graph;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::{
-    NodeResolver, check_for_model_deprecations, resolve_dependencies,
+    NodeResolver, PackageSearchOrder, check_for_model_deprecations, resolve_dependencies,
 };
 use dbt_jinja_utils::phases::parse::{
     build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
@@ -215,6 +215,7 @@ pub async fn resolve(
         arg.sample_config.clone(),
         arg.sample_renaming.clone(),
         arg.command == FsCommand::Compile || arg.command == FsCommand::Test,
+        PackageSearchOrder::from_project_flags(dbt_state.root_project().flags.as_ref()),
     )?;
     let mut collector = RenderResults {
         rendering_results: BTreeMap::new(),

@@ -5,7 +5,7 @@ use dbt_common::{FsResult, io_args::EvalArgs};
 use dbt_compilation::config::CompilationConfig;
 use dbt_compilation::core::DbtLoadedProject;
 use dbt_jinja_utils::JinjaFactory;
-use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::node_resolver::{NodeResolver, PackageSearchOrder};
 use dbt_metadata::{
     file_registry::CompleteStateWithKind,
     partial_parse::{
@@ -201,6 +201,7 @@ pub fn try_load_prev_compilation(
         Default::default(),
         Default::default(),
         compile_or_test,
+        PackageSearchOrder::from_project_flags(dbt_state.root_project().flags.as_ref()),
     ) {
         Ok(r) => Arc::new(r) as Arc<dyn NodeResolverTracker>,
         Err(_) => return (PrevCompilationResult::None, use_lazy_filter),

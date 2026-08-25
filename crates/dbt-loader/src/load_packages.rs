@@ -67,7 +67,7 @@ pub async fn load_packages(
     // `false` indicates that this is a root project
     dirs.insert(0, (arg.io.in_dir.clone(), false));
 
-    collect_packages(
+    let mut packages = collect_packages(
         arg,
         env,
         dbt_profile,
@@ -76,7 +76,64 @@ pub async fn load_packages(
         lookup_map,
         token,
     )
-    .await
+    .await?;
+    normalize_package_dependency_names(&mut packages);
+    Ok(packages)
+}
+
+/// Replace package installation names in dependency sets with the names declared by
+/// the installed projects. Package resolution keys loaded projects by the latter.
+fn normalize_package_dependency_names(packages: &mut [DbtPackage]) {
+    let package_name_aliases = packages
+        .iter()
+        .skip(1)
+        .filter_map(|package| {
+            let installed_name = package.package_root_path.file_name()?.to_str()?;
+            Some((installed_name.to_string(), package.dbt_project.name.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    for package in packages {
+        package.dependencies = std::mem::take(&mut package.dependencies)
+            .into_iter()
+            .map(|dependency| {
+                package_name_aliases
+                    .get(&dependency)
+                    .cloned()
+                    .unwrap_or(dependency)
+            })
+            .collect();
+    }
+}
+
+#[cfg(test)]
+mod package_dependency_name_tests {
+    use super::*;
+
+    fn package(install_name: &str, project_name: &str, dependencies: &[&str]) -> DbtPackage {
+        DbtPackage {
+            package_root_path: PathBuf::from(install_name),
+            dbt_project: DbtProject {
+                name: project_name.to_string(),
+                ..Default::default()
+            },
+            dependencies: dependencies.iter().map(|name| name.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn rewrites_each_install_name_once() {
+        let mut packages = vec![
+            package("root", "root", &["alias_a"]),
+            package("alias_a", "alias_b", &[]),
+            package("alias_b", "project_b", &[]),
+        ];
+
+        normalize_package_dependency_names(&mut packages);
+
+        assert_eq!(packages[0].dependencies, BTreeSet::from(["alias_b".into()]));
+    }
 }
 
 pub async fn load_internal_packages(

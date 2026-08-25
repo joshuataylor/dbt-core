@@ -215,7 +215,7 @@ pub async fn resolve(
         arg.sample_config.clone(),
         arg.sample_renaming.clone(),
         arg.command == FsCommand::Compile || arg.command == FsCommand::Test,
-        PackageSearchOrder::from_project_flags(dbt_state.root_project().flags.as_ref()),
+        PackageSearchOrder::resolve(dbt_state.root_project().flags.as_ref()),
     )?;
     let mut collector = RenderResults {
         rendering_results: BTreeMap::new(),

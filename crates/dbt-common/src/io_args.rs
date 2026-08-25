@@ -1512,6 +1512,44 @@ fn resolve_latest_version_pointer_enabled_by_default_with_env_lookup(
     true
 }
 
+pub const REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV: &str =
+    "DBT_ENGINE_REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT";
+
+/// Whether an unqualified `ref()` / `source()` / `function()` from a node inside an
+/// installed package searches that package before the root project.
+///
+/// Defaults to `true`, which is Fusion's established behavior. Set it to `false` for
+/// dbt-core's candidate order, where a root-project definition wins instead.
+pub fn resolve_require_ref_searches_node_package_before_root(
+    project_flags: Option<&Value>,
+) -> bool {
+    resolve_require_ref_searches_node_package_before_root_with_env_lookup(project_flags, |name| {
+        std::env::var_os(name)
+    })
+}
+
+fn resolve_require_ref_searches_node_package_before_root_with_env_lookup(
+    project_flags: Option<&Value>,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    if let Some(value) = get_env(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV) {
+        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
+            return resolved;
+        }
+    }
+
+    if let Some(enabled) = project_flags
+        .and_then(|flags| {
+            project_flags_get_value(flags, "require_ref_searches_node_package_before_root")
+        })
+        .and_then(Value::as_bool)
+    {
+        return enabled;
+    }
+
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum, EnumIter)]
 #[serde(rename_all = "lowercase")]
 #[clap(rename_all = "lowercase")]
@@ -1758,6 +1796,89 @@ mod tests {
                     .find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
             },
         )
+    }
+
+    fn require_ref_searches_node_package_before_root_with_env(
+        project_flags_yaml: Option<&str>,
+        env: &[(&str, &str)],
+    ) -> bool {
+        let project_flags =
+            project_flags_yaml.map(|yaml| dbt_yaml::from_str::<Value>(yaml).unwrap());
+        resolve_require_ref_searches_node_package_before_root_with_env_lookup(
+            project_flags.as_ref(),
+            |name| {
+                env.iter()
+                    .find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
+            },
+        )
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_defaults_to_fusion_order() {
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            None,
+            &[]
+        ));
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            Some("some_other_flag: true\n"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_reads_project_flag() {
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: true\n"),
+            &[]
+        ));
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: false\n"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_env_overrides_project_flag() {
+        // Env wins in both directions
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: false\n"),
+            &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "1")]
+        ));
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: true\n"),
+            &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "false")]
+        ));
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_env_accepts_boolish_values() {
+        for truthy in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(
+                require_ref_searches_node_package_before_root_with_env(
+                    None,
+                    &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, truthy)]
+                ),
+                "expected {truthy} to enable the flag"
+            );
+        }
+        for falsy in ["0", "false", "no", "off"] {
+            assert!(
+                !require_ref_searches_node_package_before_root_with_env(
+                    None,
+                    &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, falsy)]
+                ),
+                "expected {falsy} to disable the flag"
+            );
+        }
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_unparseable_env_falls_back() {
+        // A typo must not silently flip the behavior; the project flag still wins
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: false\n"),
+            &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "yep")]
+        ));
     }
 
     #[test]

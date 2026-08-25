@@ -201,7 +201,7 @@ pub fn try_load_prev_compilation(
         Default::default(),
         Default::default(),
         compile_or_test,
-        PackageSearchOrder::from_project_flags(dbt_state.root_project().flags.as_ref()),
+        PackageSearchOrder::resolve(dbt_state.root_project().flags.as_ref()),
     ) {
         Ok(r) => Arc::new(r) as Arc<dyn NodeResolverTracker>,
         Err(_) => return (PrevCompilationResult::None, use_lazy_filter),

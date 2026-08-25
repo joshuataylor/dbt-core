@@ -667,7 +667,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                     RunFilter::try_from(self.arg.empty, self.arg.sample.clone())?,
                     BTreeMap::new(), // renaming
                     compile_or_test,
-                    PackageSearchOrder::from_project_flags(
+                    PackageSearchOrder::resolve(
                         loaded_project.dbt_state().root_project().flags.as_ref(),
                     ),
                 )?;

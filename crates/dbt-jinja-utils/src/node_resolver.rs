@@ -12,10 +12,10 @@ use dbt_adapter::relation::{
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
     CodeLocationWithFile, ErrorCode, FsError, FsResult, err, fs_err,
+    io_args::resolve_require_ref_searches_node_package_before_root,
     tracing::dbt_emit::{
         emit_error_log_from_fs_error, emit_warn_log_from_fs_error, emit_warn_log_message,
     },
-    warn_error_options::project_flags_get_value,
 };
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::{
@@ -50,22 +50,25 @@ fn downgraded_node_dependency_warning(
 /// Search order for unqualified package resources.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum PackageSearchOrder {
-    /// Search the package containing the calling node first.
-    NodePackageFirst,
-    /// Search the root project first.
+    /// Search the package containing the calling node first. Fusion's established
+    /// behavior, and the default when the flag is not set.
     #[default]
+    NodePackageFirst,
+    /// Search the root project first, as dbt-core does by default.
     RootFirst,
 }
 
 impl PackageSearchOrder {
-    /// Returns the search order configured by the project behavior flag.
-    pub fn from_project_flags(flags: Option<&dbt_yaml::Value>) -> Self {
-        let node_package_first = flags
-            .and_then(|flags| {
-                project_flags_get_value(flags, "require_ref_searches_node_package_before_root")
-            })
-            .and_then(dbt_yaml::Value::as_bool)
-            .unwrap_or(false);
+    /// Returns the search order configured by the `require_ref_searches_node_package_before_root`
+    /// behavior flag, honoring the `DBT_REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT` environment
+    /// variable ahead of the root project's `flags:` block.
+    pub fn resolve(project_flags: Option<&dbt_yaml::Value>) -> Self {
+        Self::from_node_package_first(resolve_require_ref_searches_node_package_before_root(
+            project_flags,
+        ))
+    }
+
+    fn from_node_package_first(node_package_first: bool) -> Self {
         if node_package_first {
             Self::NodePackageFirst
         } else {
@@ -1476,7 +1479,7 @@ mod tests {
     #[test]
     fn lookup_source_honors_package_search_order() {
         for (package_search_order, expected) in [
-            (PackageSearchOrder::default(), ROOT_SOURCE_ID),
+            (PackageSearchOrder::RootFirst, ROOT_SOURCE_ID),
             (PackageSearchOrder::NodePackageFirst, PACKAGE_SOURCE_ID),
         ] {
             let node_resolver = resolver_with_duplicate_source(package_search_order);
@@ -1625,48 +1628,45 @@ mod tests {
             node_resolver.search_packages(None, Some("root_project")),
             vec![Some("root_project".to_string()), None]
         );
+        // Default: the calling node's own package first
         assert_eq!(
             node_resolver.search_packages(None, Some("source_consumer")),
             vec![
-                Some("root_project".to_string()),
                 Some("source_consumer".to_string()),
+                Some("root_project".to_string()),
                 None
             ]
         );
 
-        node_resolver.package_search_order = PackageSearchOrder::NodePackageFirst;
+        // dbt-core's order, once the flag is turned off
+        node_resolver.package_search_order = PackageSearchOrder::RootFirst;
         assert_eq!(
             node_resolver.search_packages(None, Some("source_consumer")),
             vec![
-                Some("source_consumer".to_string()),
                 Some("root_project".to_string()),
+                Some("source_consumer".to_string()),
                 None
             ]
         );
     }
 
+    // Flag/env precedence itself is covered by
+    // `resolve_require_ref_searches_node_package_before_root` in dbt-common's io_args,
+    // which has an injectable env lookup. Here we only pin the mapping onto the enum,
+    // and that the `Default` stays dbt-core's order.
     #[test]
-    fn package_search_order_from_project_flags() {
-        let order = |yaml: &str| {
-            let flags: dbt_yaml::Value = dbt_yaml::from_str(yaml).expect("valid flags mapping");
-            PackageSearchOrder::from_project_flags(Some(&flags))
-        };
-
+    fn package_search_order_maps_resolved_flag() {
         assert_eq!(
-            PackageSearchOrder::from_project_flags(None),
-            PackageSearchOrder::RootFirst
-        );
-        assert_eq!(
-            order("some_other_flag: true\n"),
-            PackageSearchOrder::RootFirst
-        );
-        assert_eq!(
-            order("require_ref_searches_node_package_before_root: true\n"),
+            PackageSearchOrder::from_node_package_first(true),
             PackageSearchOrder::NodePackageFirst
         );
         assert_eq!(
-            order("require_ref_searches_node_package_before_root: false\n"),
+            PackageSearchOrder::from_node_package_first(false),
             PackageSearchOrder::RootFirst
+        );
+        assert_eq!(
+            PackageSearchOrder::default(),
+            PackageSearchOrder::NodePackageFirst
         );
     }
 

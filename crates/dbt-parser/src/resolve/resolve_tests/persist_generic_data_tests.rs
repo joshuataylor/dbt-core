@@ -372,6 +372,8 @@ fn persist_inner(
             }
         }
     }
+    // Explicit test names (`name: customer/id_not_null`) can carry `/` straight into the generic-test SQL path.
+    stdfs::create_dir_all(test_file.parent().unwrap())?;
     stdfs::write(&test_file, generated_test_sql)?;
     let dbt_asset = DbtAsset {
         path,
@@ -3682,6 +3684,64 @@ mod tests {
         assert!(
             !model.contains("version=1_1"),
             "Unquoted v=1_1 would be parsed by Jinja as the numeric literal 11"
+        );
+    }
+
+    #[test]
+    fn test_persist_creates_intermediate_dirs_for_explicit_test_name_with_slash() {
+        let out_dir = tempfile::tempdir().unwrap();
+        let io_args = IoArgs {
+            out_dir: out_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let test_config = GenericTestConfig {
+            resource_type: "model".to_string(),
+            resource_name: "customers".to_string(),
+            version_num: None,
+            model_tests: None,
+            column_tests: None,
+            source_name: None,
+        };
+
+        let test = DataTests::CustomTest(
+            CustomTest::MultiKey(Box::new(CustomTestMultiKey {
+                test_name: "not_null".to_string(),
+                name: Some("customer/id_not_null".to_string()),
+                description: None,
+                config: None,
+                column_name: None,
+                arguments: Verbatim::from(None),
+                __deprecated_args_and_configs__: Verbatim::from(BTreeMap::new()),
+            }))
+            .into(),
+        );
+
+        let test_asset = persist_inner(
+            "project_name",
+            "project_name",
+            &test_config,
+            Some("id"),
+            &test,
+            &io_args,
+            Path::new("models/schema.yml"),
+            &mut HashSet::new(),
+            &mut HashMap::new(),
+            &[],
+            false,
+            RawTestConfig::default(),
+        )
+        .expect("persist_inner should create missing intermediate directories, not fail");
+
+        assert_eq!(test_asset.test_name, "customer/id_not_null");
+        let written_path = out_dir
+            .path()
+            .join(DBT_GENERIC_TESTS_DIR_NAME)
+            .join("customer/id_not_null.sql");
+        assert!(
+            written_path.is_file(),
+            "expected generated test SQL at {}",
+            written_path.display()
         );
     }
 }

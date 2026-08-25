@@ -1486,6 +1486,16 @@ pub struct SystemUpgradeDistributionArgs {
     /// Skip the confirmation prompt and proceed automatically.
     #[arg(short = 'y', long)]
     pub yes: bool,
+
+    /// For a managed-project upgrade, the Python package manager to sync
+    /// the rewritten manifest with (e.g. `uv`, `poetry`, `pdm`, `pipenv`,
+    /// `conda`, `hatch`, `pip`, `pipx`, `rye`, `asdf`, `mise`, `pyenv`).
+    /// Overrides automatic detection -- use this to answer non-interactively
+    /// when detection can't determine the manager on its own (it would
+    /// otherwise prompt for one interactively, or fail if run with --yes or
+    /// outside a terminal).
+    #[arg(long)]
+    pub package_manager: Option<String>,
 }
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]

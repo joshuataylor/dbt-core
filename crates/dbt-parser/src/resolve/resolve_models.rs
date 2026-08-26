@@ -231,6 +231,7 @@ pub async fn resolve_models(
         .with_resolve_defaults((
             arg.static_analysis.unwrap_or_default(),
             root_package.dbt_project.sync.clone(),
+            Some(default_adapter),
         ));
 
     let render_ctx = RenderCtx {

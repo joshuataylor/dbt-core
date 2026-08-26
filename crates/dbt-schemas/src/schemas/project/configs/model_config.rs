@@ -1324,7 +1324,7 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
 
     type Resolved = ResolvedModelConfig;
     type PackageDefaults = DbtQuoting;
-    type ResolveDefaults = (StaticAnalysisKind, Option<SyncConfig>);
+    type ResolveDefaults = (StaticAnalysisKind, Option<SyncConfig>, Option<AdapterType>);
 
     fn get_enabled_with_default(&self) -> bool {
         self.enabled.unwrap_or(true)
@@ -1346,13 +1346,27 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
 
     fn apply_resolve_defaults(
         &mut self,
-        (static_analysis, sync): (StaticAnalysisKind, Option<SyncConfig>),
+        (static_analysis, sync, default_adapter): Self::ResolveDefaults,
     ) {
         if self.static_analysis.is_none() {
             self.static_analysis = Some(Spanned::new(static_analysis));
         }
         if self.sync.is_none() {
             self.sync = sync;
+        }
+        // Lake compute writes open-format tables: a node placed there materializes
+        // an Iceberg table unless its author says otherwise. Applied here rather
+        // than through `#[resolved(default = ...)]` because the default turns on
+        // the node's effective adapter, which is only known once every config layer
+        // has merged -- and `finalize` has already collapsed `materialized` to the
+        // static `view` default by the time a caller could inspect it.
+        if self.adapter.or(default_adapter) == Some(AdapterType::Alt) {
+            if self.materialized.is_none() {
+                self.materialized = Some(DbtMaterialization::Table);
+            }
+            if self.table_format.is_none() {
+                self.table_format = Some("iceberg".to_string());
+            }
         }
     }
 
@@ -2614,5 +2628,81 @@ __additional_properties__: {}
         let roundtripped: ProjectModelConfig = model_config.into();
         assert_eq!(roundtripped.projections, project_config.projections);
         assert_eq!(roundtripped.inserts_only, project_config.inserts_only);
+    }
+
+    /// `apply_resolve_defaults` is the only seam that can key a default off the
+    /// node's effective adapter: it runs after every config layer has merged and
+    /// before `finalize` collapses `materialized` to the static `view` default.
+    mod lake_compute_defaults {
+        use super::ModelConfig;
+        use crate::schemas::common::DbtMaterialization;
+        use crate::schemas::project::dbt_project::ResolvableConfig;
+        use dbt_adapter_core::AdapterType;
+        use dbt_common::io_args::StaticAnalysisKind;
+
+        /// Merged config -> the config `finalize` would see.
+        fn resolved(
+            mut config: ModelConfig,
+            default_adapter: Option<AdapterType>,
+        ) -> (Option<DbtMaterialization>, Option<String>) {
+            config.apply_resolve_defaults((StaticAnalysisKind::default(), None, default_adapter));
+            (config.materialized, config.table_format)
+        }
+
+        #[test]
+        fn an_unconfigured_lake_compute_model_is_an_iceberg_table() {
+            let config = ModelConfig {
+                adapter: Some(AdapterType::Alt),
+                ..Default::default()
+            };
+            let (materialized, table_format) = resolved(config, Some(AdapterType::Snowflake));
+            assert_eq!(materialized, Some(DbtMaterialization::Table));
+            assert_eq!(table_format.as_deref(), Some("iceberg"));
+        }
+
+        /// These are defaults, not overrides: whatever the merge produced wins.
+        #[test]
+        fn an_authored_materialization_and_table_format_survive() {
+            let config = ModelConfig {
+                adapter: Some(AdapterType::Alt),
+                materialized: Some(DbtMaterialization::View),
+                table_format: Some("default".to_string()),
+                ..Default::default()
+            };
+            let (materialized, table_format) = resolved(config, Some(AdapterType::Snowflake));
+            assert_eq!(materialized, Some(DbtMaterialization::View));
+            assert_eq!(table_format.as_deref(), Some("default"));
+        }
+
+        /// A target whose *default* adapter is lake compute needs no `+adapter:` on
+        /// every node to get the same treatment.
+        #[test]
+        fn a_lake_compute_target_defaults_its_nodes_too() {
+            let (materialized, table_format) =
+                resolved(ModelConfig::default(), Some(AdapterType::Alt));
+            assert_eq!(materialized, Some(DbtMaterialization::Table));
+            assert_eq!(table_format.as_deref(), Some("iceberg"));
+        }
+
+        #[test]
+        fn nodes_off_lake_compute_are_untouched() {
+            let config = ModelConfig {
+                adapter: Some(AdapterType::Snowflake),
+                ..Default::default()
+            };
+            let (materialized, table_format) = resolved(config, Some(AdapterType::Alt));
+            assert_eq!(materialized, None, "left for the static `view` default");
+            assert_eq!(table_format, None);
+        }
+
+        /// `None` default adapter (the `Default` resolve-defaults value, used by
+        /// resolvers that never call `with_resolve_defaults`) means only an
+        /// explicit `+adapter` counts.
+        #[test]
+        fn an_unknown_default_adapter_does_not_opt_a_node_in() {
+            let (materialized, table_format) = resolved(ModelConfig::default(), None);
+            assert_eq!(materialized, None);
+            assert_eq!(table_format, None);
+        }
     }
 }

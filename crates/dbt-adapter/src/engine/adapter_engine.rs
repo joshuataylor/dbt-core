@@ -19,6 +19,7 @@ use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult, Cancellable, cre
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_sql_utils::snowflake_terminal_flow_statement;
 use dbt_telemetry::{QueryExecuted, QueryOutcome};
+use dbt_tracked_stmt::TrackedStatement;
 use indexmap::IndexMap;
 use minijinja::State;
 use tracy_client::span;

@@ -31,6 +31,7 @@ dbt-sql-keywords = { workspace = true }
 dbt-sql-utils = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-tracing = { workspace = true }
+dbt-tracked-stmt = { workspace = true }
 dbt-yaml = { workspace = true }
 
 adbc-core = { workspace = true }

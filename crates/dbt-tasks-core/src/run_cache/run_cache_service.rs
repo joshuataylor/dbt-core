@@ -31,7 +31,9 @@ use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::io_args::RunCacheMode;
 use dbt_common::stats::NodeStatus;
-use dbt_common::tracing::dbt_emit::{emit_trace_log_message, emit_warn_log_message};
+use dbt_common::tracing::dbt_emit::{
+    emit_debug_log_message, emit_trace_log_message, emit_warn_log_message,
+};
 use dbt_common::tracing::span_info::find_and_update_span_attrs;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_frontend_common::ident::FullyQualifiedName;
@@ -3652,14 +3654,11 @@ async fn prefetch_last_modified_epochs(
     // these relations (legitimate for post-clone invalidations and SQL-parser
     // discovered refs) or that the schema dump returned empty. Log so this
     // is visible when diagnosing unexpected per-node warehouse query volume.
-    emit_warn_log_message(
-        ErrorCode::StateServiceWarn,
-        format!(
-            "dbt State per-node freshness query for {} relation(s) not in prefetch cache: {}",
-            misses.len(),
-            misses.keys().cloned().collect::<Vec<_>>().join(", ")
-        ),
-    );
+    emit_debug_log_message(format!(
+        "dbt State per-node freshness query for {} relation(s) not in prefetch cache: {}",
+        misses.len(),
+        misses.keys().cloned().collect::<Vec<_>>().join(", ")
+    ));
     let refresh_result =
         refresh_planned_last_modified_misses(ctx, &misses, overrides, ctx.adapter_type()).await;
     if let Err(err) = refresh_result {

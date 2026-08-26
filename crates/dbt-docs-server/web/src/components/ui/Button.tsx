@@ -1,7 +1,7 @@
 import { type MouseEvent, type ReactNode } from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 
-import { Icon, type Ryecon, type Sizes } from '@dbt-labs/sourdough';
+import { type Sizes } from '@dbt-labs/sourdough';
 
 import { cn } from '../../lib/utils';
 import { Tooltip } from './Tooltip';
@@ -38,7 +38,7 @@ export interface ButtonProps extends Omit<VariantProps<typeof buttonVariants>, '
   /** Accepts sourdough's Sizes enum too, since its string values match our text-size variants. */
   size?: ButtonVariantSize | Sizes;
   text?: ReactNode;
-  ryecon?: Ryecon;
+  icon?: ReactNode;
   ariaLabel?: string;
   tooltip?: string;
   onClick?(event: MouseEvent<HTMLButtonElement>): void;
@@ -50,7 +50,7 @@ export function Button({
   variant,
   size,
   text,
-  ryecon,
+  icon,
   ariaLabel,
   tooltip,
   onClick,
@@ -68,7 +68,7 @@ export function Button({
         className,
       )}
     >
-      {ryecon && <Icon ryecon={ryecon} size="xs" />}
+      {icon}
       {text}
     </button>
   );

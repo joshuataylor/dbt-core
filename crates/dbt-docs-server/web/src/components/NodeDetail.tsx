@@ -5,6 +5,7 @@ import {
   ChartColumn,
   CircleGauge,
   ClipboardCheck,
+  Copy,
   Database,
   FileText,
   type LucideIcon,
@@ -20,7 +21,6 @@ import {
   type ResourceTypeExplorer,
   resourceTypesWithColumns,
 } from '@dbt-labs/dbt-dag';
-import { RyeconShare } from '@dbt-labs/sourdough';
 
 import { getColumns, toRelationshipItem } from '../lib/assetView';
 import { filterConfig } from '../lib/configView';
@@ -235,7 +235,7 @@ export function NodeDetail({ asset, onSelect, hasColumnLineage, userState }: Pro
     <div className="flex items-center gap-2">
       <Button
         variant="outline"
-        ryecon={RyeconShare}
+        icon={<Copy className="size-3" />}
         tooltip="Copy link"
         onClick={() => {
           void navigator.clipboard.writeText(window.location.href);

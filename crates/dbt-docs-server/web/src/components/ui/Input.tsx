@@ -1,11 +1,9 @@
-import { type ComponentPropsWithRef } from 'react';
-
-import { Icon, type Ryecon } from '@dbt-labs/sourdough';
+import { type ComponentPropsWithRef, type ReactNode } from 'react';
 
 import { cn } from '../../lib/utils';
 
 interface InputIconProps {
-  ryecon: Ryecon;
+  icon: ReactNode;
   onClick?: () => void;
   className?: string;
 }
@@ -22,8 +20,7 @@ export interface InputProps extends Omit<ComponentPropsWithRef<'input'>, 'classN
   isEdit?: boolean;
 }
 
-function InputIcon({ ryecon, onClick, className }: InputIconProps) {
-  const icon = <Icon ryecon={ryecon} size="xs" />;
+function InputIcon({ icon, onClick, className }: InputIconProps) {
   if (!onClick) return <span className={className}>{icon}</span>;
   return (
     <button type="button" onClick={onClick} className={className}>

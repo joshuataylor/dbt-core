@@ -2,10 +2,10 @@ import { useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQueries } from '@tanstack/react-query';
 import { type ColumnDef } from '@tanstack/react-table';
-import { Clock, Table } from 'lucide-react';
+import { Clock, Copy, Table } from 'lucide-react';
 
 import { resourceIconMap, type ResourceTypeExplorer } from '@dbt-labs/dbt-dag';
-import { Icon, RyeconShare } from '@dbt-labs/sourdough';
+import { Icon } from '@dbt-labs/sourdough';
 
 import type { FreshnessStatusValue, SourceAsset } from '../shared';
 import {
@@ -178,7 +178,7 @@ export function SourceCollectionPage({ nodes, onSelect }: Props) {
         actions={
           <Button
             variant="outline"
-            ryecon={RyeconShare}
+            icon={<Copy className="size-3" />}
             tooltip="Copy link"
             onClick={() => void navigator.clipboard.writeText(window.location.href)}
           />

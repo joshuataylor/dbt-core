@@ -606,7 +606,19 @@ impl<'env> Vm<'env> {
                         state.ctx.store(name, value);
                     }
                 }
-                Instruction::Lookup(name, _) => {
+                Instruction::Lookup(name, span) => {
+                    if *name == "this" {
+                        listeners.iter().for_each(|listener| {
+                            listener.on_this_reference(
+                                span.start_line,
+                                span.start_col,
+                                span.start_offset,
+                                span.end_line,
+                                span.end_col,
+                                span.end_offset,
+                            );
+                        });
+                    }
                     // Remember which identifier failed to resolve. The name travels
                     // with the value, so an error raised after it has been passed
                     // somewhere else — into a macro, say — can still report the

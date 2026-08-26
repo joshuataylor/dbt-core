@@ -2219,7 +2219,7 @@ pub fn check_options(cli: &Cli) {
     if common_args.use_colors || common_args.no_use_colors {
         emit_warn_log_message(
             ErrorCode::NoLongerSupportedOption,
-            "--use-colors is no longer supported",
+            "--use-colors is no longer supported; use the FORCE_COLOR or NO_COLOR environment variables instead",
         );
     }
     if common_args.use_colors_file || common_args.no_use_colors_file {

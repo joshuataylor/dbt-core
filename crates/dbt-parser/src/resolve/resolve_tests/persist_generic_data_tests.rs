@@ -7,7 +7,7 @@ use dbt_common::FsResult;
 use dbt_common::constants::DBT_GENERIC_TESTS_DIR_NAME;
 use dbt_common::io_args;
 use dbt_common::io_args::IoArgs;
-use dbt_common::tracing::dbt_emit::emit_strict_parse_error;
+use dbt_common::tracing::dbt_emit::{emit_strict_parse_error, emit_warn_log_from_fs_error};
 use dbt_common::{ErrorCode, err};
 use dbt_common::{fs_err, stdfs};
 use dbt_frontend_common::Dialect;
@@ -50,6 +50,13 @@ pub struct ColumnTestEntry {
     pub quote: bool,
     pub tests: Vec<DataTests>,
     pub tags: Vec<String>,
+    pub(super) legacy_syntax_handling: LegacyTestSyntaxHandling,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum LegacyTestSyntaxHandling {
+    Strict,
+    Warn,
 }
 
 /// Raw (unrendered) schema.yml `config:` blocks for a resource's generic tests, captured
@@ -216,6 +223,7 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
                         test_name_truncations,
                         &[],
                         suppress_deprecated_test_validation,
+                        LegacyTestSyntaxHandling::Strict,
                         raw_config,
                     )?;
                     collected_generic_tests.push(test_asset);
@@ -254,6 +262,7 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
                             test_name_truncations,
                             &entry.tags,
                             suppress_deprecated_test_validation,
+                            entry.legacy_syntax_handling,
                             raw_config,
                         )?;
                         collected_generic_tests.push(test_asset);
@@ -280,6 +289,7 @@ fn persist_inner(
     test_name_truncations: &mut HashMap<String, String>,
     column_tags: &[String],
     suppress_deprecated_test_validation: bool,
+    legacy_syntax_handling: LegacyTestSyntaxHandling,
     raw_config: RawTestConfig,
 ) -> FsResult<GenericTestAsset> {
     let RawTestConfig {
@@ -300,6 +310,7 @@ fn persist_inner(
         column_name,
         dependecy_package_name,
         suppress_deprecated_test_validation,
+        legacy_syntax_handling,
         &explicit_config_keys,
     )?;
 
@@ -457,6 +468,7 @@ fn get_test_details(
     column_name: Option<&str>,
     dependency_package_name: Option<&str>,
     suppress_deprecated_test_validation: bool,
+    legacy_syntax_handling: LegacyTestSyntaxHandling,
     explicit_config_keys: &BTreeSet<String>,
 ) -> FsResult<TestDetails> {
     let mut kwargs = BTreeMap::new();
@@ -513,6 +525,7 @@ fn get_test_details(
                     &mk.config,
                     dependency_package_name,
                     suppress_deprecated_test_validation,
+                    legacy_syntax_handling,
                     explicit_config_keys,
                 )?;
                 kwargs.extend(extraction_result.kwargs);
@@ -536,6 +549,7 @@ fn get_test_details(
                     &inner.config,
                     dependency_package_name,
                     suppress_deprecated_test_validation,
+                    legacy_syntax_handling,
                     explicit_config_keys,
                 )?;
                 kwargs.extend(extraction_result.kwargs);
@@ -600,6 +614,7 @@ fn extract_kwargs_and_jinja_vars_and_dep_kwarg_and_configs(
     existing_config: &Option<DataTestConfig>,
     dependency_package_name: Option<&str>,
     suppress_deprecated_test_validation: bool,
+    legacy_syntax_handling: LegacyTestSyntaxHandling,
     explicit_config_keys: &BTreeSet<String>,
 ) -> FsResult<KwargsExtractionResult> {
     // Start with existing config
@@ -657,7 +672,12 @@ fn extract_kwargs_and_jinja_vars_and_dep_kwarg_and_configs(
         );
 
         if !suppress_deprecated_test_validation {
-            emit_strict_parse_error(*schema_error, dependency_package_name);
+            match legacy_syntax_handling {
+                LegacyTestSyntaxHandling::Strict => {
+                    emit_strict_parse_error(*schema_error, dependency_package_name);
+                }
+                LegacyTestSyntaxHandling::Warn => emit_warn_log_from_fs_error(*schema_error),
+            }
         }
     }
     for (key, value) in deprecated.clone() {
@@ -1540,6 +1560,10 @@ fn collect_versioned_model_tests(
                             quote: col.quote.unwrap_or(false),
                             tests: tests.clone(),
                             tags,
+                            // Version-local column tests were ignored before they were collected
+                            // from the typed `versions[].columns` field. Keep their legacy syntax
+                            // warning-only so discovering the tests does not break existing projects.
+                            legacy_syntax_handling: LegacyTestSyntaxHandling::Warn,
                         },
                     );
                 }
@@ -1914,6 +1938,7 @@ mod tests {
             &existing_config,
             None,
             false,
+            LegacyTestSyntaxHandling::Strict,
             &BTreeSet::new(),
         )
         .unwrap();
@@ -2059,6 +2084,7 @@ mod tests {
                 quote: false,
                 tests: vec![unique_test],
                 tags: vec![],
+                legacy_syntax_handling: LegacyTestSyntaxHandling::Strict,
             },
         );
         let base_config = GenericTestConfig {
@@ -2955,6 +2981,7 @@ mod tests {
             &existing_config,
             None,
             false,
+            LegacyTestSyntaxHandling::Strict,
             &BTreeSet::new(),
         )
         .unwrap();
@@ -3008,6 +3035,7 @@ mod tests {
             &existing_config,
             None,
             true,
+            LegacyTestSyntaxHandling::Strict,
             &explicit_config_keys,
         )
     }
@@ -3129,6 +3157,7 @@ mod tests {
             &existing_config,
             None,
             false,
+            LegacyTestSyntaxHandling::Strict,
             &BTreeSet::new(),
         )
         .unwrap();
@@ -3277,6 +3306,7 @@ mod tests {
             &existing_config,
             None,
             false,
+            LegacyTestSyntaxHandling::Strict,
             &BTreeSet::new(),
         )
         .unwrap();
@@ -3668,6 +3698,7 @@ mod tests {
             None,
             None,
             false,
+            LegacyTestSyntaxHandling::Strict,
             &BTreeSet::new(),
         )
         .unwrap();
@@ -3729,6 +3760,7 @@ mod tests {
             &mut HashMap::new(),
             &[],
             false,
+            LegacyTestSyntaxHandling::Strict,
             RawTestConfig::default(),
         )
         .expect("persist_inner should create missing intermediate directories, not fail");

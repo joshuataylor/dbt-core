@@ -73,7 +73,7 @@ describe('buildFileTreeItems', () => {
     );
     const leaf = result.items.find((i) => i.id === 'project/pkg/models/x.sql');
     expect(leaf?.data.iconOverride?.label).toBe('model');
-    expect(leaf?.data.iconOverride?.ryecon).toBeDefined();
+    expect(leaf?.data.iconOverride?.icon).toBeDefined();
   });
 
   it('deduplicates folder items shared across multiple files', () => {

@@ -1,22 +1,16 @@
-import type { Ryecon } from '@dbt-labs/sourdough';
-import {
-  RyeconBook,
-  RyeconClipboardSuccess,
-  RyeconFile,
-  RyeconFileBlank,
-} from '@dbt-labs/sourdough';
+import { ClipboardCheck, FileCode, FileText, type LucideIcon } from 'lucide-react';
 
 import type { FileTreeItemType } from '../components/ui/PaginatedFileTree';
 import type { FileEntry } from '../shared';
-import { RESOURCE_TYPE_RYECON } from './resourceType';
+import { RESOURCE_TYPE_ICON } from './resourceType';
 
-const EXTRA_RYECON: Record<string, Ryecon> = {
-  unit_test: RyeconClipboardSuccess,
-  doc: RyeconBook,
+const EXTRA_ICON: Record<string, LucideIcon> = {
+  unit_test: ClipboardCheck,
+  doc: FileText,
 };
 
-export function iconForResourceType(resourceType: string): Ryecon {
-  return RESOURCE_TYPE_RYECON[resourceType] ?? EXTRA_RYECON[resourceType] ?? RyeconFile;
+export function iconForResourceType(resourceType: string): LucideIcon {
+  return RESOURCE_TYPE_ICON[resourceType] ?? EXTRA_ICON[resourceType] ?? FileText;
 }
 
 const YAML_PATH_RE = /\.ya?ml$/i;
@@ -65,13 +59,14 @@ export function buildFileTreeItems(
         i === 0 ? rootName : `${rootName}/${segments.slice(0, i).join('/')}`;
 
       if (isLeaf) {
+        const FileIcon = iconForResourceType(file.resourceType);
         itemsByPath.set(path, {
           id: path,
           parent,
           data: {
             pathType: 'file',
             iconOverride: {
-              ryecon: iconForResourceType(file.resourceType),
+              icon: <FileIcon className="size-3 shrink-0" />,
               label: file.resourceType,
             },
           },
@@ -86,7 +81,10 @@ export function buildFileTreeItems(
           data: {
             pathType: 'directory',
             ...(isYamlDir && {
-              iconOverride: { ryecon: RyeconFileBlank, label: 'yaml' },
+              iconOverride: {
+                icon: <FileCode className="size-3 shrink-0" />,
+                label: 'yaml',
+              },
             }),
           },
         });

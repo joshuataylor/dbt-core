@@ -1,11 +1,7 @@
 import { type FC, type JSX } from 'react';
+import { BadgeAlert, BadgeCheck, BadgeMinus } from 'lucide-react';
 
-import {
-  RyeconStatusError,
-  RyeconStatusSuccess,
-  RyeconStatusWarning,
-  SizeType,
-} from '@dbt-labs/sourdough';
+import { SizeType } from '@dbt-labs/sourdough';
 
 import { Link } from '../../components/ui/Link';
 import { toTitleCase } from '../util/string';
@@ -17,19 +13,19 @@ export const trustStateTraits: Record<
   { icon: JSX.Element; textColor: string }
 > = {
   healthy: {
-    icon: <RyeconStatusSuccess size="sm" />,
+    icon: <BadgeCheck className="size-3.5" />,
     textColor: 'text-fgSuccess',
   },
   caution: {
-    icon: <RyeconStatusWarning size="sm" />,
+    icon: <BadgeAlert className="size-3.5" />,
     textColor: 'text-fgWarning',
   },
   degraded: {
-    icon: <RyeconStatusError size="sm" />,
+    icon: <BadgeAlert className="size-3.5" />,
     textColor: 'text-fgDanger',
   },
   unknown: {
-    icon: <RyeconStatusError size="sm" />,
+    icon: <BadgeMinus className="size-3.5" />,
     textColor: 'text-fgDecorative',
   },
 };

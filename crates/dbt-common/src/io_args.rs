@@ -35,6 +35,19 @@ pub enum LocalExecutionBackendKind {
     Service,
 }
 
+impl LocalExecutionBackendKind {
+    /// Whether this backend can execute against the adapter.
+    pub fn is_supported_for_adapter(self, adapter: AdapterType) -> bool {
+        matches!(
+            (adapter, self),
+            (_, Self::Remote)
+                | (AdapterType::Snowflake, _)
+                | (AdapterType::Bigquery, Self::Worker)
+                | (AdapterType::Datafusion, Self::Inline)
+        )
+    }
+}
+
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Display, Default,
 )]
@@ -1768,6 +1781,38 @@ pub fn validate_project_name(name: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_execution_backend_support_matrix() {
+        let cases: &[(LocalExecutionBackendKind, &[AdapterType])] = &[
+            (
+                LocalExecutionBackendKind::Inline,
+                &[AdapterType::Snowflake, AdapterType::Datafusion],
+            ),
+            (
+                LocalExecutionBackendKind::Worker,
+                &[AdapterType::Snowflake, AdapterType::Bigquery],
+            ),
+            (
+                LocalExecutionBackendKind::Service,
+                &[AdapterType::Snowflake],
+            ),
+        ];
+
+        for (adapter, _) in AdapterType::iter_with_names() {
+            assert!(
+                LocalExecutionBackendKind::Remote.is_supported_for_adapter(adapter),
+                "remote must support {adapter}"
+            );
+            for (backend, supported_adapters) in cases {
+                assert_eq!(
+                    backend.is_supported_for_adapter(adapter),
+                    supported_adapters.contains(&adapter),
+                    "unexpected {backend:?} support for {adapter}"
+                );
+            }
+        }
+    }
 
     fn optimize_tests_with_env(
         command: FsCommand,

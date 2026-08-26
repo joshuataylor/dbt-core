@@ -52,6 +52,14 @@ fn selects_alt_compute(nodes: &Nodes, unique_id: &str) -> bool {
         .is_some_and(|node| node.node_adapter() == AdapterType::Alt)
 }
 
+pub fn effective_unit_test_execute(unit_test: &DbtUnitTest, execute: Execute) -> Execute {
+    unit_test
+        .deprecated_config
+        .compute
+        .map(|compute| Execute::from_compute_flag(compute.into()))
+        .unwrap_or(execute)
+}
+
 pub fn renderable_test_group_task(
     phases: &[TP],
     generic_test_group: &Arc<GenericTestGroup>,
@@ -391,8 +399,7 @@ pub trait TasksForNodeFactory: Send + Sync {
                 let unit_test_execute = nodes
                     .unit_tests
                     .get(unique_id)
-                    .and_then(|ut| ut.deprecated_config.compute)
-                    .map(|c| Execute::from_compute_flag(c.into()))
+                    .map(|unit_test| effective_unit_test_execute(unit_test, execute))
                     .unwrap_or(execute);
                 match (the_runnable_task, unit_test_execute) {
                     (Some(t), Execute::Remote) => {
@@ -470,6 +477,7 @@ pub trait TasksForNodeFactory: Send + Sync {
 #[cfg(test)]
 mod node_adapter_dispatch_tests {
     use super::*;
+    use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::{DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest};
 
     fn seed_on(adapter: AdapterType) -> Nodes {
@@ -559,5 +567,26 @@ mod node_adapter_dispatch_tests {
     #[test]
     fn an_unknown_unique_id_does_not_route_to_alt_compute() {
         assert!(!selects_alt_compute(&Nodes::default(), "seed.p.missing"));
+    }
+
+    #[test]
+    fn unit_test_compute_overrides_global_execute() {
+        let mut unit_test = DbtUnitTest::default();
+        assert_eq!(
+            effective_unit_test_execute(&unit_test, Execute::Sidecar),
+            Execute::Sidecar
+        );
+
+        unit_test.deprecated_config.compute = Some(ComputeArg::Sidecar);
+        assert_eq!(
+            effective_unit_test_execute(&unit_test, Execute::Remote),
+            Execute::Sidecar
+        );
+
+        unit_test.deprecated_config.compute = Some(ComputeArg::Remote);
+        assert_eq!(
+            effective_unit_test_execute(&unit_test, Execute::Sidecar),
+            Execute::Remote
+        );
     }
 }

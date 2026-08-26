@@ -235,6 +235,10 @@ pub struct ProjectModelConfig {
     pub file_format: Option<String>,
     #[serde(rename = "+freshness")]
     pub freshness: Option<ModelFreshness>,
+    #[serde(rename = "+loaded_at_query")]
+    pub loaded_at_query: Verbatim<Option<String>>,
+    #[serde(rename = "+loaded_at_field")]
+    pub loaded_at_field: Option<String>,
     #[serde(rename = "+state")]
     pub state: Option<ModelState>,
     #[serde(rename = "+latest_version_pointer")]
@@ -862,6 +866,8 @@ pub struct ModelConfig {
     #[resolved(promote, expect = "static_analysis set by apply_resolve_defaults")]
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
     pub freshness: Option<ModelFreshness>,
+    pub loaded_at_field: Option<String>,
+    pub loaded_at_query: Verbatim<Option<String>>,
     pub state: Option<ModelState>,
     #[resolved(promote)]
     pub latest_version_pointer: Option<LatestVersionPointer>,
@@ -930,6 +936,8 @@ impl From<ProjectModelConfig> for ModelConfig {
             enabled: config.enabled,
             event_time: config.event_time,
             freshness: config.freshness,
+            loaded_at_field: config.loaded_at_field,
+            loaded_at_query: config.loaded_at_query,
             state: config.state,
             latest_version_pointer: config.latest_version_pointer,
             full_refresh: config.full_refresh,
@@ -1124,6 +1132,8 @@ impl From<ModelConfig> for ProjectModelConfig {
             enabled: config.enabled,
             event_time: config.event_time,
             freshness: config.freshness,
+            loaded_at_field: config.loaded_at_field,
+            loaded_at_query: config.loaded_at_query,
             state: config.state,
             latest_version_pointer: config.latest_version_pointer,
             full_refresh: config.full_refresh,

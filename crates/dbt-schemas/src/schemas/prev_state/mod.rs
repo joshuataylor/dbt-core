@@ -2783,9 +2783,7 @@ mod tests {
             (
                 "freshness",
                 ExcludeKind::Relevant,
-                Box::new(|n| {
-                    n.deprecated_config.freshness = Some(ModelFreshness { build_after: None })
-                }),
+                Box::new(|n| n.deprecated_config.freshness = Some(ModelFreshness::default())),
             ),
             (
                 "state",

@@ -230,6 +230,9 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
     fn is_extended_model(&self) -> bool {
         false
     }
+    fn has_freshness(&self) -> bool {
+        false
+    }
     fn is_versioned(&self) -> bool {
         false
     }
@@ -1237,6 +1240,13 @@ impl InternalDbtNode for DbtModel {
 
     fn is_extended_model(&self) -> bool {
         self.__base_attr__.extended_model
+    }
+
+    fn has_freshness(&self) -> bool {
+        self.__model_attr__
+            .freshness
+            .as_ref()
+            .is_some_and(ModelFreshness::has_sla)
     }
 
     fn resource_type(&self) -> NodeType {
@@ -6076,12 +6086,14 @@ mod tests {
     use serde::Deserialize;
 
     use super::{
-        AbsorbedOverload, DbtAnalysis, DbtExposure, DbtFunction, DbtMacro, DbtSeed, DbtSnapshot,
-        DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, ModelConfig, NodePathKind,
-        hooks_equal, normalize_description, persist_docs_configs_equal, quoting_equal,
-        test_alias_config_equal,
+        AbsorbedOverload, DbtAnalysis, DbtExposure, DbtFunction, DbtMacro, DbtModel, DbtSeed,
+        DbtSnapshot, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, ModelConfig,
+        ModelFreshness, NodePathKind, hooks_equal, normalize_description,
+        persist_docs_configs_equal, quoting_equal, test_alias_config_equal,
     };
-    use crate::schemas::common::{Hooks, PersistDocsConfig};
+    use crate::schemas::common::{
+        FreshnessPeriod, FreshnessRules, Hooks, ModelFreshnessRules, PersistDocsConfig,
+    };
     use crate::schemas::manifest::{DbtMetric, DbtOperation, DbtSavedQuery};
     use crate::schemas::project::SnapshotMetaColumnNames;
     use dbt_adapter_core::AdapterType;
@@ -6920,6 +6932,51 @@ mod tests {
         if let Err(err) = config {
             panic!("Could not deserialize and failed with the following error: {err}");
         }
+    }
+
+    fn model_with_freshness(freshness: Option<ModelFreshness>) -> DbtModel {
+        let mut model = DbtModel::default();
+        model.__model_attr__.freshness = freshness;
+        model
+    }
+
+    #[test]
+    fn has_freshness_false_when_unset_or_build_after_only() {
+        assert!(!model_with_freshness(None).has_freshness());
+
+        let build_after_only = ModelFreshness {
+            build_after: Some(ModelFreshnessRules {
+                count: Some(1),
+                period: Some(FreshnessPeriod::day),
+                updates_on: None,
+            }),
+            ..Default::default()
+        };
+        assert!(!model_with_freshness(Some(build_after_only)).has_freshness());
+    }
+
+    #[test]
+    fn has_freshness_true_when_warn_after_set() {
+        let freshness = ModelFreshness {
+            warn_after: Some(FreshnessRules {
+                count: Some(24),
+                period: Some(FreshnessPeriod::hour),
+            }),
+            ..Default::default()
+        };
+        assert!(model_with_freshness(Some(freshness)).has_freshness());
+    }
+
+    #[test]
+    fn has_freshness_true_when_error_after_set() {
+        let freshness = ModelFreshness {
+            error_after: Some(FreshnessRules {
+                count: Some(48),
+                period: Some(FreshnessPeriod::hour),
+            }),
+            ..Default::default()
+        };
+        assert!(model_with_freshness(Some(freshness)).has_freshness());
     }
 
     mod optional_string_vecs_equal_tests {

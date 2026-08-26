@@ -952,6 +952,10 @@ pub struct ManifestModelConfig {
     pub static_analysis: Option<Spanned<StaticAnalysisKind>>,
     pub freshness: Option<ModelFreshness>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub loaded_at_field: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loaded_at_query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
     #[serde(
         default,
@@ -1180,6 +1184,8 @@ impl From<ModelConfig> for ManifestModelConfig {
             table_format: config.table_format,
             static_analysis: config.static_analysis,
             freshness: config.freshness,
+            loaded_at_field: config.loaded_at_field,
+            loaded_at_query: (*config.loaded_at_query).clone(),
             state: config.state,
             latest_version_pointer: config.latest_version_pointer,
             sql_header: config.sql_header,
@@ -1259,6 +1265,8 @@ impl From<ManifestModelConfig> for ModelConfig {
             table_format: config.table_format,
             static_analysis: config.static_analysis,
             freshness: config.freshness,
+            loaded_at_field: config.loaded_at_field,
+            loaded_at_query: Verbatim::from(config.loaded_at_query),
             state: config.state,
             latest_version_pointer: config.latest_version_pointer,
             sql_header: config.sql_header,

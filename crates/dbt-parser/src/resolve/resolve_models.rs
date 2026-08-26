@@ -57,6 +57,7 @@ use indexmap::IndexMap;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::DbtQuoting;
+use dbt_schemas::schemas::common::FreshnessRules;
 use dbt_schemas::schemas::common::ModelFreshnessRules;
 use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::OnSchemaChange;
@@ -73,6 +74,7 @@ use dbt_schemas::schemas::project::DbtProject;
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::project::ResolvedModelConfig;
 use dbt_schemas::schemas::properties::ModelConstraint;
+use dbt_schemas::schemas::properties::ModelFreshness;
 use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
 use dbt_schemas::schemas::serde::NodeVersion;
@@ -408,16 +410,6 @@ pub async fn resolve_models(
 
         let unique_id = get_unique_id(&model_name, package_name, maybe_version.clone(), "model");
 
-        if let Some(freshness) = &model_config.freshness {
-            ModelFreshnessRules::validate(freshness.build_after.as_ref()).map_err(|e| {
-                fs_err!(
-                    code => ErrorCode::InvalidConfig,
-                    loc => dbt_asset.path.clone(),
-                    "{}",
-                    e
-                )
-            })?;
-        }
         if let Some(state) = &model_config.state {
             ModelFreshnessRules::validate(state.lag_tolerance.as_ref()).map_err(|e| {
                 fs_err!(
@@ -590,9 +582,34 @@ pub async fn resolve_models(
             &dbt_asset.path,
         )?;
 
+        apply_model_freshness_loaded_at_override(
+            model_config.freshness.as_mut(),
+            &mut model_config.loaded_at_field,
+            &mut model_config.loaded_at_query,
+            &model_name,
+        )?;
         if let Some(freshness) = &model_config.freshness {
-            ModelFreshnessRules::validate(freshness.build_after.as_ref())?;
+            ModelFreshnessRules::validate(freshness.build_after.as_ref()).map_err(|e| {
+                fs_err!(
+                    code => ErrorCode::InvalidConfig,
+                    loc => dbt_asset.path.clone(),
+                    "{}",
+                    e
+                )
+            })?;
+            // Warn, don't abort, on a partial SLA rule — mirrors `resolve_sources`.
+            if let Err(err) = FreshnessRules::validate(freshness.error_after.as_ref()) {
+                emit_warn_log_from_fs_error(*err);
+            }
+            if let Err(err) = FreshnessRules::validate(freshness.warn_after.as_ref()) {
+                emit_warn_log_from_fs_error(*err);
+            }
         }
+        validate_model_freshness_sla(
+            model_config.freshness.as_ref(),
+            &materialized,
+            &dbt_asset.path,
+        )?;
 
         // A model uses a custom materialization when the macro dbt would
         // dispatch for its materialization is user-defined — either a novel
@@ -1540,10 +1557,348 @@ fn merge_python_config(
     Ok(merged_config)
 }
 
+/// Reconciles `loaded_at_field` / `loaded_at_query` set inside `freshness` with
+/// the same keys set as its siblings, mirroring `apply_freshness_loaded_at_override`
+/// on the source path: the nested value wins and clears its peer.
+///
+/// Unlike sources, the freshness runner reads these off `freshness` for models, so
+/// the resolved pair is written back to both places.
+/// Validates `warn_after` / `error_after` against the materialization.
+/// `build_after` is a scheduling rule, not an SLA, and is never checked here.
+fn validate_model_freshness_sla(
+    freshness: Option<&ModelFreshness>,
+    materialized: &DbtMaterialization,
+    path: &Path,
+) -> FsResult<()> {
+    let Some(freshness) = freshness.filter(|f| f.has_sla()) else {
+        return Ok(());
+    };
+
+    match materialized {
+        DbtMaterialization::Ephemeral => Err(fs_err!(
+            code => ErrorCode::FreshnessConfigInvalid,
+            loc => path.to_path_buf(),
+            "freshness cannot be configured on an ephemeral model because nothing is materialized \
+             to measure freshness against; change the materialization or remove the freshness config",
+        )),
+        // Their metadata tracks definition changes, not data landing.
+        // Empty-or-absent, not merely absent: `loaded_at_field: ""` reaches the
+        // runtime as the same `""` sentinel as an unset field, so it would be
+        // routed into the metadata-batch path this guard exists to forbid.
+        DbtMaterialization::View | DbtMaterialization::External
+            if freshness
+                .loaded_at_field
+                .as_deref()
+                .unwrap_or("")
+                .is_empty()
+                && freshness
+                    .loaded_at_query
+                    .as_deref()
+                    .unwrap_or("")
+                    .is_empty() =>
+        {
+            Err(fs_err!(
+                code => ErrorCode::FreshnessConfigInvalid,
+                loc => path.to_path_buf(),
+                "freshness on a {materialized} requires 'loaded_at_field' or 'loaded_at_query' \
+                 because a {materialized}'s relation metadata reflects when its definition last \
+                 changed, not how recent its data is",
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn apply_model_freshness_loaded_at_override(
+    freshness: Option<&mut ModelFreshness>,
+    loaded_at_field: &mut Option<String>,
+    loaded_at_query: &mut Option<String>,
+    model_name: &str,
+) -> FsResult<()> {
+    let Some(freshness) = freshness else {
+        return Ok(());
+    };
+
+    match (
+        freshness.loaded_at_field.clone(),
+        freshness.loaded_at_query.clone(),
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "loaded_at_field and loaded_at_query cannot be set at the same time on model `{}`",
+                model_name
+            ));
+        }
+        (Some(field), None) => {
+            *loaded_at_field = Some(field);
+            *loaded_at_query = Some(String::new());
+        }
+        (None, Some(query)) => {
+            *loaded_at_field = Some(String::new());
+            *loaded_at_query = Some(query);
+        }
+        // Nothing nested: the siblings stand.
+        (None, None) => {}
+    }
+
+    freshness.loaded_at_field = loaded_at_field.clone();
+    freshness.loaded_at_query = loaded_at_query.clone();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_ref_from_constraint, parse_source_from_constraint};
+    use super::{
+        apply_model_freshness_loaded_at_override, parse_ref_from_constraint,
+        parse_source_from_constraint, validate_model_freshness_sla,
+    };
+    use dbt_common::{ErrorCode, FsResult};
+    use dbt_schemas::schemas::common::{
+        DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
+    };
+    use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
+    use std::path::Path;
+
+    fn sla_freshness() -> ModelFreshness {
+        ModelFreshness {
+            warn_after: Some(FreshnessRules {
+                count: Some(24),
+                period: Some(FreshnessPeriod::hour),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn validate_sla(
+        freshness: Option<&ModelFreshness>,
+        materialized: DbtMaterialization,
+    ) -> FsResult<()> {
+        validate_model_freshness_sla(freshness, &materialized, Path::new("models/m.sql"))
+    }
+
+    #[test]
+    fn ephemeral_model_with_sla_is_rejected() {
+        let err = validate_sla(Some(&sla_freshness()), DbtMaterialization::Ephemeral)
+            .expect_err("ephemeral models cannot carry a freshness SLA");
+
+        assert_eq!(err.code, ErrorCode::FreshnessConfigInvalid);
+        assert!(
+            err.to_string().contains("nothing is materialized"),
+            "message should explain why: {err}"
+        );
+    }
+
+    #[test]
+    fn view_model_with_sla_and_no_loaded_at_is_rejected() {
+        let err = validate_sla(Some(&sla_freshness()), DbtMaterialization::View)
+            .expect_err("views need an explicit loaded-at source");
+
+        assert_eq!(err.code, ErrorCode::FreshnessConfigInvalid);
+        assert!(
+            err.to_string().contains("loaded_at_field"),
+            "message should name the remedy: {err}"
+        );
+    }
+
+    #[test]
+    fn external_model_with_sla_and_no_loaded_at_is_rejected() {
+        let err = validate_sla(Some(&sla_freshness()), DbtMaterialization::External)
+            .expect_err("external tables need an explicit loaded-at source");
+
+        assert_eq!(err.code, ErrorCode::FreshnessConfigInvalid);
+        assert!(
+            err.to_string().contains("loaded_at_field"),
+            "message should name the remedy: {err}"
+        );
+    }
+
+    #[test]
+    fn external_model_with_loaded_at_field_is_accepted() {
+        let freshness = ModelFreshness {
+            loaded_at_field: Some("updated_at".to_string()),
+            ..sla_freshness()
+        };
+        assert!(validate_sla(Some(&freshness), DbtMaterialization::External).is_ok());
+
+        let with_query = ModelFreshness {
+            loaded_at_query: Some("select max(updated_at) from {{ this }}".to_string()),
+            ..sla_freshness()
+        };
+        assert!(validate_sla(Some(&with_query), DbtMaterialization::External).is_ok());
+    }
+
+    #[test]
+    fn view_model_with_loaded_at_field_is_accepted() {
+        let freshness = ModelFreshness {
+            loaded_at_field: Some("updated_at".to_string()),
+            ..sla_freshness()
+        };
+        assert!(validate_sla(Some(&freshness), DbtMaterialization::View).is_ok());
+
+        let with_query = ModelFreshness {
+            loaded_at_query: Some("select max(updated_at) from {{ this }}".to_string()),
+            ..sla_freshness()
+        };
+        assert!(validate_sla(Some(&with_query), DbtMaterialization::View).is_ok());
+    }
+
+    #[test]
+    fn view_and_external_models_reject_empty_string_loaded_at() {
+        for materialized in [DbtMaterialization::View, DbtMaterialization::External] {
+            let empty_field = ModelFreshness {
+                loaded_at_field: Some(String::new()),
+                ..sla_freshness()
+            };
+            assert!(
+                validate_sla(Some(&empty_field), materialized.clone()).is_err(),
+                "{materialized} with an empty loaded_at_field should be rejected like an absent one"
+            );
+
+            let empty_query = ModelFreshness {
+                loaded_at_query: Some(String::new()),
+                ..sla_freshness()
+            };
+            assert!(
+                validate_sla(Some(&empty_query), materialized.clone()).is_err(),
+                "{materialized} with an empty loaded_at_query should be rejected like an absent one"
+            );
+        }
+    }
+
+    #[test]
+    fn table_like_model_with_sla_and_no_loaded_at_is_accepted() {
+        for materialized in [
+            DbtMaterialization::Table,
+            DbtMaterialization::Incremental,
+            DbtMaterialization::MaterializedView,
+            DbtMaterialization::DynamicTable,
+        ] {
+            assert!(
+                validate_sla(Some(&sla_freshness()), materialized.clone()).is_ok(),
+                "{materialized} should fall back to adapter metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn build_after_only_is_never_validated() {
+        let build_after_only = ModelFreshness {
+            build_after: Some(ModelFreshnessRules {
+                count: Some(1),
+                period: Some(FreshnessPeriod::day),
+                updates_on: None,
+            }),
+            ..Default::default()
+        };
+
+        // Even the otherwise-rejected materializations must pass.
+        for materialized in [DbtMaterialization::Ephemeral, DbtMaterialization::View] {
+            assert!(validate_sla(Some(&build_after_only), materialized.clone()).is_ok());
+        }
+        assert!(validate_sla(None, DbtMaterialization::Ephemeral).is_ok());
+    }
+
+    /// Mirrors `test_freshness_loaded_at_field_overrides_top_level_query` on the
+    /// source path: nested wins and clears its sibling peer.
+    #[test]
+    fn nested_loaded_at_field_overrides_sibling_query() {
+        let mut freshness = ModelFreshness {
+            loaded_at_field: Some("FRESHNESS_LOADED_AT".to_string()),
+            ..sla_freshness()
+        };
+        let mut field = Some(String::new());
+        let mut query = Some("select max(src_loaded_at) from m".to_string());
+
+        apply_model_freshness_loaded_at_override(
+            Some(&mut freshness),
+            &mut field,
+            &mut query,
+            "my_model",
+        )
+        .unwrap();
+
+        assert_eq!(field.as_deref(), Some("FRESHNESS_LOADED_AT"));
+        assert_eq!(query.as_deref(), Some(""));
+        assert_eq!(
+            freshness.loaded_at_field.as_deref(),
+            Some("FRESHNESS_LOADED_AT")
+        );
+        assert_eq!(freshness.loaded_at_query.as_deref(), Some(""));
+    }
+
+    /// Mirrors `test_freshness_loaded_at_query_overrides_top_level_field`.
+    #[test]
+    fn nested_loaded_at_query_overrides_sibling_field() {
+        let mut freshness = ModelFreshness {
+            loaded_at_query: Some("select max(freshness_loaded_at) from m".to_string()),
+            ..sla_freshness()
+        };
+        let mut field = Some("SRC_LOADED_AT".to_string());
+        let mut query = Some(String::new());
+
+        apply_model_freshness_loaded_at_override(
+            Some(&mut freshness),
+            &mut field,
+            &mut query,
+            "my_model",
+        )
+        .unwrap();
+
+        assert_eq!(field.as_deref(), Some(""));
+        assert_eq!(
+            query.as_deref(),
+            Some("select max(freshness_loaded_at) from m")
+        );
+    }
+
+    /// The sibling keys are the shape the RFC documents, so they must reach
+    /// `freshness` — that is where the freshness runner reads them for models.
+    #[test]
+    fn sibling_loaded_at_field_is_mirrored_onto_freshness() {
+        let mut freshness = sla_freshness();
+        let mut field = Some("SIBLING_LOADED_AT".to_string());
+        let mut query = None;
+
+        apply_model_freshness_loaded_at_override(
+            Some(&mut freshness),
+            &mut field,
+            &mut query,
+            "my_model",
+        )
+        .unwrap();
+
+        assert_eq!(
+            freshness.loaded_at_field.as_deref(),
+            Some("SIBLING_LOADED_AT")
+        );
+    }
+
+    /// Mirrors `test_freshness_loaded_at_field_and_query_conflict_errors`.
+    #[test]
+    fn nested_loaded_at_field_and_query_conflict_errors() {
+        let mut freshness = ModelFreshness {
+            loaded_at_field: Some("LOADED_AT".to_string()),
+            loaded_at_query: Some("select max(loaded_at) from m".to_string()),
+            ..sla_freshness()
+        };
+        let mut field = None;
+        let mut query = None;
+
+        let err = apply_model_freshness_loaded_at_override(
+            Some(&mut freshness),
+            &mut field,
+            &mut query,
+            "my_model",
+        )
+        .expect_err("nested freshness peers should be mutually exclusive");
+        assert!(
+            err.to_string()
+                .contains("loaded_at_field and loaded_at_query cannot be set at the same time"),
+            "error must name the conflict; got: {err}"
+        );
+    }
 
     #[test]
     fn test_parse_ref_single_arg() {

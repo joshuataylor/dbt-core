@@ -6273,6 +6273,7 @@ mod tests {
                 period: Some(FreshnessPeriod::day),
                 updates_on: None,
             }),
+            ..Default::default()
         });
 
         assert_eq!(freshness_tolerance_seconds_for_node(&model, 2700), 86400);
@@ -6298,6 +6299,7 @@ mod tests {
                 period: Some(FreshnessPeriod::day),
                 updates_on: None,
             }),
+            ..Default::default()
         });
 
         assert_eq!(freshness_tolerance_seconds_for_node(&model, 2700), 7200);
@@ -6329,6 +6331,7 @@ mod tests {
                 period: Some(FreshnessPeriod::hour),
                 updates_on: Some(UpdatesOn::All),
             }),
+            ..Default::default()
         });
 
         assert_eq!(

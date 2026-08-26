@@ -1,9 +1,9 @@
 use crate::schemas::common::ConstraintType;
 use crate::schemas::common::DimensionValidityParams;
-use crate::schemas::common::ModelFreshnessRules;
 use crate::schemas::common::UpdatesOn;
 use crate::schemas::common::Versions;
 use crate::schemas::common::model_freshness_rules_or_duration;
+use crate::schemas::common::{FreshnessRules, ModelFreshnessRules};
 use crate::schemas::data_tests::DataTests;
 use crate::schemas::dbt_column::ColumnProperties;
 use crate::schemas::dbt_column::ColumnPropertiesDimensionType;
@@ -153,9 +153,26 @@ pub struct TimeSpineCustomGranularity {
 }
 
 #[skip_serializing_none]
-#[derive(Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
+#[derive(Default, Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
 pub struct ModelFreshness {
     pub build_after: Option<ModelFreshnessRules>,
+    pub warn_after: Option<FreshnessRules>,
+    pub error_after: Option<FreshnessRules>,
+    pub filter: Option<String>,
+    pub loaded_at_field: Option<String>,
+    pub loaded_at_query: Option<String>,
+}
+
+impl ModelFreshness {
+    /// True when SLA rules are set. Excludes `build_after`, a scheduling rule.
+    ///
+    /// An empty rule object (`warn_after: {}`) counts as absent, matching
+    /// `FreshnessRules::validate`'s F1 rule that an empty rule is equivalent to
+    /// omitting the key.
+    pub fn has_sla(&self) -> bool {
+        self.warn_after.as_ref().is_some_and(|r| !r.is_empty())
+            || self.error_after.as_ref().is_some_and(|r| !r.is_empty())
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
@@ -271,6 +288,7 @@ pub struct DerivedEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schemas::common::FreshnessPeriod;
     use dbt_yaml;
 
     #[test]
@@ -366,6 +384,67 @@ execute_hooks_on_reuse: true
         };
 
         assert_ne!(base_test, other_test);
+    }
+
+    #[test]
+    fn model_freshness_parses_sla_fields() {
+        let yaml = r#"
+warn_after:
+  count: 24
+  period: hour
+error_after:
+  count: 48
+  period: hour
+filter: "region = 'us'"
+loaded_at_field: updated_at
+loaded_at_query: "select max(updated_at) from {{ this }}"
+"#;
+        let freshness: ModelFreshness = dbt_yaml::from_str(yaml).unwrap();
+
+        assert!(freshness.build_after.is_none());
+        let warn_after = freshness.warn_after.expect("warn_after should parse");
+        assert_eq!(warn_after.count, Some(24));
+        assert_eq!(warn_after.period, Some(FreshnessPeriod::hour));
+        let error_after = freshness.error_after.expect("error_after should parse");
+        assert_eq!(error_after.count, Some(48));
+        assert_eq!(error_after.period, Some(FreshnessPeriod::hour));
+        assert_eq!(freshness.filter.as_deref(), Some("region = 'us'"));
+        assert_eq!(freshness.loaded_at_field.as_deref(), Some("updated_at"));
+        assert_eq!(
+            freshness.loaded_at_query.as_deref(),
+            Some("select max(updated_at) from {{ this }}")
+        );
+    }
+
+    #[test]
+    fn model_freshness_build_after_only_serializes_unchanged() {
+        let yaml = r#"
+build_after:
+  count: 1
+  period: day
+"#;
+        let freshness: ModelFreshness = dbt_yaml::from_str(yaml).unwrap();
+
+        assert!(freshness.warn_after.is_none());
+        assert!(freshness.error_after.is_none());
+        // SLA fields must not appear when unset.
+        assert_eq!(
+            dbt_yaml::to_string(&freshness).unwrap(),
+            "build_after:\n  count: 1\n  period: day\n  updates_on: null\n"
+        );
+    }
+
+    #[test]
+    fn empty_rule_object_is_not_an_sla() {
+        let yaml = r#"
+warn_after: {}
+"#;
+        let freshness: ModelFreshness = dbt_yaml::from_str(yaml).unwrap();
+        assert!(freshness.warn_after.is_some());
+        assert!(
+            !freshness.has_sla(),
+            "an empty rule object is equivalent to omitting the key"
+        );
     }
 
     #[test]

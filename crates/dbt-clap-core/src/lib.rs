@@ -894,12 +894,19 @@ pub struct ShowArgs {
     /// Add source selectors to sample (e.g., "source:raw.events"). Repeatable.
     #[arg(long, num_args(1..), value_delimiter = ' ', help_heading = help_headings::SAMPLE)]
     pub sampled: Vec<String>,
+
+    /// Run against a non-default adapter the target declares (e.g. `lake_compute`),
+    /// instead of the target's default adapter. Only meaningful for targets
+    /// declaring more than one adapter, and only with `--inline`.
+    #[arg(long)]
+    pub adapter: Option<String>,
 }
 
 impl ShowArgs {
     pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
         let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
         eval_args.phase = Phases::Show;
+        eval_args.adapter_override = self.adapter.clone();
         if let Some(resource_type) = &self.resource_type {
             eval_args.resource_types = resource_type.clone();
         } else {
@@ -1378,6 +1385,12 @@ pub struct RunOperationArgs {
     #[arg(long, conflicts_with_all = ["MACRO", "args"])]
     pub sql: Option<String>,
 
+    /// Run against a non-default adapter the target declares (e.g. `lake_compute`),
+    /// instead of the target's default adapter. Only meaningful for targets
+    /// declaring more than one adapter.
+    #[arg(long)]
+    pub adapter: Option<String>,
+
     // Flattened IO args
     #[clap(flatten)]
     pub common_args: CommonArgs,
@@ -1389,6 +1402,7 @@ impl RunOperationArgs {
         eval_args.phase = Phases::RunOperation;
         eval_args.macro_name = self.macro_name.clone();
         eval_args.macro_sql = self.sql.clone();
+        eval_args.adapter_override = self.adapter.clone();
         if let Some(args) = &self.args {
             eval_args.macro_args = args.clone();
         }
@@ -2708,6 +2722,7 @@ impl CommonArgs {
             macro_name: None,
             macro_args: BTreeMap::new(),
             macro_sql: None,
+            adapter_override: None,
             selector: self.selector.clone(),
             resource_types: vec![],
             exclude_resource_types: vec![],

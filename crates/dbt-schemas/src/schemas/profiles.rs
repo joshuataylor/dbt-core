@@ -1074,8 +1074,6 @@ pub struct AltConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub organization: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
@@ -1083,10 +1081,6 @@ pub struct AltConfig {
     pub schema: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<StringOrInteger>,
-    /// Kind of catalog the queries target, e.g. "snowflake". Controls SQL
-    /// identifier-casing normalization on the dbt Compute service.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_catalog: Option<String>,
 }
 
 /// DuckDB adapter configuration

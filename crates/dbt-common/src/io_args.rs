@@ -566,6 +566,9 @@ pub struct EvalArgs {
     pub macro_name: Option<String>,
     pub macro_args: BTreeMap<String, Value>,
     pub macro_sql: Option<String>,
+    /// `run-operation --adapter <type>`: run against this non-default adapter
+    /// instead of the target's default one.
+    pub adapter_override: Option<String>,
     pub warn_error: Option<bool>,
     pub warn_error_options: WarnErrorOptions,
     pub version_check: bool,

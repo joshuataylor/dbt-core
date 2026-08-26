@@ -1837,16 +1837,41 @@ impl DbtProjectCompilation {
 
         // FEATURES: auth record_replay
         // Initialize adapter
-        let adapter = self.loaded_project().init_adapter(
-            &self.resolved_state,
-            arg.replay.clone(),
-            &jinja_env,
-            Some(schema_store.clone()),
-            token,
-            sidecar_client.clone(),
-            execute_mode,
-            arg.infer_schemas,
-        )?;
+        let adapter = if let Some(adapter_override) = arg
+            .adapter_override
+            .as_deref()
+            .filter(|_| matches!(arg.command, FsCommand::RunOperation | FsCommand::Show))
+        {
+            let adapter_type: AdapterType = adapter_override.parse().map_err(|_| {
+                fs_err!(
+                    ErrorCode::InvalidArgument,
+                    "--adapter '{adapter_override}' is not a recognized adapter type"
+                )
+            })?;
+            self.loaded_project()
+                .init_adapter_store(
+                    &self.resolved_state,
+                    arg.replay.clone(),
+                    &jinja_env,
+                    Some(schema_store.clone()),
+                    token,
+                    sidecar_client.clone(),
+                    execute_mode,
+                    arg.infer_schemas,
+                )?
+                .get(adapter_type)?
+        } else {
+            self.loaded_project().init_adapter(
+                &self.resolved_state,
+                arg.replay.clone(),
+                &jinja_env,
+                Some(schema_store.clone()),
+                token,
+                sidecar_client.clone(),
+                execute_mode,
+                arg.infer_schemas,
+            )?
+        };
         token.check_cancellation()?;
 
         if adapter.engine().has_query_cache() {

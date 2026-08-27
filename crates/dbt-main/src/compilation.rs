@@ -21,8 +21,10 @@ use dbt_defer::DeferState;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_features::index::write_metadata_parquet;
 use dbt_index_core::ingest::ingest_state::IngestState;
-use dbt_index_core::ingest::metadata_to_parquet::ingest_from_metadata_direct;
-use dbt_index_core::{WriteSource, save_artifact_meta};
+use dbt_index_core::ingest::metadata_to_parquet::{
+    has_persisted_state, ingest_from_metadata_direct,
+};
+use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema};
 use dbt_jinja_utils::{
     JinjaFactory,
     invocation_args::InvocationArgs,
@@ -567,40 +569,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 &empty_column_classifiers,
             );
 
-            // When --write-index is set, convert the parse epochs into snapshot index
-            // parquet. The parse index is intentionally incomplete: it carries nodes and
-            // node-level lineage from the manifest, but no column schemas or column-level
-            // lineage (those require compilation). ingest_from_metadata_direct creates the
-            // index directory, so the subsequent save_artifact_meta can record the fingerprint.
-            // Metadata-only runs (no --write-index) write epochs only and skip the index.
-            if self.arg.write_index {
-                let metadata_dir = self.arg.metadata_dir();
-                let index_dir = self.arg.index_dir();
-                let mut state = IngestState::default();
-                match ingest_from_metadata_direct(&metadata_dir, &index_dir, &mut state) {
-                    Ok(_) => {
-                        if let Err(e) = save_artifact_meta(
-                            &index_dir,
-                            &self.arg.io.out_dir,
-                            WriteSource::DirectWrite,
-                            None,
-                        ) {
-                            emit_warn_log_message(
-                                ErrorCode::Generic,
-                                format!("dbt-index: save_artifact_meta: {e}"),
-                            );
-                        }
-                        emit_warn_log_message(
-                            ErrorCode::Generic,
-                            "--write-index: the index produced by `parse` is incomplete; column schemas and column-level lineage are only written by `compile`, `run`, or `build`.",
-                        );
-                    }
-                    Err(e) => emit_warn_log_message(
-                        ErrorCode::Generic,
-                        format!("dbt-index: write-index: {e}"),
-                    ),
-                }
-            }
+            write_parse_artifacts(&self.arg);
         }
 
         if self.arg.io.should_show(ShowOptions::Manifest) {
@@ -2936,6 +2905,70 @@ async fn create_run_cache_state_selector_args(
         macros: resolved_state.macros.macros.clone(),
         project_root: DbtPath::from(project_root),
     }))
+}
+
+/// Convert the `parse` metadata epochs into whichever opt-in artifacts were
+/// requested.
+///
+/// Both artifact sets are independent: either, neither, or both may be asked
+/// for. Failures are advisory — an artifact that could not be written must not
+/// fail the command.
+///
+/// What `parse` can produce is limited: nodes and node-level lineage, but no
+/// column types and no column-level lineage, both of which need a compile.
+fn write_parse_artifacts(arg: &EvalArgs) {
+    let metadata_dir = arg.metadata_dir();
+
+    if arg.write_index {
+        let index_dir = arg.index_dir();
+        let mut state = IngestState::default();
+        // `ingest_from_metadata_direct` creates the directory, so the
+        // fingerprint below has somewhere to land.
+        match ingest_from_metadata_direct(&metadata_dir, &index_dir, &mut state) {
+            Ok(_) => {
+                if let Err(e) =
+                    save_artifact_meta(&index_dir, &arg.io.out_dir, WriteSource::DirectWrite, None)
+                {
+                    emit_warn_log_message(
+                        ErrorCode::Generic,
+                        format!("dbt-index: save_artifact_meta: {e}"),
+                    );
+                }
+                emit_warn_log_message(
+                    ErrorCode::Generic,
+                    "--write-index: the index produced by `parse` is incomplete; column schemas and column-level lineage are only written by `compile`, `run`, or `build`.",
+                );
+            }
+            Err(e) => {
+                emit_warn_log_message(ErrorCode::Generic, format!("dbt-index: write-index: {e}"))
+            }
+        }
+    }
+
+    if arg.generate_info_schema {
+        let info_schema_dir = arg.info_schema_dir();
+        // Reuse the flat index at `target/index` as the intermediate when one is
+        // already there (the same ingest builds both, so an index written earlier
+        // in this run is picked up via the delta path rather than re-ingested).
+        // With no index to reuse — e.g. `--no-write-index` — stage privately
+        // instead, so we never materialise an index the caller opted out of.
+        let index_dir = arg.index_dir();
+        let staging_dir = if has_persisted_state(&index_dir) {
+            index_dir
+        } else {
+            arg.info_schema_staging_dir()
+        };
+        match write_info_schema(&metadata_dir, &info_schema_dir, &staging_dir) {
+            Ok(_) => emit_warn_log_message(
+                ErrorCode::Generic,
+                "--generate-info-schema: the information schema produced by `parse` is incomplete; column types, column-level lineage, and runtime results are only written by `compile`, `run`, or `build`.",
+            ),
+            Err(e) => emit_warn_log_message(
+                ErrorCode::Generic,
+                format!("dbt: generate-info-schema: {e}"),
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

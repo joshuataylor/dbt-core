@@ -52,9 +52,9 @@ use dbt_features::index::write_metadata_parquet;
 use dbt_index_core::backend::DuckDbViewsBackend;
 use dbt_index_core::ingest::ingest_state::IngestState;
 use dbt_index_core::ingest::metadata_to_parquet::{
-    apply_delta_direct, ingest_from_metadata_direct,
+    apply_delta_direct, has_persisted_state, ingest_from_metadata_direct,
 };
-use dbt_index_core::{WriteSource, save_artifact_meta};
+use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema};
 use dbt_init::init;
 use dbt_jinja_utils::{
     jinja_environment::JinjaEnv, listener::JinjaTypeCheckingEventListenerFactory,
@@ -1154,15 +1154,26 @@ impl<'a> AllPhasesExecutor<'a> {
             .arg
             .static_analysis
             .is_some_and(dbt_common::static_analysis::is_strict_static_analysis);
+        // Name the flag the user actually passed, so the advice is actionable.
+        let advised_flag = match (self.arg.write_index, self.arg.generate_info_schema) {
+            (true, true) => "--write-index / --generate-info-schema",
+            (false, true) => "--generate-info-schema",
+            (true, false) => "--write-index",
+            (false, false) => "--write-metadata",
+        };
         if advise_index_flags && !strict_static_analysis {
             emit_warn_log_message(
                 ErrorCode::Generic,
-                "--write-index: column schemas will not be populated without `--static-analysis strict`; add `--write-lineage` to also write column-level lineage.",
+                format!(
+                    "{advised_flag}: column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
+                ),
             );
         } else if advise_index_flags && strict_static_analysis && !self.arg.write_lineage {
             emit_warn_log_message(
                 ErrorCode::Generic,
-                "--write-index: add `--write-lineage` to write column-level lineage into compile/cll parquet.",
+                format!(
+                    "{advised_flag}: add `--write-lineage` to write column-level lineage into compile/cll parquet."
+                ),
             );
         }
 
@@ -1693,6 +1704,11 @@ impl<'a> AllPhasesExecutor<'a> {
         // update_manifest IS called above). This is safe: catalog queries use resolved_state
         // only for relation identity (database/schema/table), not for compiled SQL or inferred
         // schemas added by update_manifest.
+        // `--generate-info-schema` deliberately does NOT force a catalog fetch: that
+        // stays explicit-only (#13295), so a default/info-schema build never pays the
+        // warehouse round-trip. The information schema then carries no catalog_type and
+        // `data_type` falls back to inferred_type — pass `--write-catalog` for the full
+        // warehouse-backed types.
         let catalog_data: Option<DbtCatalog> = if self.arg.write_metadata
             && (self.arg.write_catalog || self.arg.write_index)
             && !self.arg.write_index_implied
@@ -1921,6 +1937,31 @@ impl<'a> AllPhasesExecutor<'a> {
                     .await
                 {
                     emit_error_log_from_fs_error(*e);
+                }
+            }
+
+            // The information schema is written independently of the index:
+            // either, neither, or both may be requested. Its intermediate is the
+            // flat index at `target/index` when one is present — the same ingest
+            // builds both, so an index written by the block just above (or by a
+            // prior run) is reused via the delta path rather than re-ingested. With
+            // no index to reuse — e.g. `--no-write-index` — it stages privately, so
+            // requesting the information schema never materialises an index the
+            // caller opted out of.
+            if self.arg.generate_info_schema {
+                let metadata_dir = self.arg.metadata_dir();
+                let info_schema_dir = self.arg.info_schema_dir();
+                let index_dir = self.arg.index_dir();
+                let staging_dir = if has_persisted_state(&index_dir) {
+                    index_dir
+                } else {
+                    self.arg.info_schema_staging_dir()
+                };
+                if let Err(e) = write_info_schema(&metadata_dir, &info_schema_dir, &staging_dir) {
+                    emit_warn_log_message(
+                        ErrorCode::Generic,
+                        format!("dbt: generate-info-schema: {e}"),
+                    );
                 }
             }
         }
@@ -2265,6 +2306,14 @@ async fn build_index_for_docs(
     common_args.target_path = Some(target_dir.to_path_buf());
     common_args.index_dir = Some(index_dir.to_path_buf());
     common_args.metadata_dir = Some(metadata_dir.to_path_buf());
+    // `generate_info_schema` carries over from the docs invocation on its own,
+    // being a global flag; pin its directory too so it lands beside the index
+    // rather than in the project's default target directory. An explicit
+    // `--info-schema-dir` still wins.
+    if common_args.generate_info_schema && common_args.info_schema_dir.is_none() {
+        common_args.info_schema_dir =
+            Some(target_dir.join(dbt_common::constants::DBT_INFO_SCHEMA_DIR_NAME));
+    }
 
     let compile_cli = Cli {
         command: Command::Core(CoreCommand::Compile(CompileArgs {

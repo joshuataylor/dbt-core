@@ -56,6 +56,7 @@ members = [
   "crates/dbt-proc-macros",
 
   "crates/dbt-adapter",
+  "crates/dbt-adapter-engine",
   "crates/dbt-adapter-sql",
   "crates/dbt-ident",
   "crates/dbt-jinja-utils",
@@ -231,6 +232,7 @@ opt-level = 3
 # fs source available dependencies
 dbt-adapter = { path = "crates/dbt-adapter" }
 dbt-adapter-core = { path = "crates/dbt-adapter-core" }
+dbt-adapter-engine = { path = "crates/dbt-adapter-engine" }
 dbt-adapter-sql = { path = "crates/dbt-adapter-sql" }
 dbt-agate = { path = "crates/dbt-agate" }
 dbt-auth = { path = "crates/dbt-auth" }

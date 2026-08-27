@@ -9,6 +9,24 @@ use dbt_sql_utils::{SqlToken as DialectToken, sql_lex_tokens, sql_split_statemen
 use super::tokenizer::{AbstractToken, Token, abstract_tokenize, tokenize};
 use regex::Regex;
 
+/// Normalize a pair of Python model payloads (the compiled `submit_python_job` code) so that
+/// semantically equivalent but textually different forms compare equal. Reuses the same Python
+/// canonicalizers `compare_sql` applies, in the same order. The main divergence this handles is
+/// dbt-autofix's `CustomKeyInConfigDeprecation` rewrite, which turns `dbt.config.get(<custom key>)`
+/// into `dbt.config.meta_get(...)` and moves the key from `config_dict` to `meta_dict`; both forms
+/// resolve the same value at runtime. Unlike `compare_sql`, this does no SQL parsing, so it is safe
+/// to run on raw Python model code.
+pub fn canonicalize_python_model_pair(actual: &str, expected: &str) -> (String, String) {
+    let actual = actual.replace("\r\n", "\n");
+    let expected = expected.replace("\r\n", "\n");
+    let actual = canonicalize_python_config_dict(&actual, &expected);
+    let actual = canonicalize_python_meta_get_calls(&actual);
+    let expected = canonicalize_python_meta_get_calls(&expected);
+    let actual = canonicalize_python_meta_dict(&actual);
+    let expected = canonicalize_python_meta_dict(&expected);
+    (actual, expected)
+}
+
 /// Compare two SQL strings using deviation and canonicalization checks before strict comparison,
 /// using adapter-specific canonicalization where applicable.
 pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> AdapterResult<()> {
@@ -7181,6 +7199,67 @@ def model(dbt, session):
             result.is_ok(),
             "Populated meta_dict + meta_get call sites should be treated as equivalent \
              to populated config_dict + get call sites: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_python_model_pair_config_meta_equivalent() {
+        // Databricks submit_python_job payload. dbt-autofix CustomKeyInConfigDeprecation rewrites
+        // `dbt.config.get(<custom key>)` to `meta_get(...)` and moves the key from config_dict to
+        // meta_dict. Fusion built the post-autofix source (meta_get + populated meta_dict), Core
+        // recorded the pre-autofix source (get + populated config_dict). canonicalize_python_model_pair
+        // must normalize the two to byte-equal so the exact compare in replay_submit_python_job passes.
+        let fusion = r#"
+def model(dbt, session):
+    start_year = int(dbt.config.meta_get("start_year", 2020))
+    end_year = int(dbt.config.meta_get("end_year", 2050))
+    return session.table("x")
+
+config_dict = {}
+meta_dict = {'start_year': 2020, 'end_year': 2050}
+
+class config:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def get(key, default=None):
+        return config_dict.get(key, default)
+
+    @staticmethod
+    def meta_get(key, default=None):
+        return meta_dict.get(key, default)
+"#;
+
+        let core = r#"
+def model(dbt, session):
+    start_year = int(dbt.config.get("start_year", 2020))
+    end_year = int(dbt.config.get("end_year", 2050))
+    return session.table("x")
+
+config_dict = {'start_year': 2020, 'end_year': 2050}
+meta_dict = {}
+
+class config:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def get(key, default=None):
+        return config_dict.get(key, default)
+
+    @staticmethod
+    def meta_get(key, default=None):
+        return meta_dict.get(key, default)
+"#;
+
+        // Also exercise line-ending divergence: a CRLF source (Windows) is preserved by Core
+        // and emitted as LF by Fusion, so every line would otherwise differ byte-for-byte.
+        let core_crlf = core.replace('\n', "\r\n");
+        let (a, e) = canonicalize_python_model_pair(fusion, &core_crlf);
+        assert_eq!(
+            a, e,
+            "config/meta forms and CRLF vs LF line endings should canonicalize equal"
         );
     }
 

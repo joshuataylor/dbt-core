@@ -5092,7 +5092,7 @@ impl AdapterImpl {
             .from_local_config(model)?;
         Ok(tags.to_jinja())
     }
-    /// TODO: implement if necessary, currently its noop
+    /// Trims surrounding whitespace and strips a single trailing semicolon.
     ///
     /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L966
     pub fn clean_sql(&self, sql: &str) -> AdapterResult<String> {
@@ -5100,7 +5100,7 @@ impl AdapterImpl {
             self.adapter_type() == Databricks,
             "clean_sql is a Databricks-specific adapter operation"
         );
-        Ok(sql.to_string())
+        Ok(crate::relation::databricks::config::components::query::clean_sql(sql))
     }
 
     /// relation_max_name_length

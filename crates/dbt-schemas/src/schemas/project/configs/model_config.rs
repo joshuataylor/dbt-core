@@ -434,6 +434,8 @@ pub struct ProjectModelConfig {
     pub predicates: Option<Vec<String>>,
     #[serde(rename = "+query_tag")]
     pub query_tag: Option<QueryTag>,
+    #[serde(rename = "+query_tags")]
+    pub query_tags: Option<String>,
     #[serde(rename = "+table_tag")]
     pub table_tag: Option<String>,
     #[serde(rename = "+row_access_policy")]
@@ -1004,6 +1006,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 scheduler: config.scheduler,
                 tmp_relation_type: config.tmp_relation_type,
                 query_tag: config.query_tag,
+                query_tags: config.query_tags,
                 table_tag: config.table_tag,
                 row_access_policy: config.row_access_policy,
                 automatic_clustering: config.automatic_clustering,
@@ -1212,6 +1215,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             scheduler: config.__warehouse_specific_config__.scheduler,
             tmp_relation_type: config.__warehouse_specific_config__.tmp_relation_type,
             query_tag: config.__warehouse_specific_config__.query_tag,
+            query_tags: config.__warehouse_specific_config__.query_tags,
             table_tag: config.__warehouse_specific_config__.table_tag,
             row_access_policy: config.__warehouse_specific_config__.row_access_policy,
             automatic_clustering: config.__warehouse_specific_config__.automatic_clustering,
@@ -2006,6 +2010,24 @@ __additional_properties__: {}
                 "nation".to_string(),
                 "region".to_string(),
             ]))
+        );
+    }
+
+    #[test]
+    fn test_databricks_model_deserializes_and_resolves_query_tags() {
+        let project: ProjectModelConfig = dbt_yaml::from_str(
+            r#"
++query_tags: '{"team":"model"}'
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(project.query_tags.as_deref(), Some(r#"{"team":"model"}"#));
+
+        let resolved = ModelConfig::from(project);
+        assert_eq!(
+            resolved.__warehouse_specific_config__.query_tags.as_deref(),
+            Some(r#"{"team":"model"}"#)
         );
     }
 

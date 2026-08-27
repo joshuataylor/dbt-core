@@ -6,3 +6,4 @@ mod persist_docs;
 mod python;
 mod relations;
 mod snowflake;
+mod spark;

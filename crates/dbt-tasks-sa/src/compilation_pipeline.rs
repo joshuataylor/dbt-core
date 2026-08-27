@@ -71,7 +71,7 @@ impl CompilationPipeline {
             resolved_selectors.include = Some(SelectExpression::Atom(SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: inline_model,
+                value: inline_model.into(),
                 childrens_parents: false,
                 parents_depth: None,
                 children_depth: None,
@@ -192,7 +192,7 @@ impl CompilationPipeline {
             let criteria = SelectionCriteria {
                 method: MethodName::Path,
                 method_args: vec![],
-                value: path.to_str().unwrap_or_default().to_string(),
+                value: path.to_str().unwrap_or_default().into(),
                 childrens_parents: false,
                 parents_depth: Some(u32::MAX),
                 children_depth: Some(u32::MAX),
@@ -229,7 +229,7 @@ impl CompilationPipeline {
             let criteria = SelectionCriteria {
                 method,
                 method_args: vec![],
-                value,
+                value: value.into(),
                 childrens_parents: false,
                 parents_depth: {
                     if include_parents {
@@ -308,10 +308,16 @@ fn collect_service_state_selector_values(
     match expr {
         SelectExpression::Atom(criteria) => {
             if criteria.method == MethodName::State {
-                values.insert(criteria.value.clone());
+                if let Some(value) = criteria.value.as_str() {
+                    values.insert(value.to_string());
+                }
             } else if criteria.method == MethodName::Selector {
                 // Handle selector:name references by looking up the named selector
-                if let Some(entry) = selector_definitions.get(&criteria.value) {
+                if let Some(entry) = criteria
+                    .value
+                    .as_str()
+                    .and_then(|name| selector_definitions.get(name))
+                {
                     collect_service_state_selector_values(
                         &entry.include,
                         values,
@@ -589,7 +595,7 @@ mod scheduled_adapter_tests {
             include: Some(SelectExpression::Atom(SelectionCriteria {
                 method: MethodName::State,
                 method_args: vec![],
-                value: "modified".to_string(),
+                value: "modified".into(),
                 childrens_parents: false,
                 parents_depth: None,
                 children_depth: None,

@@ -766,7 +766,9 @@ fn eval_selector_method(
     selector_defs: &HashMap<String, SelectorEntry>,
     resolution_stack: &mut Vec<String>,
 ) -> FsResult<EvalResult> {
-    let pattern = &criteria.value;
+    let pattern = criteria
+        .value
+        .resolve(dbt_common::node_selector::MethodName::Selector)?;
 
     // fnmatch lookup: supports wildcards like `selector:model_*`
     let matching: Vec<(&String, &SelectorEntry)> = selector_defs

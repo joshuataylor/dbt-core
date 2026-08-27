@@ -2742,7 +2742,9 @@ fn select_matches_macro(
         match expr {
             SelectExpression::Atom(criteria) => {
                 if matches!(criteria.method, MethodName::Path | MethodName::File) {
-                    values.push((criteria.method, criteria.value.clone()));
+                    if let Some(value) = criteria.value.as_str() {
+                        values.push((criteria.method, value.to_string()));
+                    }
                 }
             }
             SelectExpression::And(exprs) | SelectExpression::Or(exprs) => {

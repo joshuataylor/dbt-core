@@ -6,7 +6,7 @@ use dbt_common::{
     ErrorCode, FsResult,
     constants::DBT_GENERIC_TESTS_DIR_NAME,
     err,
-    node_selector::{MethodName, SelectExpression, SelectionCriteria},
+    node_selector::{MethodName, SelectExpression, SelectionCriteria, SelectionValue},
     tracing::dbt_emit::emit_warn_log_message,
 };
 use dbt_frontend_common::Dialect;
@@ -116,7 +116,7 @@ pub fn filter_select_criteria_with_state_selector_results(
 ) -> FsResult<BTreeSet<String>> {
     if criteria.method == MethodName::State
         && let Some(selected) =
-            state_selector_results.and_then(|results| results.get(&criteria.value))
+            state_selector_results.and_then(|results| results.get(criteria.value.as_str()?))
     {
         return Ok(selected.iter().cloned().collect());
     }
@@ -447,7 +447,7 @@ fn match_column(
     let node_pat = parts.next().unwrap_or(""); // e.g.  "model.jaffle_shop.orders"
     let mut new_critera = criteria.clone();
     new_critera.method = MethodName::Fqn;
-    new_critera.value = node_pat.to_string();
+    new_critera.value = SelectionValue::Scalar(node_pat.to_string());
     // check if the fqn match the node part of the column selector
     predicate_include_identifier_node(
         &new_critera,
@@ -887,7 +887,8 @@ fn predicate_include_identifier_node(
     adapter_type: AdapterType,
 ) -> FsResult<bool> {
     let method = criteria.method;
-    let pattern = &criteria.value;
+    // Deferred failure point for a non-scalar `value:` (dbt-labs/fs#13604).
+    let pattern = criteria.value.resolve(method)?;
     let args: &[String] = &criteria.method_args;
     let common_attr = node.common();
 
@@ -1081,11 +1082,15 @@ fn predicate_include_node_column(
     let mut result = BTreeMap::new();
 
     // 1) column:foo.bar.* → exact match on that table (foo.bar) and that column glob (*)
+    // `column:` is internal-only, so a non-scalar value never reaches here.
     if criteria.method == MethodName::Column {
-        let (table_pat, col_pat) = if let Some(idx) = criteria.value.rfind('.') {
-            (&criteria.value[..idx], &criteria.value[idx + 1..])
+        let Some(value) = criteria.value.as_str() else {
+            return result;
+        };
+        let (table_pat, col_pat) = if let Some(idx) = value.rfind('.') {
+            (&value[..idx], &value[idx + 1..])
         } else {
-            ("", &criteria.value[..])
+            ("", value)
         };
         // only select columns on matching tables
         if table_pat.is_empty() || fnmatch(table_pat, node.common().unique_id.as_str()) {
@@ -2805,6 +2810,47 @@ mod tests {
             )
             .unwrap(),
             "FQN selector should match exposures by name"
+        );
+    }
+
+    #[test]
+    /// Regression (dbt-labs/fs#13604): a non-scalar `value:` must fail only once
+    /// resolved against a node, and the error must name the method.
+    fn test_unsupported_criteria_value_fails_only_on_resolution() {
+        let node = create_test_node("model.test.my_model", vec![]);
+        let mut criteria = SelectionCriteria::new(
+            MethodName::Path,
+            vec![],
+            "placeholder",
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+        criteria.value = SelectionValue::Unsupported(Box::new(dbt_yaml::Value::from(vec![
+            dbt_yaml::Value::from("models"),
+            dbt_yaml::Value::from("seeds"),
+        ])));
+        let expr = SelectExpression::Atom(criteria);
+
+        let result = select_expression_include_node(
+            &expr,
+            node.as_ref(),
+            None,
+            None,
+            None,
+            AdapterType::DuckDB,
+        );
+
+        assert!(
+            result.is_err(),
+            "resolving a criteria with an unsupported value should fail, not silently match/skip"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("path"),
+            "error should name the method that received the bad value, got: {message}"
         );
     }
 }

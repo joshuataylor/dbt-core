@@ -130,6 +130,10 @@ pub struct CatalogRelation {
     // Takes highest priority in generate_database_name over model database config and target.database.
     pub catalog_database: Option<String>,
 
+    // === BigQuery (biglake) — v2 only, LRC (Lakehouse Runtime Catalog)
+    // The LRC catalog name for producing a 4-part FQN: `project`.`lakehouse_catalog.namespace`.`table`
+    pub lakehouse_catalog: Option<String>,
+
     // === Snowflake
     // built_in only: synthesized base_location_root and base_location_subpath model attributes
     pub base_location: Option<String>,
@@ -282,6 +286,7 @@ impl CatalogRelation {
             is_transient: None,
             external_volume: None,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             file_format: Some(BIGQUERY_DEFAULT_FILE_FORMAT.to_string()),
         }
@@ -297,6 +302,7 @@ impl CatalogRelation {
             file_format: None,
             external_volume: None,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             adapter_properties: BTreeMap::new(),
             is_transient: None,
@@ -455,6 +461,7 @@ impl CatalogRelation {
             is_transient: None,
             external_volume: None,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             file_format: Some(file_format),
         })
@@ -530,6 +537,7 @@ impl CatalogRelation {
             file_format: Some(DELTA_TABLE_FORMAT.to_string()),
             external_volume: None,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             adapter_properties: BTreeMap::new(),
             is_transient: None,
@@ -676,6 +684,7 @@ impl CatalogRelation {
             file_format: Some(file_format),
             external_volume,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             adapter_properties,
             is_transient: None,
@@ -798,6 +807,7 @@ impl CatalogRelation {
             table_format: TableFormat::Iceberg,
             external_volume: None,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             adapter_properties,
             is_transient: Some(false),
@@ -880,6 +890,7 @@ impl CatalogRelation {
                     is_transient: Some(transient_parsed.unwrap_or(true)),
                     external_volume: None,
                     catalog_database: None,
+                    lakehouse_catalog: None,
                     base_location: None,
                     file_format: None,
                 })
@@ -953,6 +964,7 @@ impl CatalogRelation {
                     catalog_type: CatalogType::SnowflakeBuiltIn,
                     external_volume,
                     catalog_database: None,
+                    lakehouse_catalog: None,
                     base_location,
                     adapter_properties,
                     is_transient: Some(false),
@@ -1105,6 +1117,7 @@ impl CatalogRelation {
             table_format,
             external_volume,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: Some(base_location),
             adapter_properties,
             is_transient: Some(false),
@@ -1439,6 +1452,7 @@ impl CatalogRelation {
             table_format: TableFormat::Default,
             external_volume: None,
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: None,
             adapter_properties: BTreeMap::new(),
             is_transient: Some(true),
@@ -1632,6 +1646,11 @@ impl Object for CatalogRelation {
             // v2-only REST surface
             "catalog_database" => self
                 .catalog_database
+                .as_deref()
+                .map(Value::from)
+                .unwrap_or(Value::UNDEFINED),
+            "lakehouse_catalog" => self
+                .lakehouse_catalog
                 .as_deref()
                 .map(Value::from)
                 .unwrap_or(Value::UNDEFINED),

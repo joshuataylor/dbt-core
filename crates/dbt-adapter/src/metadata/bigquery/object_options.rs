@@ -185,7 +185,9 @@ pub(crate) fn get_table_options_value(
             );
         }
 
-        if catalog_relation.table_format.is_iceberg() {
+        if catalog_relation.table_format.is_iceberg()
+            && catalog_relation.lakehouse_catalog.is_none()
+        {
             opts.insert(
                 "table_format".to_string(),
                 Value::from(format!("'{}'", catalog_relation.table_format.as_str())),

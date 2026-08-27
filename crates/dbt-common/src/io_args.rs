@@ -236,6 +236,7 @@ pub enum FsCommand {
     Build,
     Clean,
     Source,
+    Freshness,
     Clone,
     System,
     Man,
@@ -252,6 +253,14 @@ pub enum FsCommand {
 }
 
 impl FsCommand {
+    pub const fn is_freshness_command(&self) -> bool {
+        matches!(self, FsCommand::Source | FsCommand::Freshness)
+    }
+
+    pub const fn is_sources_only_freshness(&self) -> bool {
+        matches!(self, FsCommand::Source)
+    }
+
     pub const fn as_str(&self) -> &'static str {
         match self {
             FsCommand::Unset => "",
@@ -270,6 +279,7 @@ impl FsCommand {
             FsCommand::Build => "build",
             FsCommand::Clean => "clean",
             FsCommand::Source => "freshness",
+            FsCommand::Freshness => "freshness",
             FsCommand::Clone => "clone",
             FsCommand::System => "system",
             FsCommand::Man => "man",

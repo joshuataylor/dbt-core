@@ -233,6 +233,10 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
     fn has_freshness(&self) -> bool {
         false
     }
+    /// The SLA this node is measured against. Empty for node types that carry none.
+    fn freshness_criteria(&self) -> FreshnessDefinition {
+        FreshnessDefinition::default()
+    }
     fn is_versioned(&self) -> bool {
         false
     }
@@ -1249,6 +1253,21 @@ impl InternalDbtNode for DbtModel {
             .is_some_and(ModelFreshness::has_sla)
     }
 
+    /// Projects `ModelFreshness`'s SLA fields onto `FreshnessDefinition`.
+    /// `build_after` is a scheduling rule and is excluded.
+    fn freshness_criteria(&self) -> FreshnessDefinition {
+        let Some(freshness) = self.__model_attr__.freshness.as_ref() else {
+            return FreshnessDefinition::default();
+        };
+        FreshnessDefinition {
+            error_after: freshness.error_after.clone(),
+            warn_after: freshness.warn_after.clone(),
+            filter: freshness.filter.clone(),
+            loaded_at_field: freshness.loaded_at_field.clone(),
+            loaded_at_query: freshness.loaded_at_query.clone(),
+        }
+    }
+
     fn resource_type(&self) -> NodeType {
         NodeType::Model
     }
@@ -2178,6 +2197,10 @@ impl InternalDbtNode for DbtSource {
 
     fn resource_type(&self) -> NodeType {
         NodeType::Source
+    }
+
+    fn freshness_criteria(&self) -> FreshnessDefinition {
+        self.__source_attr__.freshness.clone().unwrap_or_default()
     }
 
     fn event_time(&self) -> Option<String> {
@@ -5397,22 +5420,6 @@ impl DbtSource {
     pub fn get_base_attr(&self) -> NodeBaseAttributes {
         self.__base_attr__.clone()
     }
-
-    pub fn get_loaded_at_field(&self) -> &str {
-        self.__source_attr__
-            .loaded_at_field
-            .as_ref()
-            .map(AsRef::as_ref)
-            .unwrap_or("")
-    }
-
-    pub fn get_loaded_at_query(&self) -> &str {
-        self.__source_attr__
-            .loaded_at_query
-            .as_ref()
-            .map(AsRef::as_ref)
-            .unwrap_or("")
-    }
 }
 
 #[skip_serializing_none]
@@ -7149,6 +7156,52 @@ mod tests {
         ));
     }
 
+    /// The freshness path moved from passing `&source.deprecated_config` to
+    /// `&node.serialized_config()`, which runs the config through `to_value` one
+    /// extra time. A source's `config` dict is Jinja-visible while rendering
+    /// `loaded_at_query` and `collect_freshness`, and `SourceConfig` carries a
+    /// `Verbatim`, an `Omissible`, and a custom `serialize_with`, so the extra hop
+    /// has to be a no-op.
+    #[test]
+    fn source_serialized_config_matches_direct_config_serialization() {
+        use dbt_common::serde_utils::Omissible;
+
+        use crate::schemas::common::{FreshnessDefinition, FreshnessPeriod, FreshnessRules};
+        use dbt_yaml::Verbatim;
+
+        let cases = [
+            // `freshness` omitted entirely, `meta` unset (hits serialize_none_as_empty_map).
+            Omissible::Omitted,
+            // Explicit `freshness: null`, i.e. opted out.
+            Omissible::Present(None),
+            Omissible::Present(Some(FreshnessDefinition {
+                warn_after: Some(FreshnessRules {
+                    count: Some(12),
+                    period: Some(FreshnessPeriod::hour),
+                }),
+                filter: Some("id > 0".to_string()),
+                ..Default::default()
+            })),
+        ];
+
+        for freshness in cases {
+            let mut source = DbtSource::default();
+            source.deprecated_config.enabled = Some(true);
+            source.deprecated_config.meta = None;
+            source.deprecated_config.freshness = freshness;
+            source.deprecated_config.loaded_at_field = Some("updated_at".to_string());
+            source.deprecated_config.loaded_at_query =
+                Verbatim::from(Some("select max(updated_at) from {{ this }}".to_string()));
+
+            let direct = dbt_yaml::to_value(&source.deprecated_config).unwrap();
+            let via_trait = dbt_yaml::to_value(source.serialized_config()).unwrap();
+            assert_eq!(
+                direct, via_trait,
+                "serialized_config() is not a no-op; the Jinja-visible source config changed shape"
+            );
+        }
+    }
+
     #[test]
     fn test_alias_config_equal_treats_generated_alias_as_unchanged() {
         let generated =
@@ -7212,6 +7265,21 @@ mod tests {
             ..Default::default()
         };
         assert!(!model_with_freshness(Some(build_after_only)).has_freshness());
+    }
+
+    #[test]
+    fn has_freshness_false_when_rule_object_is_empty() {
+        let empty_warn = ModelFreshness {
+            warn_after: Some(FreshnessRules::default()),
+            ..Default::default()
+        };
+        assert!(!model_with_freshness(Some(empty_warn)).has_freshness());
+
+        let empty_error = ModelFreshness {
+            error_after: Some(FreshnessRules::default()),
+            ..Default::default()
+        };
+        assert!(!model_with_freshness(Some(empty_error)).has_freshness());
     }
 
     #[test]

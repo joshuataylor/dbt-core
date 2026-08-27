@@ -59,6 +59,9 @@ pub mod schemas {
     };
 
     pub use sources::{FreshnessResultsArtifact, FreshnessResultsMetadata, FreshnessResultsNode};
+
+    pub mod freshness_node;
+    pub use freshness_node::{FreshnessNodeRef, is_freshness_node};
     pub mod legacy_catalog {
         mod catalog;
         pub use catalog::CatalogNodeStats;

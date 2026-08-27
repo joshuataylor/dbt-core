@@ -1,4 +1,4 @@
-use crate::source_freshness::run_source_freshness;
+use crate::freshness::run_freshness_command;
 use crate::{dbt_lib::write_catalog_json, version_check};
 use arrow::datatypes::SchemaRef;
 use dbt_adapter::{
@@ -1683,6 +1683,7 @@ impl DbtProjectCompilation {
                     | FsCommand::RunOperation
                     | FsCommand::Source
                     | FsCommand::Check
+                    | FsCommand::Freshness
                     | FsCommand::Extension("pull")
             ) {
                 // For the Show command, check if the selector matches a macro file.
@@ -2147,8 +2148,9 @@ impl DbtProjectCompilation {
         token.check_cancellation()?;
 
         // FEATURES: cmd_source_freshness on_run_hooks artifact_output
-        let freshness_results = if arg.command == FsCommand::Source {
-            run_source_freshness(
+        let sources_only = arg.command.is_sources_only_freshness();
+        let freshness_results = if arg.command.is_freshness_command() {
+            run_freshness_command(
                 arg,
                 &jinja_env,
                 &resolved_state,
@@ -2156,6 +2158,7 @@ impl DbtProjectCompilation {
                 Arc::clone(&adapter),
                 &base_context,
                 artifacts_sink,
+                sources_only,
             )
             .await?
         } else {
@@ -2918,6 +2921,10 @@ mod tests {
         ));
         assert!(!should_skip_tasks_when_no_selected_nodes(
             &FsCommand::Source,
+            &schedule
+        ));
+        assert!(!should_skip_tasks_when_no_selected_nodes(
+            &FsCommand::Freshness,
             &schedule
         ));
     }

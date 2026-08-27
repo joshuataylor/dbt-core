@@ -8,9 +8,9 @@ use strum_macros::Display;
 
 use crate::{
     BuildArgs, CheckArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs,
-    DebugArgs, DepsArgs, DocsArgs, InitArgs, InternalArgs, ListArgs, LoginArgs, ManArgs, ParseArgs,
-    RetryArgs, RunArgs, RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, StateArgs,
-    TestArgs,
+    DebugArgs, DepsArgs, DocsArgs, FreshnessArgs, InitArgs, InternalArgs, ListArgs, LoginArgs,
+    ManArgs, ParseArgs, RetryArgs, RunArgs, RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs,
+    SourceArgs, StateArgs, TestArgs,
 };
 
 #[derive(clap::Subcommand, Debug, Clone, Display)]
@@ -47,6 +47,8 @@ pub enum CoreCommand {
     Clean(CleanArgs),
     /// Run sources subcommands
     Source(SourceArgs),
+    /// Check freshness of resources
+    Freshness(FreshnessArgs),
     /// Create clones of selected nodes
     Clone(CloneArgs),
     /// Create reference documentation
@@ -89,6 +91,7 @@ impl CoreCommand {
             Clone(..) => FsCommand::Clone,
             Clean(..) => FsCommand::Clean,
             Source(..) => FsCommand::Source,
+            Freshness(..) => FsCommand::Freshness,
             Show(..) => FsCommand::Show,
             Man(..) => FsCommand::Man,
             Debug(..) => FsCommand::Debug,
@@ -124,6 +127,7 @@ impl CoreCommand {
             Clone(args) => &args.common_args,
             Clean(args) => &args.common_args,
             Source(args) => args.common_args(),
+            Freshness(args) => &args.common_args,
             Show(args) => &args.common_args,
             Man(args) => &args.common_args,
             Debug(args) => &args.common_args,
@@ -155,6 +159,7 @@ impl CoreCommand {
             Build(build_args) => build_args.static_analysis,
             Clean(_) => None,
             Source(_) => None,
+            Freshness(_) => None,
             Clone(_) => None,
             Man(_) => None,
             Debug(_) => None,

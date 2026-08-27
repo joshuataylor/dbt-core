@@ -2395,6 +2395,7 @@ mod tests {
                 env: BTreeMap::new(),
             },
             results: vec![FreshnessResultsNode {
+                resource_type: None,
                 unique_id: source_unique_id.to_string(),
                 max_loaded_at: prev_time,
                 snapshotted_at: prev_time,
@@ -2434,6 +2435,7 @@ mod tests {
                 env: BTreeMap::new(),
             },
             results: vec![FreshnessResultsNode {
+                resource_type: None,
                 unique_id: source_unique_id.to_string(),
                 max_loaded_at: current_time,
                 snapshotted_at: current_time,
@@ -2485,6 +2487,7 @@ mod tests {
                 env: BTreeMap::new(),
             },
             results: vec![FreshnessResultsNode {
+                resource_type: None,
                 unique_id: source_unique_id.to_string(),
                 max_loaded_at: prev_time, // Same as previous
                 snapshotted_at: prev_time,

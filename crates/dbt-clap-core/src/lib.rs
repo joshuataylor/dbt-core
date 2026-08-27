@@ -422,6 +422,7 @@ got {:?}, expected an instance of {}",
                 Clone(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Clean(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Source(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+                Freshness(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Show(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Man(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Debug(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
@@ -505,6 +506,7 @@ got {:?}, expected an instance of {}",
                     .phase
                     .clone()
                     .unwrap_or(Phases::Freshness),
+                Freshness(args) => args.common_args.phase.clone().unwrap_or(Phases::Freshness),
                 Show(args) => args.common_args.phase.clone().unwrap_or(Phases::Show),
                 Man(_args) => unreachable!("Man command does not need a phase"),
                 Debug(args) => args.common_args.phase.clone().unwrap_or(Phases::Debug),
@@ -878,6 +880,20 @@ pub struct SourceFreshnessArgs {
     // Flattened Common args
     #[clap(flatten)]
     pub common_args: CommonArgs,
+}
+
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct FreshnessArgs {
+    #[clap(flatten)]
+    pub common_args: CommonArgs,
+}
+
+impl FreshnessArgs {
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
+        eval_args.phase = Phases::Freshness;
+        eval_args
+    }
 }
 
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
@@ -3565,6 +3581,79 @@ mod tests {
         assert_eq!(
             parser.json_version_for_args(["dbt", "--format", "json", "--version"]),
             Some(r#"{"fusion":"2.0.0-preview.92"}"#.to_string())
+        );
+    }
+
+    fn test_system_args(command: FsCommand) -> SystemArgs {
+        SystemArgs {
+            command,
+            io: IoArgs::default(),
+            from_main: false,
+            exit_process_on_panic: false,
+            num_threads: None,
+            no_parallel: false,
+            target: None,
+        }
+    }
+
+    fn parse_core_command(args: &[&str]) -> CoreCommand {
+        let cli = CliParser::new("dbt-fusion", "2.0.0", Box::new(NoopParser))
+            .try_parse_from(std::iter::once("dbt").chain(args.iter().copied()))
+            .expect("args should parse");
+        match cli.command {
+            Command::Core(cmd) => cmd,
+            Command::Extension(_) => panic!("expected a core command"),
+        }
+    }
+
+    #[test]
+    fn top_level_freshness_command_parses_and_is_not_sources_only() {
+        let cmd = parse_core_command(&["freshness", "--select", "stg_orders+"]);
+
+        let CoreCommand::Freshness(args) = &cmd else {
+            panic!("expected CoreCommand::Freshness, got {cmd:?}");
+        };
+        assert_eq!(
+            args.common_args.select.as_deref(),
+            Some(["stg_orders+".to_string()].as_slice())
+        );
+        assert!(!cmd.as_command().is_sources_only_freshness());
+        assert_eq!(cmd.as_command(), FsCommand::Freshness);
+    }
+
+    #[test]
+    fn nested_source_freshness_command_is_sources_only() {
+        let cmd = parse_core_command(&["source", "freshness", "--select", "raw_orders"]);
+
+        let CoreCommand::Source(args) = &cmd else {
+            panic!("expected CoreCommand::Source, got {cmd:?}");
+        };
+        let SourceCommand::Freshness(freshness) = &args.command;
+        assert_eq!(
+            freshness.common_args.select.as_deref(),
+            Some(["raw_orders".to_string()].as_slice())
+        );
+        assert!(cmd.as_command().is_sources_only_freshness());
+        assert_eq!(cmd.as_command(), FsCommand::Source);
+    }
+
+    #[test]
+    fn nested_source_freshness_still_injects_resource_type_source() {
+        let cmd = parse_core_command(&["source", "freshness"]);
+        let CoreCommand::Source(args) = &cmd else {
+            panic!("expected CoreCommand::Source");
+        };
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Source),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        assert_eq!(eval_args.phase, Phases::Freshness);
+        assert_eq!(
+            eval_args.select.as_ref().map(|s| s.to_string()),
+            Some("resource_type:source".to_string())
         );
     }
 

@@ -226,6 +226,7 @@ pub enum FsCommand {
     Parse,
     List, // aka: Ls
     Compile,
+    Check,
     Run,
     RunOperation,
     Test,
@@ -259,6 +260,7 @@ impl FsCommand {
             FsCommand::Parse => "parse",
             FsCommand::List => "list",
             FsCommand::Compile => "compile",
+            FsCommand::Check => "check",
             FsCommand::Run => "run",
             FsCommand::RunOperation => "run-operation",
             FsCommand::Test => "test",
@@ -280,6 +282,16 @@ impl FsCommand {
             FsCommand::Internal => "internal",
             FsCommand::Extension(s) => s,
         }
+    }
+
+    /// Whether this command compiles every node in the project (as opposed to a narrower
+    /// operation like `test`, `seed`, or `snapshot`, which act on a subset). Per-node artifacts
+    /// derived from a full compile are only meaningful for these commands.
+    pub const fn compiles_project(&self) -> bool {
+        matches!(
+            self,
+            FsCommand::Compile | FsCommand::Check | FsCommand::Build | FsCommand::Run
+        )
     }
 }
 
@@ -637,6 +649,15 @@ pub struct EvalArgs {
     pub skip_creating_generic_tests: bool,
     /// Compute and write column-level lineage into compile/cll parquet (requires --write-metadata and --static-analysis strict)
     pub write_lineage: bool,
+    /// Positional check names from `dbt check <name>...`. Empty means every check.
+    ///
+    /// A filter on which checks run, not a node selection: the parse-time gate still
+    /// evaluates against the whole project's index. Narrowing the schedule to the check
+    /// node instead would leave it querying an empty index and passing vacuously.
+    pub check_names: Vec<String>,
+    /// Skip the parse-time check gate (`dbt build --skip-checks`). Opt-out, no
+    /// warning: the user asked to skip. The index is still written.
+    pub skip_checks: bool,
     /// Always enable the linter.
     pub force_enable_linter: bool,
     /// Always enable formatter-fix diagnostics.
@@ -852,6 +873,7 @@ pub enum ClapResourceType {
     SemanticModel,
     Metric,
     SavedQuery,
+    Check,
 }
 
 impl Display for ClapResourceType {
@@ -868,6 +890,7 @@ impl Display for ClapResourceType {
             ClapResourceType::SemanticModel => "semantic_model",
             ClapResourceType::Metric => "metric",
             ClapResourceType::SavedQuery => "saved_query",
+            ClapResourceType::Check => "check",
         };
         write!(f, "{s}")
     }
@@ -887,6 +910,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SemanticModel => NodeType::SemanticModel,
             ClapResourceType::Metric => NodeType::Metric,
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
+            ClapResourceType::Check => NodeType::Check,
         }
     }
 }

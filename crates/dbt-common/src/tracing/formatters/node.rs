@@ -34,8 +34,10 @@ pub const COMPILED_INLINE_NODE_TITLE: &str = "Compiled inline node is:";
 /// used as database identifiers, but the full readable name is shown in CLI output.
 pub fn get_node_display_alias(node_type: NodeType, identifier: Option<&str>, name: &str) -> String {
     match node_type {
-        // Tests and unit tests always use `name` for display (contains original untruncated name)
-        NodeType::Test | NodeType::UnitTest => name.to_string(),
+        // Tests and unit tests always use `name` for display (contains original untruncated name).
+        // Checks likewise: they have no relation, so `identifier` is empty and would display as
+        // nothing at all.
+        NodeType::Test | NodeType::UnitTest | NodeType::Check => name.to_string(),
         // Other nodes prefer `identifier` (database alias) with `name` as fallback
         _ => identifier
             .map(|s| s.to_string())
@@ -399,8 +401,12 @@ pub fn format_node_processed_end(
     // Determine description based on outcome
     let desc = format_node_description(node);
 
-    // Get materialization string - use custom_materialization if materialization is Custom
-    let materialization_str = if node.materialization.is_some() {
+    // Get materialization string - use custom_materialization if materialization is Custom.
+    // Checks materialize nothing, so they get no suffix — reporting one (they carry `analysis`
+    // internally) would claim a relation that is never written.
+    let materialization_str = if node_type == NodeType::Check {
+        None
+    } else if node.materialization.is_some() {
         let mat = node.materialization();
         Some(if mat == NodeMaterialization::Custom {
             node.custom_materialization.clone().unwrap_or_default()

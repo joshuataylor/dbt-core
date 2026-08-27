@@ -20,7 +20,9 @@ use strum::{Display, EnumString};
 
 use crate::schemas::common::DbtQuoting;
 use crate::schemas::common::SyncConfig;
+use crate::schemas::project::InfoSchemaConfig;
 use crate::schemas::project::ProjectAnalysisConfig;
+use crate::schemas::project::ProjectCheckConfig;
 use crate::schemas::project::ProjectSemanticModelConfig;
 use crate::schemas::project::configs::saved_query_config::ProjectSavedQueryConfig;
 use crate::schemas::serde::FloatOrString;
@@ -140,6 +142,8 @@ pub struct DbtProject {
     pub snapshot_paths: Option<Vec<String>>,
     #[serde(rename = "test-paths")]
     pub test_paths: Option<Vec<String>>,
+    #[serde(rename = "check-paths")]
+    pub check_paths: Option<Vec<String>>,
     #[serde(rename = "docs-paths")]
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "target-path")]
@@ -155,6 +159,12 @@ pub struct DbtProject {
     pub snapshots: Option<ProjectSnapshotConfig>,
     pub seeds: Option<ProjectSeedConfig>,
     pub sources: Option<ProjectSourceConfig>,
+    /// Project-level `checks:` config tree (path-scoped, `+`-prefixed), resolved by the standard
+    /// project-config machinery like every other node type's subtree.
+    pub checks: Option<ProjectCheckConfig>,
+    /// Package-scoped `info_schema:` block. Not resolved/inherited like `checks:` -- see
+    /// [`InfoSchemaConfig`].
+    pub info_schema: Option<InfoSchemaConfig>,
     pub tests: Option<ProjectDataTestConfig>,
     pub unit_tests: Option<ProjectUnitTestConfig>,
     pub data_tests: Option<ProjectDataTestConfig>,
@@ -207,6 +217,7 @@ impl Default for DbtProject {
             seed_paths: None,
             snapshot_paths: None,
             test_paths: None,
+            check_paths: None,
             docs_paths: None,
             target_path: None,
             log_path: None,
@@ -217,6 +228,8 @@ impl Default for DbtProject {
             snapshots: None,
             seeds: None,
             sources: None,
+            checks: None,
+            info_schema: None,
             tests: None,
             unit_tests: None,
             data_tests: None,
@@ -443,6 +456,7 @@ mod tests {
             seed_paths: Some(vec![]),
             snapshot_paths: Some(vec![]),
             test_paths: Some(vec![]),
+            check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
@@ -453,6 +467,8 @@ mod tests {
             snapshots: None,
             seeds: None,
             sources: None,
+            checks: None,
+            info_schema: None,
             tests: None,
             unit_tests: None,
             data_tests: None,

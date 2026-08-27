@@ -410,6 +410,7 @@ got {:?}, expected an instance of {}",
                 Deps(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 List(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Compile(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+                Check(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Parse(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 Run(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
                 RunOperation(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
@@ -440,16 +441,18 @@ got {:?}, expected an instance of {}",
         if arg.write_index && arg.static_analysis == Some(StaticAnalysisKind::Strict) {
             arg.write_lineage = true;
         }
-        // `build` and `run` write the index by default.
+        // `build`, `run`, and `check` write the index by default.
         //
         // After the lineage block above so a defaulted index does not turn on `write_lineage`.
         // Explicit `--write-index` still does. Set on `EvalArgs`, not `Cli.common_args`:
         // `effective_partial_parse()` / `effective_partial_load()` read the raw flag, so
-        // leaving it unset keeps partial parse/load off for a plain `dbt build`/`run`.
+        // leaving it unset keeps partial parse/load off for a plain `dbt build`/`run`/`check`.
         // Skip if the caller already set metadata, index, or catalog so `--write-metadata`
         // stays epochs-without-index and `--write-catalog` stays explicit.
-        if matches!(arg.command, FsCommand::Build | FsCommand::Run)
-            && !common_args.write_index
+        if matches!(
+            arg.command,
+            FsCommand::Build | FsCommand::Run | FsCommand::Check
+        ) && !common_args.write_index
             && !common_args.write_metadata
             && !common_args.write_catalog
             && !common_args.no_write_index
@@ -488,6 +491,7 @@ got {:?}, expected an instance of {}",
                 Ls(args) => args.common_args.phase.clone().unwrap_or(Phases::List),
                 List(args) => args.common_args.phase.clone().unwrap_or(Phases::List),
                 Compile(args) => args.common_args.phase.clone().unwrap_or(Phases::Compile),
+                Check(args) => args.common_args.phase.clone().unwrap_or(Phases::Compile),
                 Run(args) => args.common_args.phase.clone().unwrap_or(Phases::All),
                 RunOperation(args) => args.common_args.phase.clone().unwrap_or(Phases::Parse),
                 Seed(args) => args.common_args.phase.clone().unwrap_or(Phases::All),
@@ -745,6 +749,39 @@ impl CompileArgs {
             &RunCacheMode::ReadWrite,
         );
 
+        eval_args
+    }
+}
+
+#[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
+pub struct CheckArgs {
+    /// Names of specific checks to run (the file stem, without `.sql`). Runs all
+    /// discovered checks if omitted.
+    #[arg(value_name = "CHECK")]
+    pub check_names: Vec<String>,
+
+    // Flattened Common args
+    #[clap(flatten)]
+    pub common_args: CommonArgs,
+
+    /// Flag to enable or disable SQL analysis, or to run SQL in unsafe mode, enabled by default
+    #[arg(global = true, long, env = "DBT_STATIC_ANALYSIS")]
+    pub static_analysis: Option<StaticAnalysisKind>,
+}
+
+impl CheckArgs {
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
+        eval_args.phase = Phases::Compile;
+        eval_args.introspect = self.common_args.get_introspect();
+        // v1 is parse-time only. Do not force static analysis off the way
+        // warehouse-introspecting commands do.
+        eval_args.static_analysis = self.static_analysis;
+        // Implied index is set on `EvalArgs` in `Cli::to_eval_args` (same as
+        // `build` / `run`), not here: setting `write_index` on this struct
+        // before that function's lineage block would turn on `write_lineage`,
+        // and setting `Cli.common_args` would turn on partial parse/load.
+        eval_args.check_names = self.check_names.clone();
         eval_args
     }
 }
@@ -1104,6 +1141,10 @@ pub struct BuildArgs {
     #[arg(global = true, long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), short = 'f', env = "DBT_FULL_REFRESH")]
     pub full_refresh: bool,
 
+    /// Skip parse-time project quality checks. Models still compile and run.
+    #[arg(long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new())]
+    pub skip_checks: bool,
+
     /// Limiting number of shown rows. Run with --limit -1 to remove limit [default: 10]
     #[arg(long, default_value=DEFAULT_LIMIT, allow_hyphen_values = true)]
     pub limit: RowLimit,
@@ -1159,6 +1200,7 @@ impl BuildArgs {
                 ClapResourceType::Test,
                 ClapResourceType::UnitTest,
                 ClapResourceType::Function,
+                ClapResourceType::Check,
             ];
             if eval_args.export_saved_queries {
                 eval_args.resource_types.push(ClapResourceType::SavedQuery);
@@ -1177,6 +1219,7 @@ impl BuildArgs {
         eval_args.static_analysis = self.static_analysis;
         eval_args.empty = self.common_args.empty;
         eval_args.sample = self.sample.clone();
+        eval_args.skip_checks = self.skip_checks;
         eval_args
     }
 }
@@ -2774,6 +2817,8 @@ impl CommonArgs {
             // Set by `Cli::to_eval_args` for the commands that default the index on; a
             // per-command conversion cannot know it was a default rather than a request.
             write_index_implied: false,
+            check_names: Vec::new(),
+            skip_checks: false,
             classify_with_warehouse_tags: self.classify_with_warehouse_tags,
             index_dir: self.index_dir.clone(),
             metadata_dir: self.metadata_dir.clone(),

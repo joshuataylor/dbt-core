@@ -279,6 +279,7 @@ pub fn try_load_prev_compilation(
         file_kind_registry: CompleteStateWithKind::new(),
         metricflow_server_client: None,
         catalog_artifact: None,
+        parse_index_publish_failed: false,
         previous_state: None,
         invocation_id: uuid::Uuid::new_v4().to_string(),
         partial_load_filter_applied: false,

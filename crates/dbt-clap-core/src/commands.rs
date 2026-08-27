@@ -7,9 +7,10 @@ use dbt_common::io_args::{EvalArgs, FsCommand, Phases, StaticAnalysisKind, Syste
 use strum_macros::Display;
 
 use crate::{
-    BuildArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs, DebugArgs, DepsArgs,
-    DocsArgs, InitArgs, InternalArgs, ListArgs, LoginArgs, ManArgs, ParseArgs, RetryArgs, RunArgs,
-    RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, StateArgs, TestArgs,
+    BuildArgs, CheckArgs, CleanArgs, CloneArgs, CommonArgs, CompileArgs, CompletionsArgs,
+    DebugArgs, DepsArgs, DocsArgs, InitArgs, InternalArgs, ListArgs, LoginArgs, ManArgs, ParseArgs,
+    RetryArgs, RunArgs, RunOperationArgs, SeedArgs, ShowArgs, SnapshotArgs, SourceArgs, StateArgs,
+    TestArgs,
 };
 
 #[derive(clap::Subcommand, Debug, Clone, Display)]
@@ -26,6 +27,8 @@ pub enum CoreCommand {
     Ls(ListArgs),
     /// Compile models
     Compile(CompileArgs),
+    /// Run project quality checks against the dbt metadata index
+    Check(CheckArgs),
     /// Run models
     Run(RunArgs),
     /// Run the named macro with any supplied arguments
@@ -76,6 +79,7 @@ impl CoreCommand {
             List(..) => FsCommand::List,
             Ls(..) => FsCommand::List,
             Compile(..) => FsCommand::Compile,
+            Check(..) => FsCommand::Check,
             Run(..) => FsCommand::Run,
             RunOperation(..) => FsCommand::RunOperation,
             Seed(..) => FsCommand::Seed,
@@ -110,6 +114,7 @@ impl CoreCommand {
             Ls(args) => &args.common_args,
             Parse(args) => &args.common_args,
             Compile(args) => &args.common_args,
+            Check(args) => &args.common_args,
             Run(args) => &args.common_args,
             RunOperation(args) => &args.common_args,
             Seed(args) => &args.common_args,
@@ -140,6 +145,7 @@ impl CoreCommand {
             List(_) => None,
             Ls(_) => None,
             Compile(compile_args) => compile_args.static_analysis,
+            Check(check_args) => check_args.static_analysis,
             Run(run_args) => run_args.static_analysis,
             RunOperation(_) => None,
             Test(test_args) => test_args.static_analysis,

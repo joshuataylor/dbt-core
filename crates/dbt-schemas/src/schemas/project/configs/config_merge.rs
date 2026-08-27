@@ -344,6 +344,7 @@ impl ReplaceIfNone for crate::schemas::properties::model_properties::ModelState 
 impl ReplaceIfNone for crate::schemas::properties::model_properties::DataTestState {}
 
 // Config-internal types
+impl ReplaceIfNone for crate::schemas::project::configs::check_config::NodeFqn {}
 impl ReplaceIfNone for crate::schemas::project::configs::function_config::FunctionSnowflakeConfig {}
 impl ReplaceIfNone for crate::schemas::project::configs::model_config::DataLakeObjectCategory {}
 impl ReplaceIfNone for crate::schemas::project::configs::model_config::LatestVersionPointer {}

@@ -32,17 +32,17 @@ use crate::{
         manifest::{
             ManifestExposure, ManifestGroup, ManifestSavedQuery, ManifestUnitTest,
             manifest_nodes::{
-                ManifestAnalysis, ManifestCommonAttributes, ManifestDataTest, ManifestFunction,
-                ManifestMaterializableCommonAttributes, ManifestMetric, ManifestModel,
-                ManifestOperation, ManifestSeed, ManifestSemanticModel, ManifestSnapshot,
-                ManifestSource,
+                ManifestAnalysis, ManifestCheck, ManifestCommonAttributes, ManifestDataTest,
+                ManifestFunction, ManifestMaterializableCommonAttributes, ManifestMetric,
+                ManifestModel, ManifestOperation, ManifestSeed, ManifestSemanticModel,
+                ManifestSnapshot, ManifestSource,
             },
             saved_query::DbtSavedQueryAttr,
             semantic_model::NodeRelation,
         },
         nodes::{
-            AdapterAttr, DbtAnalysis, DbtAnalysisAttr, DbtGroup, DbtGroupAttr, DbtSeedAttr,
-            DbtSnapshotAttr, DbtSourceAttr, DbtTestAttr,
+            AdapterAttr, DbtAnalysis, DbtAnalysisAttr, DbtCheck, DbtCheckAttr, DbtGroup,
+            DbtGroupAttr, DbtSeedAttr, DbtSnapshotAttr, DbtSourceAttr, DbtTestAttr,
         },
         relations::default_dbt_quoting_for,
     },
@@ -61,6 +61,7 @@ pub enum DbtNode {
     Operation(ManifestOperation),
     Analysis(ManifestAnalysis),
     Function(ManifestFunction),
+    Check(ManifestCheck),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -230,6 +231,15 @@ pub fn build_manifest(invocation_id: &str, resolver_state: &ResolverState) -> Db
                 normalize_manifest_analysis_path(&mut analysis_node.__common_attr__, path_config);
                 normalize_manifest_patch_path(&mut analysis_node.__common_attr__, path_config);
                 (id.clone(), DbtNode::Analysis(analysis_node))
+            }))
+            .chain(resolver_state.nodes.checks.iter().map(|(id, node)| {
+                let mut check_node: ManifestCheck = (**node).clone().into();
+                let path_config = path_config_for_package(
+                    resolver_state,
+                    &check_node.__common_attr__.package_name,
+                );
+                normalize_manifest_patch_path(&mut check_node.__common_attr__, path_config);
+                (id.clone(), DbtNode::Check(check_node))
             }))
             // Note: Functions are now handled separately in the functions field, not in nodes
             .chain(resolver_state.operations.on_run_start.iter().map(|node| {
@@ -1533,6 +1543,83 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                     }),
                 );
             }
+            DbtNode::Check(check) => {
+                let config = check.config;
+                let tags = config
+                    .tags
+                    .inner()
+                    .clone()
+                    .map(Into::into)
+                    .unwrap_or_default();
+                let meta = config.meta.clone().unwrap_or_default();
+
+                let recalculated_checksum = match check.__base_attr__.raw_code.clone() {
+                    Some(raw_code) => {
+                        let normalized_raw_code = normalize_sql(&raw_code);
+                        recalculate_checksum(
+                            Some(normalized_raw_code.as_str()),
+                            check.__base_attr__.checksum.clone(),
+                        )
+                    }
+                    None => check.__base_attr__.checksum.clone(),
+                };
+                nodes.checks.insert(
+                    unique_id,
+                    Arc::new(DbtCheck {
+                        __common_attr__: CommonAttributes {
+                            unique_id: check.__common_attr__.unique_id,
+                            name: check.__common_attr__.name,
+                            package_name: check.__common_attr__.package_name,
+                            path: check.__common_attr__.path,
+                            name_span: Span::default(),
+                            original_file_path: check.__common_attr__.original_file_path,
+                            patch_path: check.__common_attr__.patch_path,
+                            fqn: check.__common_attr__.fqn,
+                            description: check.__common_attr__.description,
+                            raw_code: check.__base_attr__.raw_code,
+                            checksum: recalculated_checksum,
+                            language: check.__base_attr__.language,
+                            tags,
+                            classifiers: Default::default(),
+                            meta,
+                        },
+                        __base_attr__: NodeBaseAttributes {
+                            adapter: adapter_type,
+                            // A check has no relation, so these stay as written (empty) rather
+                            // than being defaulted from the target.
+                            database: check.__common_attr__.database,
+                            schema: check.__common_attr__.schema,
+                            alias: check.__base_attr__.alias,
+                            relation_name: check.__base_attr__.relation_name,
+                            materialized: DbtMaterialization::Analysis,
+                            static_analysis: Default::default(),
+                            enabled: check.enabled,
+                            static_analysis_off_reason: None,
+                            compute: None,
+                            extended_model: false,
+                            quoting: dbt_quoting.try_into().expect("DbtQuoting should be set"),
+                            quoting_ignore_case: false,
+                            persist_docs: None,
+                            columns: check.__base_attr__.columns,
+                            depends_on: check.__base_attr__.depends_on,
+                            refs: check.__base_attr__.refs,
+                            sources: check.__base_attr__.sources,
+                            metrics: check.__base_attr__.metrics,
+                            functions: check.__base_attr__.functions,
+                            unrendered_config: check.__base_attr__.unrendered_config,
+                        },
+                        __check_attr__: DbtCheckAttr {
+                            // Neither field is carried by `ManifestCheck`. A node reconstructed from
+                            // a manifest is only ever *compared* (`--state`), never executed or
+                            // scheduled — execution reads the rendered SQL and scheduling reads the
+                            // table list, and both of those paths come from a fresh resolve or the
+                            // parse cache, which do round-trip them.
+                            compiled_sql: None,
+                        },
+                        deprecated_config: config,
+                    }),
+                );
+            }
         }
     }
     for (unique_id, source) in manifest.sources {
@@ -2169,6 +2256,7 @@ mod tests {
             saved_queries: BTreeMap::new(),
             groups: BTreeMap::new(),
             functions: BTreeMap::new(),
+            checks: BTreeMap::new(),
             macros: BTreeMap::new(),
             project_name: None,
         }

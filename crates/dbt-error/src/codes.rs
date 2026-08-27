@@ -254,6 +254,23 @@ pub enum ErrorCode {
     SelectionOverrideDivergence = 1605,
 
     // --------------------------------------------------------------------------------------------
+    // Checks
+    //
+    // One code per outcome rather than a shared one: `warn_error_options` targets codes, so
+    // collapsing these onto `Generic` would mean upgrading or silencing a check outcome also
+    // upgrades or silences every unrelated `Generic` warning in the run.
+    /// A check found violations at `error` severity.
+    CheckFailed = 1650,
+    /// A check found violations at `warn` severity.
+    CheckWarned = 1651,
+    /// A check had nothing in scope to evaluate.
+    CheckSkipped = 1652,
+    /// A check could not be evaluated (e.g. its query errored).
+    CheckEvaluationFailed = 1653,
+    /// The parse-time index could not be written, so checks were skipped and the build proceeded.
+    CheckIndexUnavailable = 1654,
+
+    // --------------------------------------------------------------------------------------------
     // CLI errors
     NoLongerSupportedOption = 1700,
     NotYetSupportedOption = 1701,

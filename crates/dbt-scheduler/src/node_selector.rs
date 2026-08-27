@@ -218,7 +218,9 @@ fn match_source(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
 }
 
 fn match_resource_type(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
-    if pattern == "relation" && node.resource_type() != NodeType::Test {
+    // Checks produce no database relation, so they are never a `relation`. (This arm remains an
+    // approximation for other non-relational types like exposures and metrics; not widened here.)
+    if pattern == "relation" && !matches!(node.resource_type(), NodeType::Test | NodeType::Check) {
         Ok(true)
     } else {
         Ok(pattern == node.resource_type().as_static_ref())

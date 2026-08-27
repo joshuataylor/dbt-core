@@ -764,12 +764,33 @@ impl<'a> AllPhasesExecutor<'a> {
             // the original --indirect-selection / --exclude. This matches dbt-core,
             // whose retry path replaces the graph queue outright and never consults
             // indirect selection (dbt-labs/dbt-core#14536).
-            let custom_schedule = Some(DbtCustomScheduleDescription {
-                unique_ids: retry_state.retryable_node_ids,
-                include_parents: false,
-                include_children: false,
-                indirect_selection: IndirectSelection::Empty,
-            });
+            // Check ids are **not schedulable**: checks run before the task graph exists, so they
+            // are not nodes in it. Putting one in a custom schedule produced a false green —
+            // `dbt retry` after a failing check selected only that id, row scoping then found no
+            // model to scope to, and every check reported `skipped`, so retry exited 0 on a project
+            // whose check still fails. Split them: check ids become names to re-run, everything else
+            // becomes the schedule.
+            //
+            // The check ids are dropped rather than turned into names to re-run: a build-shaped
+            // retry materializes tables, so it re-verifies *every* check as a precondition rather
+            // than retrying only the failed ones. See the gate in `execute`.
+            let (_retry_check_ids, retry_node_ids): (Vec<String>, Vec<String>) = retry_state
+                .retryable_node_ids
+                .into_iter()
+                .partition(|id| id.starts_with("check."));
+
+            // `dbt check` never needs a schedule: it compiles nothing. For build-shaped commands a
+            // schedule of the failed *nodes* is still what limits the work.
+            let custom_schedule = if matches!(&command_for_retry, Check(_)) {
+                None
+            } else {
+                Some(DbtCustomScheduleDescription {
+                    unique_ids: retry_node_ids,
+                    include_parents: false,
+                    include_children: false,
+                    indirect_selection: IndirectSelection::Empty,
+                })
+            };
 
             self.previous_batch_results = retry_state.previous_batch_results;
 
@@ -779,6 +800,13 @@ impl<'a> AllPhasesExecutor<'a> {
                 common_args,
             };
             self.cli = Cow::Owned(cli_for_retry);
+            // `self.arg` was built from the *original* `retry` command, so nothing the
+            // reconstructed command carries reaches it automatically. `check_names` is what narrows
+            // a retried `dbt check` to the checks that actually failed; without copying it across,
+            // retry re-runs every check in the project.
+            if let Command::Core(Check(check_args)) = &self.cli.command {
+                self.arg.to_mut().check_names = check_args.check_names.clone();
+            }
             Ok(custom_schedule)
         } else {
             Ok(None)
@@ -1083,6 +1111,23 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let retry_schedule = self.prepare_for_potential_retry()?;
 
+        // Implied index for `build`/`run`/`check` is EvalArgs-only (`Cli.to_eval_args`).
+        // `dbt retry` reconstructs `command` but keeps the `EvalArgs` produced from
+        // `Retry`, which did not get that default. Without it the parse-time check gate
+        // reads the previous invocation's index. Honor `--no-write-index` the same way
+        // the default does. Do not set `Cli.common_args.write_index`: that turns partial
+        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks
+        // out of `ResolverState` (empty success).
+        if matches!(self.arg.command, FsCommand::Build | FsCommand::Check)
+            && !self.arg.write_index
+            && !self.cli.common_args.no_write_index
+        {
+            let arg = self.arg.to_mut();
+            arg.write_metadata = true;
+            arg.write_index = true;
+            arg.write_index_implied = true;
+        }
+
         let (mut compilation, jinja_env, compilation_cache_changes) =
             self.load_and_resolve_state(token).await?;
 
@@ -1135,6 +1180,265 @@ impl<'a> AllPhasesExecutor<'a> {
                 token,
             )
             .await?;
+
+        // Check rows for `run_results.json`. Populated by the gate below and merged into the
+        // artifact after the graph runs, so a passing check still appears in the results.
+        let mut check_result_rows: Vec<dbt_schemas::schemas::RunResultOutput> = Vec::new();
+
+        // Parse-time checks run here: parse has finished, the parse layer is in the index, and the
+        // task graph has not been built yet. A failing check therefore needs no graph edges to stop
+        // anything — we simply do not proceed. `dbt check` and `dbt build` share this one call, so
+        // they cannot disagree about scoping or about what counts as a violation.
+        //
+        // Checks do not run on `dbt run` (or `test`, `compile`, `seed`, …): those commands share
+        // this same `execute_all_phases` pipeline, but a check is a project-quality gate on the
+        // build as a whole, not something a narrower command implicitly opts into. `command`, not
+        // `command_entrypoint`, because a retry rewrites `command` back to the original command
+        // (see the retry comment on `retrying` below), so a retried build/check still gates here.
+        //
+        // `parse_index_publish_failed` skips the gate entirely: checks are pure readers of the
+        // index, so with no current index every one of them would report `error` and drown the
+        // real cause. The publish already warned under `CheckIndexUnavailable`, which
+        // `warn_error_options` can promote to an error where the gate must be mandatory.
+        //
+        // `--no-write-index` (EvalArgs `write_index` false) is an opt-out, not a failure: skip
+        // with no warning. Emitting `CheckIndexUnavailable` would tell the user to undo the flag
+        // they just passed, and promoting that code would fail every opted-out build.
+        //
+        // `--skip-checks` is the same kind of opt-out for the gate itself: the user asked to
+        // skip, so do not warn. The index is still written.
+        if matches!(self.arg.command, FsCommand::Build | FsCommand::Check)
+            && !compilation.parse_index_publish_failed
+            && self.arg.write_index
+            && !self.arg.skip_checks
+        {
+            use dbt_tasks_sa::check::run_parse_time_checks;
+
+            let checks: Vec<_> = compilation
+                .resolved_state()
+                .nodes
+                .checks
+                .values()
+                .cloned()
+                .collect();
+            // A selector scopes a check's *rows*, never whether it runs, so `dbt check <name>`
+            // narrowing is applied here rather than by the scheduler.
+            //
+            // A check is a precondition, not work to redo, so `dbt retry` re-verifies all of
+            // them rather than only the ones that failed. Skipping the ones already recorded
+            // `pass` would make the gate bypassable: retry re-parses the project, so a `pass`
+            // from the original run describes a manifest that no longer exists. Verified — with
+            // narrowing in place, editing a model to violate a check and then retrying
+            // materialized it with exit 0, while a fresh `build` on the same tree exited 1.
+            //
+            // A retried `dbt check` still narrows, via `check_names`: it materializes nothing,
+            // so there is no gate to protect and it behaves like `dbt test` retry.
+            //
+            // `command` is rewritten to the original command during retry, so
+            // `command_entrypoint` is what still says how we were invoked.
+            let retrying = self.arg.command_entrypoint == FsCommand::Retry;
+            let named: Vec<_> = if self.arg.check_names.is_empty() {
+                checks
+            } else {
+                // A requested name matching no check at all (typo, or a check renamed since a
+                // failing run recorded it) must not be silently dropped: with every name unmatched
+                // this would otherwise leave `named` empty and skip the entire gate below, exiting
+                // 0 having verified nothing. A *disabled* check is a different case — naming one
+                // stays a no-op success, so it has to be told apart from a name that resolves to
+                // nothing, which is why the resolver records disabled checks rather than dropping
+                // them.
+                let known_names: HashSet<&str> = checks
+                    .iter()
+                    .map(|c| c.__common_attr__.name.as_str())
+                    .chain(
+                        compilation
+                            .resolved_state()
+                            .disabled_nodes
+                            .checks
+                            .values()
+                            .map(|c| c.__common_attr__.name.as_str()),
+                    )
+                    .collect();
+                let unknown_names: Vec<&str> = self
+                    .arg
+                    .check_names
+                    .iter()
+                    .map(|n| n.as_str())
+                    .filter(|n| !known_names.contains(n))
+                    .collect();
+                if !unknown_names.is_empty() {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidArgument,
+                        "no check named '{}'",
+                        unknown_names.join("', '")
+                    ));
+                }
+                checks
+                    .into_iter()
+                    .filter(|c| {
+                        self.arg
+                            .check_names
+                            .iter()
+                            .any(|n| *n == c.__common_attr__.name)
+                    })
+                    .collect()
+            };
+            if !named.is_empty() {
+                if let Some(reason) = dbt_tasks_sa::check::index_unavailable_reason(
+                    &self.arg.metadata_dir(),
+                    &self.arg.index_dir(),
+                ) {
+                    emit_warn_log_message(
+                        ErrorCode::CheckIndexUnavailable,
+                        format!("{reason}. Skipping checks..."),
+                    );
+                } else {
+                    // Naming checks explicitly (`dbt check <name>`, or a retry of failed checks) is a
+                    // request to *run those checks*, not to scope their rows — scoping them against a
+                    // selection that contains no models leaves nothing to report and yields a green
+                    // `skipped`, which is how a retry of a failing check came to exit 0.
+                    // Never on a retry: its schedule holds only the failed nodes, so scoping to it
+                    // would verify a fraction of the gate. (`to_command` does not restore the original
+                    // `--select`, so this is belt-and-braces, but the intent should be explicit.)
+                    let selection_active = !retrying
+                        && self.arg.check_names.is_empty()
+                        && (schedule.select.is_some() || schedule.exclude.is_some());
+                    let scope = dbt_tasks_sa::check::scope_for_selection(
+                        selection_active,
+                        schedule.selected_nodes.iter(),
+                    );
+                    let outcome = run_parse_time_checks(
+                        &named,
+                        &self.arg.index_dir(),
+                        &self.arg.metadata_dir(),
+                        scope.as_ref(),
+                        5,
+                    );
+
+                    for r in &outcome.results {
+                        match r.status {
+                            "pass" => emit_info_log_message(format!("  PASS  check  {}", r.name)),
+                            "skipped" => emit_warn_log_message(
+                                ErrorCode::CheckSkipped,
+                                format!(
+                                    "check '{}' skipped: {}",
+                                    r.name,
+                                    r.message.as_deref().unwrap_or("nothing in scope")
+                                ),
+                            ),
+                            _ => {
+                                let detail = r
+                                    .message
+                                    .as_deref()
+                                    .map(|m| format!("\n  {m}"))
+                                    .unwrap_or_default();
+                                let count = r
+                                    .violations
+                                    .map(|v| format!(" with {v} violation(s)"))
+                                    .unwrap_or_default();
+                                // Distinct codes per outcome so `warn_error_options` can target a
+                                // check without also catching every unrelated `Generic` warning.
+                                let (code, verb) = match r.status {
+                                    "fail" => (ErrorCode::CheckFailed, "failed"),
+                                    "warn" => (ErrorCode::CheckWarned, "found"),
+                                    _ => (
+                                        ErrorCode::CheckEvaluationFailed,
+                                        "could not be evaluated:",
+                                    ),
+                                };
+                                emit_warn_log_message(
+                                    code,
+                                    format!("check '{}' {verb}{count}{detail}", r.name),
+                                );
+                            }
+                        }
+                    }
+
+                    // `run_results.json` rows keyed `check.<project>.<name>`, which is what `dbt retry`
+                    // reads to decide what to re-run.
+                    check_result_rows = outcome
+                        .results
+                        .iter()
+                        .map(|r| {
+                            dbt_schemas::schemas::RunResultOutput::synthetic(
+                                r.unique_id.clone(),
+                                r.status,
+                                r.message.clone(),
+                                r.violations.map(|v| v as i64),
+                            )
+                        })
+                        .collect();
+
+                    if outcome.failed > 0 {
+                        // Persist before bailing: the usual artifact write happens after the task graph,
+                        // which never runs. Without this `dbt retry` has nothing to read and would
+                        // silently re-run everything instead of the checks that failed.
+                        if self.arg.write_json {
+                            let empty = dbt_schemas::stats::Stats {
+                                stats: Vec::new(),
+                                nodes: None,
+                                batch_results: Default::default(),
+                                compiled_code: Default::default(),
+                            };
+                            let mut artifact = build_run_results_artifact(
+                                &empty,
+                                &HashMap::new(),
+                                self.arg.as_ref(),
+                            );
+                            artifact.results = std::mem::take(&mut check_result_rows);
+                            // The graph never runs, so nothing else reports itself. Record what it
+                            // would have processed as `skipped`, which is retryable: without these
+                            // rows `dbt retry` sees only the check, and once the check is fixed it
+                            // reports "nothing to do" and exits 0 having built none of the models.
+                            // Only `build`: a plain `dbt check` materializes nothing even when it
+                            // passes, so there is nothing to mark skipped, and its own retry narrows
+                            // via `check_names` instead (see `retrying` above).
+                            if self.arg.command == FsCommand::Build {
+                                artifact.results.extend(
+                                    schedule
+                                        .selected_nodes
+                                        .iter()
+                                        .filter(|id| !id.starts_with("check."))
+                                        .map(|unique_id| {
+                                            dbt_schemas::schemas::RunResultOutput::synthetic(
+                                                unique_id.clone(),
+                                                "skipped",
+                                                Some(
+                                                    "skipped because a parse-time check failed"
+                                                        .to_string(),
+                                                ),
+                                                None,
+                                            )
+                                        }),
+                                );
+                            }
+                            write_run_results_json_or_warn(&artifact, self.arg.as_ref());
+                            self.captured_artifacts.run_results = Some(artifact);
+                        }
+
+                        // Stop before the graph is built: nothing downstream has run, so there is nothing
+                        // to skip or unwind.
+                        return Err(fs_err!(
+                            ErrorCode::CheckFailed,
+                            "{} parse-time check(s) failed; no models were compiled or built",
+                            outcome.failed
+                        ));
+                    }
+                }
+            }
+        }
+
+        // `dbt check` never needs the task graph: a check's rows are already scoped above, and
+        // nothing else in the project needs rendering, analyzing, or running to answer "did the
+        // checks pass". Emptying the schedule here — after create_schedule's own "nothing to do"
+        // warning has already had its one chance to fire against the *real* selection — means
+        // run_tasks does no Render/Analyze work and that warning path never re-runs to complain
+        // about the emptiness we are about to introduce.
+        let schedule = if self.arg.command == FsCommand::Check {
+            Schedule::default()
+        } else {
+            schedule
+        };
 
         // Validate show command selection before running any tasks.
         // Nodes present only because they were pulled in by ephemeral-ancestor expansion
@@ -1272,6 +1576,12 @@ impl<'a> AllPhasesExecutor<'a> {
         // Write run_results.json eagerly from real stats so that it persists
         // even if post-execution steps (did_run_tasks, update_manifest,
         // save_build_cache, did_compile, etc.) fail before the late write_json() call.
+        //
+        // Checks are not tasks, so their verdicts are not in `stats.run` — merge the rows the gate
+        // produced, keyed `check.<project>.<name>`, which is what `dbt retry` reads.
+        let mut run_results_artifact = run_results_artifact;
+        run_results_artifact.results.append(&mut check_result_rows);
+
         if self.arg.write_json && self.arg.command != FsCommand::Parse {
             write_run_results_json_or_warn(&run_results_artifact, self.arg.as_ref());
         }
@@ -1431,10 +1741,7 @@ impl<'a> AllPhasesExecutor<'a> {
                 .classifier_results(&run_task_results)
                 .await?;
 
-            let recomputed_targets: HashSet<String> = if matches!(
-                self.arg.command,
-                FsCommand::Compile | FsCommand::Build | FsCommand::Run
-            ) {
+            let recomputed_targets: HashSet<String> = if self.arg.command.compiles_project() {
                 run_task_results
                     .stats
                     .compile

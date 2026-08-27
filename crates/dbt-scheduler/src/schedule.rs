@@ -108,6 +108,7 @@ pub fn build_schedule(
         arg,
         adapter_type,
     )?;
+
     Ok(schedule)
 }
 

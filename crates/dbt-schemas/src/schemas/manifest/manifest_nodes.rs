@@ -30,8 +30,8 @@ use crate::schemas::serde::{bool_or_string_bool, string_or_number_to_string};
 type YmlValue = dbt_yaml::Value;
 
 use crate::schemas::{
-    AbsorbedOverload, CommonAttributes, DbtAnalysis, DbtExposure, DbtFunction, DbtModel, DbtSeed,
-    DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, NodeBaseAttributes,
+    AbsorbedOverload, CommonAttributes, DbtAnalysis, DbtCheck, DbtExposure, DbtFunction, DbtModel,
+    DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, NodeBaseAttributes,
     common::{
         Access, DbtChecksum, DbtContract, DbtMaterialization, DbtQuoting, Expect,
         FreshnessDefinition, Given, IncludeExclude, NodeDependsOn, PersistDocsConfig, SyncConfig,
@@ -51,9 +51,9 @@ use crate::schemas::{
     },
     nodes::{ExposureType, TestMetadata},
     project::{
-        AnalysesConfig, DataTestConfig, ExposureConfig, FunctionConfig, MetricConfig, ModelConfig,
-        SavedQueryConfig, SeedConfig, SemanticModelConfig, SnapshotConfig, SnapshotMetaColumnNames,
-        SourceConfig, UnitTestConfig,
+        AnalysesConfig, CheckConfig, DataTestConfig, ExposureConfig, FunctionConfig, MetricConfig,
+        ModelConfig, SavedQueryConfig, SeedConfig, SemanticModelConfig, SnapshotConfig,
+        SnapshotMetaColumnNames, SourceConfig, UnitTestConfig,
     },
     properties::{
         ModelConstraint, UnitTestOverrides,
@@ -1434,6 +1434,74 @@ impl From<DbtAnalysis> for ManifestAnalysis {
             persist_docs: analysis.__base_attr__.persist_docs.clone(),
             config: analysis.deprecated_config,
             __other__: analysis.__other__,
+        }
+    }
+}
+
+/// A check as it appears in `manifest.json`.
+///
+/// Deliberately narrower than the other node types: a check is never materialized and has no
+/// relation, so there is no `materialized`, `quoting`, `alias` or `relation_name` to record. `phase`
+/// is the resolved phase (configured or inferred), which is what a consumer needs to know when the
+/// check runs.
+#[skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ManifestCheck {
+    pub __common_attr__: ManifestMaterializableCommonAttributes,
+
+    pub __base_attr__: ManifestNodeBaseAttributes,
+
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub config: CheckConfig,
+}
+
+impl From<DbtCheck> for ManifestCheck {
+    fn from(check: DbtCheck) -> Self {
+        Self {
+            __common_attr__: ManifestMaterializableCommonAttributes {
+                unique_id: check.__common_attr__.unique_id,
+                database: check.__base_attr__.database,
+                schema: check.__base_attr__.schema,
+                name: check.__common_attr__.name,
+                package_name: check.__common_attr__.package_name,
+                fqn: check.__common_attr__.fqn,
+                path: check.__common_attr__.path,
+                original_file_path: check.__common_attr__.original_file_path,
+                patch_path: check.__common_attr__.patch_path,
+                description: check.__common_attr__.description,
+                tags: check.__common_attr__.tags,
+                classifiers: check.__common_attr__.classifiers,
+                meta: check.__common_attr__.meta,
+            },
+            __base_attr__: ManifestNodeBaseAttributes {
+                alias: check.__base_attr__.alias,
+                relation_name: check.__base_attr__.relation_name,
+                columns: check.__base_attr__.columns,
+                depends_on: check.__base_attr__.depends_on,
+                refs: check.__base_attr__.refs,
+                sources: check.__base_attr__.sources,
+                metrics: check.__base_attr__.metrics,
+                raw_code: check.__common_attr__.raw_code,
+                compiled: None,
+                compiled_code: None,
+                checksum: check.__common_attr__.checksum,
+                language: check.__common_attr__.language,
+                unrendered_config: Default::default(),
+                doc_blocks: Default::default(),
+                extra_ctes_injected: Default::default(),
+                extra_ctes: Default::default(),
+                created_at: Default::default(),
+                compiled_path: Default::default(),
+                build_path: Default::default(),
+                contract: Default::default(),
+                functions: check.__base_attr__.functions,
+                static_analysis_off_reason: check.__base_attr__.static_analysis_off_reason,
+            },
+            enabled: check.__base_attr__.enabled,
+            config: check.deprecated_config,
         }
     }
 }

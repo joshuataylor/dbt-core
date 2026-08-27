@@ -1000,6 +1000,14 @@ pub async fn load_inner(
         &all_files,
     );
 
+    let check_ymls = find_files_by_kind_and_extension(
+        package_path,
+        &dbt_project.name,
+        &ResourcePathKind::CheckPaths,
+        &["yml", "yaml"],
+        &all_files,
+    );
+
     // todo: change dbt_properties to be BTreeSet, this may require many goldies updates
     for item in seed_ymls
         .iter()
@@ -1008,6 +1016,7 @@ pub async fn load_inner(
         .chain(&test_ymls)
         .chain(&function_ymls)
         .chain(&macro_ymls)
+        .chain(&check_ymls)
     {
         if !dbt_properties.contains(item) {
             dbt_properties.push(item.clone());
@@ -1019,6 +1028,13 @@ pub async fn load_inner(
         package_path,
         &dbt_project.name,
         &ResourcePathKind::AnalysisPaths,
+        &["sql"],
+        &all_files,
+    );
+    let check_files = find_files_by_kind_and_extension(
+        package_path,
+        &dbt_project.name,
+        &ResourcePathKind::CheckPaths,
         &["sql"],
         &all_files,
     );
@@ -1110,6 +1126,7 @@ pub async fn load_inner(
         package_root_path: package_path.to_path_buf(),
         dbt_properties,
         analysis_files,
+        check_files,
         model_sql_files,
         function_sql_files: function_files,
         test_files,
@@ -1293,6 +1310,10 @@ fn collect_paths(dbt_project: &DbtProject) -> HashMap<ResourcePathKind, Vec<Stri
     all_dirs.insert(
         ResourcePathKind::AssetPaths,
         dbt_project.asset_paths.clone().unwrap_or_default(),
+    );
+    all_dirs.insert(
+        ResourcePathKind::CheckPaths,
+        dbt_project.check_paths.clone().unwrap_or_default(),
     );
     all_dirs.insert(
         ResourcePathKind::FunctionPaths,

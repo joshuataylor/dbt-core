@@ -95,7 +95,7 @@ use dbt_tasks_sa::{
     run_operation::{INLINE_SQL_NAME, run_operation, run_operation_inline_sql},
 };
 use dbt_tasks_sa::{graph::GraphBuilder, utils::typecheck_macros};
-use dbt_telemetry::{ExecutionPhase, PhaseExecuted, ShowResult};
+use dbt_telemetry::{ExecutionPhase, NodeType, PhaseExecuted, ShowResult};
 
 use std::{
     borrow::Cow,
@@ -146,6 +146,7 @@ struct CompilationPhasesExecutor<'a> {
     cli: Cow<'a, Cli>,
     lazy_dbt_manifest: OnceLock<DbtManifestV12>,
     catalog_artifact: Option<DbtCatalog>,
+    parse_index_publish_failed: bool,
     token: CancellationToken,
 }
 
@@ -156,6 +157,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             cli,
             lazy_dbt_manifest: OnceLock::new(),
             catalog_artifact: None,
+            parse_index_publish_failed: false,
             token,
         }
     }
@@ -376,6 +378,76 @@ impl<'a> CompilationPhasesExecutor<'a> {
         }
     }
 
+    /// Publish the parse-derived index early, so the parse-time check gate has something current to
+    /// read before the task graph is built.
+    ///
+    /// Checks are pure readers — they never bring the index up to date themselves (per-check catch-up
+    /// raced sibling readers and produced an index the invocation was never asked for), so the
+    /// invocation has to publish before they run. Without this the index only appears at the very end
+    /// and every check is skipped as stale, i.e. exactly when it matters.
+    ///
+    /// Persisting the ingest state is required rather than optional: `index_is_current` — which the
+    /// gate consults before querying — reads it to decide whether the index reflects the metadata
+    /// written so far. Without it the index looks stale and the checks skip regardless.
+    ///
+    /// # Why this is not keyed on `write_index` alone
+    ///
+    /// The trigger is "will anything read the index before this invocation ends", not "is the index
+    /// being written at all". An early publish is a second ingest pass over the parse layer, and the
+    /// only mid-invocation reader is the check gate in `execute_all_phases`, which runs on
+    /// `build`/`check` only — everything else is served by the single end-of-invocation ingest.
+    ///
+    /// Consuming the parse epochs here does *not* cost that later ingest its `compiled_code` column:
+    /// when the parse layer has not moved, `apply_delta_direct` applies the compile epoch to the node
+    /// rows already on disk instead of rebuilding them. See `crates/dbt-index/DESIGN.md`.
+    fn publish_parse_index(&mut self, resolved_state: &ResolverState) {
+        // `write_index` is still consulted, just not as the *trigger*: `--no-write-index` clears it
+        // (see `effective_write_index`), and an explicit opt-out has to win even here. The gate
+        // then skips because `write_index` is false — no `CheckIndexUnavailable`, that code is for
+        // a write that was requested and failed.
+        //
+        // `nodes.checks` is enabled-only (`resolve_checks` inserts a node only when enabled), so an
+        // empty map means nothing will read the parse layer early even on `build`/`check`.
+        // `--skip-checks` likewise: the gate will not run, so skip the extra ingest. The
+        // end-of-invocation index write still happens because `write_index` stays true.
+        if !self.arg.write_index
+            || self.arg.skip_checks
+            || !matches!(self.arg.command, FsCommand::Build | FsCommand::Check)
+            || resolved_state.nodes.checks.is_empty()
+        {
+            return;
+        }
+        let metadata_dir = self.arg.metadata_dir();
+        let index_dir = self.arg.index_dir();
+        let mut state = IngestState::default();
+        match ingest_from_metadata_direct(&metadata_dir, &index_dir, &mut state) {
+            Ok(_) => {
+                if let Err(e) = save_artifact_meta(
+                    &index_dir,
+                    &self.arg.io.out_dir,
+                    WriteSource::DirectWrite,
+                    None,
+                ) {
+                    emit_warn_log_message(
+                        ErrorCode::Generic,
+                        format!("dbt-index: save_artifact_meta: {e}"),
+                    );
+                }
+            }
+            Err(e) => {
+                // Checks read the index and never build it, so a failed publish leaves them
+                // nothing current to query. Skipping them keeps the build going rather than
+                // failing it on infrastructure; `warn_error_options` can promote this code to
+                // an error for projects that want the gate to be mandatory.
+                self.parse_index_publish_failed = true;
+                emit_warn_log_message(
+                    ErrorCode::CheckIndexUnavailable,
+                    format!("failed to write index: {e}. Skipping checks..."),
+                )
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn maybe_write_json_and_exit(
         &mut self,
@@ -422,11 +494,13 @@ impl<'a> CompilationPhasesExecutor<'a> {
         //
         // Also when the index is being written, even if partial parse is off: these epochs are
         // the input the index ingest converts into the `dbt.*` layers, so without them the
-        // ingest finds nothing to convert and leaves a half-built index (run_results only).
-        // Reading `EvalArgs` here rather than the raw `CommonArgs` is what lets `build` default
-        // the index on without also turning incremental reuse on — the two read sites below
-        // stay on `effective_partial_parse()`. Writing this state and *consuming* it to skip
-        // work are separable, and only the consuming side carries the staleness risk.
+        // ingest finds nothing to convert and leaves a half-built index (run_results only). This
+        // is also how `dbt check` reaches here without the raw `--write-index` CLI flag — it
+        // implies writing the index via `EvalArgs` instead. Reading `EvalArgs` here rather than
+        // the raw `CommonArgs` is what lets `build` default the index on without also turning
+        // incremental reuse on — the two read sites below stay on `effective_partial_parse()`.
+        // Writing this state and *consuming* it to skip work are separable, and only the
+        // consuming side carries the staleness risk.
         if self.cli.common_args.effective_partial_parse() || self.arg.write_index {
             let dbt_state = loaded_project.dbt_state();
             let env_vars = dbt_jinja_utils::utils::ENV_VARS
@@ -450,6 +524,8 @@ impl<'a> CompilationPhasesExecutor<'a> {
                     feature_stack.jinja.factory.clone(),
                 );
             }
+
+            self.publish_parse_index(resolved_state);
         }
 
         // check if command is parse and write catalog.json
@@ -703,6 +779,9 @@ pub struct DbtProjectCompilation {
     pub(crate) file_kind_registry: CompleteStateWithKind,
     pub(crate) metricflow_server_client: Option<Arc<dyn MetricflowClient>>,
     pub(crate) catalog_artifact: Option<DbtCatalog>,
+    /// The parse-phase index publish failed, so parse-time checks have no current index to read
+    /// and are skipped.
+    pub(crate) parse_index_publish_failed: bool,
     /// --state
     pub(crate) previous_state: Option<Arc<StateArtifacts>>,
     pub(crate) invocation_id: String,
@@ -720,6 +799,12 @@ pub struct DbtProjectCompilationCacheState {
 }
 
 impl DbtProjectCompilationCacheState {
+    /// The compiled-SQL cache, so post-graph work can read what render tasks produced rather than
+    /// re-rendering or reading rendered SQL off a node.
+    pub fn compiled_sql_cache(&self) -> Arc<dyn CompiledSqlCache> {
+        self.compiled_sql_cache.clone()
+    }
+
     pub fn schema_exists_by_unique_id(&self, unique_id: &str) -> bool {
         self.schema_store.exists_by_unique_id(unique_id)
     }
@@ -1446,6 +1531,7 @@ impl DbtProjectCompilation {
                 file_kind_registry,
                 metricflow_server_client,
                 catalog_artifact: executor.catalog_artifact.take(),
+                parse_index_publish_failed: executor.parse_index_publish_failed,
                 previous_state: maybe_previous_state,
                 invocation_id,
                 partial_load_filter_applied: false,
@@ -1586,12 +1672,17 @@ impl DbtProjectCompilation {
         if schedule.selected_nodes.is_empty() {
             // Only warn for commands where selection matters (not for parse, list, pull, etc.)
             let command = arg.command;
+            // `Check` too: its schedule is deliberately emptied after the parse-time gate passes
+            // (nothing else needs rendering/analyzing/running to answer "did the checks pass"),
+            // and that emptiness is not a "nothing to do" mistake worth surfacing here -- a
+            // check's own pass/fail/skip line is check's actual "did anything happen" signal.
             if !matches!(
                 command,
                 FsCommand::Parse
                     | FsCommand::List
                     | FsCommand::RunOperation
                     | FsCommand::Source
+                    | FsCommand::Check
                     | FsCommand::Extension("pull")
             ) {
                 // For the Show command, check if the selector matches a macro file.
@@ -2175,18 +2266,22 @@ impl DbtProjectCompilation {
             compare_task_graph_builder,
         );
 
-        // Increment counters used in final run reporting
+        // Increment counters used in final run reporting.
+        // Checks are not graph work. Counting every selected check here reports them as
+        // "Processed" even when the parse-time gate never ran (`--skip-checks`,
+        // `--no-write-index`, or a failed index publish).
+        let count_checks = !arg.skip_checks && arg.write_index && !self.parse_index_publish_failed;
         schedule.selected_nodes.iter().for_each(|unique_id| {
-            increment_metric(
-                FusionMetricKey::NodeCounts(
-                    self.resolved_state
-                        .nodes
-                        .get_node(unique_id)
-                        .expect("Node must exist")
-                        .resource_type(),
-                ),
-                1,
-            )
+            let node_type = self
+                .resolved_state
+                .nodes
+                .get_node(unique_id)
+                .expect("Node must exist")
+                .resource_type();
+            if node_type == NodeType::Check && !count_checks {
+                return;
+            }
+            increment_metric(FusionMetricKey::NodeCounts(node_type), 1);
         });
 
         let hooks = task_runner_hooks_factory.create(

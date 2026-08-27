@@ -503,6 +503,7 @@ pub fn construct_internal_packages(
             dependencies: BTreeSet::new(),
             dbt_properties: vec![],
             analysis_files: vec![],
+            check_files: vec![],
             model_sql_files: vec![],
             function_sql_files: vec![],
             test_files: vec![],
@@ -513,6 +514,7 @@ pub fn construct_internal_packages(
             all_paths: HashMap::from([
                 (ResourcePathKind::ModelPaths, vec![]),
                 (ResourcePathKind::AnalysisPaths, vec![]),
+                (ResourcePathKind::CheckPaths, vec![]),
                 (ResourcePathKind::AssetPaths, vec![]),
                 (ResourcePathKind::DocsPaths, vec![]),
                 (ResourcePathKind::MacroPaths, vec![]),
@@ -532,6 +534,7 @@ pub fn construct_internal_packages(
 pub fn build_internal_dbt_project(mut dbt_project: DbtProject) -> FsResult<DbtProject> {
     fill_default(&mut dbt_project.analysis_paths, &["analysis", "analyses"]);
     fill_default(&mut dbt_project.asset_paths, &["assets"]);
+    fill_default(&mut dbt_project.check_paths, &["checks"]);
     fill_default(&mut dbt_project.function_paths, &["functions"]);
     fill_default(&mut dbt_project.macro_paths, &["macros"]);
     fill_default(&mut dbt_project.model_paths, &["models"]);

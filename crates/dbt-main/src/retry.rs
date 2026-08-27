@@ -17,7 +17,9 @@ pub const RETRYABLE_STATUSES: &[&str] = &["error", "fail", "skipped"];
 /// `if args.warn_error: RETRYABLE_STATUSES.add(NodeStatus.Warn)`.
 pub const WARN_ERROR_RETRYABLE_STATUSES: &[&str] = &["warn"];
 
-pub const RETRIABLE_COMMANDS: &[&str] = &["run", "build", "test", "seed", "snapshot", "compile"];
+pub const RETRIABLE_COMMANDS: &[&str] = &[
+    "run", "build", "test", "seed", "snapshot", "compile", "check",
+];
 
 /// Holds the state extracted from a previous run's run_results.json
 /// needed to execute a retry command.
@@ -171,6 +173,24 @@ impl RetryState {
                 full_refresh,
                 ..CompileArgs::default()
             }),
+            "check" => {
+                // Re-run exactly the checks that failed, by name. Each failed
+                // check was recorded under the key `check.<project>.<name>`;
+                // take the check name (everything after the second `.`, so a
+                // name containing a dot survives). Keys that don't fit (e.g. a
+                // legacy artifact) drop out, and retry then runs all discovered
+                // checks.
+                let check_names = self
+                    .retryable_node_ids
+                    .iter()
+                    .filter_map(|id| id.splitn(3, '.').nth(2).map(str::to_string))
+                    .collect();
+                CoreCommand::Check(CheckArgs {
+                    check_names,
+                    common_args,
+                    static_analysis,
+                })
+            }
             other => {
                 debug_assert!(!RETRIABLE_COMMANDS.contains(&other));
                 return Err(other.to_string());
@@ -311,6 +331,35 @@ expected_sa: {expected_sa:?}",
         let file = create_run_results_json(&[("model.my_project.model_a", "error")], "build");
         let state = RetryState::from_run_results(file.path(), false).unwrap();
         assert!(!state.original_full_refresh);
+    }
+
+    #[test]
+    fn test_retry_check_decodes_check_names_from_recorded_ids() {
+        let state = RetryState {
+            original_command: "check".into(),
+            retryable_node_ids: vec![
+                "check.my_project.no_undocumented_models".to_string(),
+                // A check name that itself contains a dot must survive decoding.
+                "check.my_project.pii.not_leaked".to_string(),
+            ],
+            original_static_analysis: None,
+            previous_batch_results: Default::default(),
+            original_full_refresh: false,
+        };
+        let retry_args = RetryArgs {
+            common_args: CommonArgs::default(),
+            static_analysis: None,
+        };
+        match state.to_command(&retry_args).unwrap() {
+            CoreCommand::Check(args) => assert_eq!(
+                args.check_names,
+                vec![
+                    "no_undocumented_models".to_string(),
+                    "pii.not_leaked".to_string(),
+                ]
+            ),
+            other => panic!("expected Check, got {other:?}"),
+        }
     }
 
     #[test]

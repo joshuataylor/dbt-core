@@ -240,6 +240,31 @@ fn cold_ingest(
     Ok(total)
 }
 
+/// Whether `index_dir` already reflects everything written to `metadata_dir`.
+///
+/// The read-only counterpart to [`apply_delta_direct`]: this is true in exactly the cases where
+/// that function would return `Ok(0)` without writing. Keep the two conditions in step — if they
+/// drift, a caller either queries a stale index or refuses a current one.
+///
+/// Returns false when there is no ingest state to read, which covers both "no index" and "a
+/// directory of parquet that no ingest ever vouched for".
+///
+/// Used by callers that must not write, notably the in-graph check task: checks are pure readers of
+/// the index, so they need to ask whether it is safe to query rather than bringing it up to date
+/// themselves.
+pub fn index_is_current(metadata_dir: &Path, index_dir: &Path) -> bool {
+    let Some(state) = load_state(index_dir) else {
+        return false;
+    };
+    // Compare at microsecond precision — state is persisted as µs, OS mtime is ns.
+    let current_us: Option<u64> = std::fs::metadata(metadata_dir.join(PARSE_ALIVE))
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(mtime_us);
+    let stored_us: Option<u64> = state.alive_mtime.and_then(mtime_us);
+    current_us == stored_us && !has_unseen_compile_epochs(metadata_dir, &state)
+}
+
 /// Incremental delta ingest: reads only new epochs since last run,
 /// merges into existing index_dir parquet files.
 pub fn apply_delta_direct(
@@ -273,6 +298,27 @@ pub fn apply_delta_direct(
 
     let alive_ids = load_alive_ids(metadata_dir);
 
+    if !alive_changed {
+        // Parse layer unchanged, but compile epochs landed since the last ingest — the case where
+        // an earlier publish in this same invocation already consumed the parse epochs (the index
+        // is published right after parse, then the end-of-invocation ingest arrives here).
+        //
+        // `write_parse_nodes` cannot do this pass: it applies the compile map while *constructing*
+        // node rows from parse epochs, and it filters to epochs newer than
+        // `last_epoch_for(PARSE_NODES_SUBDIR)`, which the earlier publish already advanced past
+        // every parse epoch. It would see no new epochs and write nothing, leaving `compiled_code`
+        // NULL for the rest of the index's life.
+        //
+        // So apply the compile layer to the rows already on disk instead, exactly as the DuckDB
+        // ingest does with `UPDATE dbt.nodes … FROM read_parquet(…)`. Nothing else in the index
+        // reads the parse epochs a second time, so `edges`, `docs`, `macros` and the rest are left
+        // untouched rather than rewritten with identical content and a fresh `ingested_at`.
+        let compile_map = load_compile_nodes_map(metadata_dir, state, false)?;
+        if !compile_map.is_empty() {
+            total += writer.merge_compiled_nodes_into_nodes(&compile_map)?;
+        }
+    }
+
     if alive_changed {
         let compile_map = load_compile_nodes_map(metadata_dir, state, false)?;
         total += write_parse_nodes(
@@ -284,6 +330,17 @@ pub fn apply_delta_direct(
             &compile_map,
             alive_ids.as_ref(),
         )?;
+        // `write_parse_nodes` applied the map only to the rows it rebuilt, i.e. to nodes that were
+        // *reparsed*. Compile recompiles everything downstream of a change, so a node routinely
+        // appears in the compile epoch without appearing in the parse delta — editing one model
+        // recompiles its children while reparsing only itself. Those rows are carried forward
+        // untouched, keeping the previous run's `compiled_code`, and the compile epoch is marked
+        // consumed, so nothing would ever revisit them.
+        //
+        // Applying the map a second time here covers them. Rows that already hold these values are
+        // left alone and the whole call writes nothing, so the common case where the compile epoch
+        // and the parse delta name the same nodes costs a read.
+        total += writer.merge_compiled_nodes_into_nodes(&compile_map)?;
         total += write_parse_columns(
             &mut writer,
             metadata_dir,
@@ -1292,6 +1349,7 @@ pub fn extract_parse_nodes_batch(
                 | "test"
                 | "operation"
                 | "function"
+                | "check"
         );
 
         if write_to_nodes {

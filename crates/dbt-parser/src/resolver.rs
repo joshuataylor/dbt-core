@@ -57,6 +57,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::resolve::resolve_analyses::resolve_analyses;
+use crate::resolve::resolve_checks::resolve_checks;
 use crate::resolve::resolve_exposures::resolve_exposures;
 use crate::resolve::resolve_functions::resolve_functions;
 use crate::resolve::resolve_macros::apply_macro_patches;
@@ -900,6 +901,27 @@ pub async fn resolve_inner(
     .await?;
     nodes.analyses.extend(analyses);
 
+    // Resolve checks
+    let (checks, disabled_checks, checks_rendering_results) = resolve_checks(
+        arg,
+        package,
+        package_quoting,
+        dbt_state.root_package(),
+        root_project_configs,
+        &mut min_properties.checks,
+        database,
+        schema,
+        adapter_type,
+        package_name,
+        jinja_env.clone(),
+        &base_ctx,
+        runtime_config.clone(),
+        token,
+    )
+    .await?;
+    nodes.checks.extend(checks);
+    disabled_nodes.checks.extend(disabled_checks);
+
     // Resolve functions
     let (functions, functions_rendering_results) = resolve_functions(
         arg,
@@ -1054,6 +1076,7 @@ pub async fn resolve_inner(
         rendering_results: rendering_results
             .into_iter()
             .chain(analyses_rendering_results)
+            .chain(checks_rendering_results)
             .chain(functions_rendering_results)
             .collect(),
     };

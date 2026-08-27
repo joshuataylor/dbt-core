@@ -359,6 +359,16 @@ fn composite_key(row: &Map<String, Value>, key_cols: &[&str]) -> Option<String> 
     Some(key)
 }
 
+fn opt_str(v: &Option<String>) -> Value {
+    v.as_ref()
+        .map(|s| Value::String(s.clone()))
+        .unwrap_or(Value::Null)
+}
+
+fn str_array(v: &[String]) -> Value {
+    Value::Array(v.iter().map(|s| Value::String(s.clone())).collect())
+}
+
 /// Apply `CarryForward` merge: for rows in `new_rows` where a carry column is NULL,
 /// copy the value from `old_rows` (matched by composite `key_cols`).
 fn merge_carry_forward(
@@ -886,6 +896,86 @@ impl IndexWriter {
         std::fs::rename(&tmp, &path)?;
         self.count += 1;
         Ok(())
+    }
+
+    /// Update the compile-filled columns on an existing `dbt.nodes` parquet, keyed by `unique_id`.
+    ///
+    /// The counterpart of the join `write_parse_nodes` performs when it builds node rows: same
+    /// eight fields, same source, but applied to rows that already exist rather than to rows being
+    /// constructed. That distinction is the point — it makes the compile layer applicable whenever
+    /// it happens to land, instead of only while the parse epochs are still unconsumed.
+    ///
+    /// Mirrors the DuckDB path's `UPDATE dbt.nodes SET compiled_code = src.compiled_code, … FROM
+    /// read_parquet(…) WHERE dbt.nodes.unique_id = src.unique_id`, including its `WHERE`: a node
+    /// absent from `compile_map` is left exactly as it is, so a partial compile extends the index
+    /// rather than truncating it. `classifiers` is updated here but not in the DuckDB statement,
+    /// because on this path it is the compile epoch that populates it.
+    ///
+    /// Rows whose compile columns already hold these values are left alone, and a call that changes
+    /// nothing writes no file. That makes it safe to call unconditionally after `write_parse_nodes`,
+    /// which has usually applied the same map to the subset of nodes it rebuilt.
+    ///
+    /// Returns the number of rows changed.
+    pub fn merge_compiled_nodes_into_nodes(
+        &mut self,
+        compile_map: &crate::ingest::metadata_to_parquet::CompileMap,
+    ) -> Result<usize, IndexError> {
+        fn set_if_changed(row: &mut Map<String, Value>, col: &str, val: Value, changed: &mut bool) {
+            if row.get(col) != Some(&val) {
+                row.insert(col.to_string(), val);
+                *changed = true;
+            }
+        }
+
+        let table = "nodes";
+        let path = self.index_dir.join(format!("dbt.{table}.parquet"));
+        let Some(existing) = read_parquet_rows(&path)? else {
+            return Ok(0);
+        };
+
+        let mut updated = 0usize;
+        let mut rows: Vec<Value> = Vec::with_capacity(existing.len());
+        for mut row in existing {
+            let uid = row
+                .get("unique_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if let Some(c) = compile_map.get(&uid) {
+                let mut changed = false;
+                let r = &mut row;
+                set_if_changed(r, "compiled_code", opt_str(&c.compiled_code), &mut changed);
+                set_if_changed(
+                    r,
+                    "compiled_code_hash",
+                    opt_str(&c.compiled_code_hash),
+                    &mut changed,
+                );
+                set_if_changed(r, "compiled_path", opt_str(&c.compiled_path), &mut changed);
+                set_if_changed(r, "grain", str_array(&c.grain), &mut changed);
+                set_if_changed(
+                    r,
+                    "grain_declared",
+                    str_array(&c.grain_declared),
+                    &mut changed,
+                );
+                set_if_changed(r, "grain_tested", str_array(&c.grain_tested), &mut changed);
+                set_if_changed(r, "classifiers", str_array(&c.classifiers), &mut changed);
+                set_if_changed(r, "table_role", opt_str(&c.table_role), &mut changed);
+                if changed {
+                    row.insert("ingested_at".to_string(), Value::String(self.now.clone()));
+                    updated += 1;
+                }
+            }
+            rows.push(Value::Object(row));
+        }
+
+        if updated == 0 {
+            return Ok(0);
+        }
+        write_table(&path, schema_for(table), &rows)?;
+        self.count += 1;
+        Ok(updated)
     }
 
     /// Merge compile-column data into an existing `node_columns` parquet file.

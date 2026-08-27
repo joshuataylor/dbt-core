@@ -19,9 +19,9 @@ use dbt_schemas::state::ProfileAdapter;
 use crate::resolve::resolve_utils::authored_quoting_per_adapter;
 use dbt_schemas::schemas::{
     project::{
-        AnalysesConfig, DataTestConfig, ExposureConfig, FunctionConfig, MetricConfig, ModelConfig,
-        ResolvableConfig, SavedQueryConfig, SeedConfig, SemanticModelConfig, SnapshotConfig,
-        SourceConfig, TypedRecursiveConfig, UnitTestConfig,
+        AnalysesConfig, CheckConfig, DataTestConfig, ExposureConfig, FunctionConfig, MetricConfig,
+        ModelConfig, ResolvableConfig, SavedQueryConfig, SeedConfig, SemanticModelConfig,
+        SnapshotConfig, SourceConfig, TypedRecursiveConfig, UnitTestConfig,
     },
     serde::yaml_to_fs_error,
 };
@@ -511,6 +511,8 @@ pub struct RootProjectConfigs {
     pub analyses: DbtProjectConfig<AnalysesConfig>,
     /// Function configs
     pub functions: DbtProjectConfig<FunctionConfig>,
+    /// Check configs
+    pub checks: DbtProjectConfig<CheckConfig>,
     /// Authored identifier quoting per declared adapter name — the adapter's
     /// `adapters:` entry, plus the top-level `quoting:` block for the target's
     /// default adapter only. Left unresolved so node config still wins over it.
@@ -610,6 +612,7 @@ pub fn build_root_project_configs(
             None,
             disallow_plus_prefix,
         )?,
+        checks: init_project_config(&root_project.checks, (), None, disallow_plus_prefix)?,
         adapter_quoting: authored_quoting_per_adapter(
             root_project.adapters.as_ref(),
             target_adapters,

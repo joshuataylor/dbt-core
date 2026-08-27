@@ -211,6 +211,13 @@ impl JinjaEnv {
         self.env.get_global(name)
     }
 
+    /// Register a global value (e.g. a helper function) available to every
+    /// template rendered by this environment. Clone the environment first if
+    /// you want the global scoped to a single render pass.
+    pub fn add_global(&mut self, name: &str, value: Value) {
+        self.env.add_global(name.to_string(), value);
+    }
+
     /// Compile an expression.
     pub fn compile_expression<'a>(&self, expr: &'a str) -> FsResult<JinjaExpression<'_, 'a>> {
         Ok(JinjaExpression(self.env.compile_expression(expr).map_err(

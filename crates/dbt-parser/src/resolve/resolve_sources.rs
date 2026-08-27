@@ -293,12 +293,6 @@ pub async fn resolve_sources(
             dependency_package_name,
             true,
         )?;
-        let database: String = source
-            .database
-            .clone()
-            .or_else(|| source.catalog.clone())
-            .unwrap_or_else(|| database.to_owned());
-        let schema = source.schema.clone().unwrap_or_else(|| source.name.clone());
 
         let fqn = get_node_fqn(
             package_name,
@@ -354,17 +348,8 @@ pub async fn resolve_sources(
         table_quoting.default_to(&source_default_quoting);
         let quoting_ignore_case = table_quoting.snowflake_ignore_case.unwrap_or(false);
 
-        // Preserve the raw user-provided identifier (including any embedded quote
-        // characters) for `__source_attr__.identifier`. dbt-core stores this verbatim
-        // and packages such as `zendesk` rely on `source(...).identifier` round-tripping
-        // through Jinja — see `union_zendesk_connections` calling
-        // `adapter.get_relation(identifier=source(...).identifier)`. Stripping the
-        // quotes here would turn `"GROUP"` into `GROUP` and produce SQL that fails on
-        // reserved-keyword tables in Snowflake.
-        let raw_identifier = table
-            .identifier
-            .clone()
-            .unwrap_or_else(|| table_name.to_owned());
+        let (database, schema, raw_identifier) =
+            resolve_relation_parts(&source, &table, &table_name, database);
         let (database, schema, identifier, quoting) = normalize_quoting(
             &table_quoting.try_into()?,
             adapter_type,
@@ -633,6 +618,38 @@ fn merge_table_into_schema_config(
     Ok(table_as_source)
 }
 
+fn resolve_relation_parts(
+    source: &SourceProperties,
+    table: &Tables,
+    table_name: &str,
+    default_database: &str,
+) -> (String, String, String) {
+    let database: String = source
+        .database
+        .clone()
+        .or_else(|| source.catalog.clone())
+        .unwrap_or_else(|| default_database.to_owned());
+    let schema = source
+        .schema
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| source.name.clone());
+
+    // Preserve the raw user-provided identifier (including any embedded quote
+    // characters) for `__source_attr__.identifier`. dbt-core stores this verbatim
+    // and packages such as `zendesk` rely on `source(...).identifier` round-tripping
+    // through Jinja — see `union_zendesk_connections` calling
+    // `adapter.get_relation(identifier=source(...).identifier)`. Stripping the
+    // quotes here would turn `"GROUP"` into `GROUP` and produce SQL that fails on
+    // reserved-keyword tables in Snowflake.
+    let raw_identifier = table
+        .identifier
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| table_name.to_owned());
+    (database, schema, raw_identifier)
+}
+
 /// Resolved (`loaded_at_field`, `loaded_at_query`) pair after merging
 /// table-level config over source-level config. Either value may be empty
 /// (downstream treats `""` and `None` as "no freshness on this dimension").
@@ -800,6 +817,100 @@ mod tests {
     use super::*;
     use dbt_jinja_utils::serde::Omissible;
     use dbt_schemas::schemas::common::{FreshnessDefinition, FreshnessPeriod, FreshnessRules};
+
+    fn source_with(name: &str, schema: Option<&str>) -> SourceProperties {
+        SourceProperties {
+            config: None,
+            database: None,
+            schema: schema.map(str::to_string),
+            catalog: None,
+            description: None,
+            loader: None,
+            name: name.to_string(),
+            quoting: None,
+            tables: None,
+        }
+    }
+
+    fn table_with(name: &str, identifier: Option<&str>) -> Tables {
+        Tables {
+            columns: None,
+            config: None,
+            data_tests: None,
+            description: None,
+            external: None,
+            identifier: identifier.map(str::to_string),
+            loader: None,
+            name: name.to_string(),
+            quoting: None,
+            tests: None,
+        }
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_schema_omitted_defaults_to_source_name() {
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", None);
+        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(schema, "dummy_src");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_schema_explicit_empty_defaults_to_source_name() {
+        let source = source_with("dummy_src", Some(""));
+        let table = table_with("src", None);
+        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(schema, "dummy_src");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_schema_explicit_non_empty_is_kept() {
+        let source = source_with("dummy_src", Some("custom_schema"));
+        let table = table_with("src", None);
+        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(schema, "custom_schema");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_identifier_omitted_defaults_to_table_name() {
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", None);
+        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(identifier, "src");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_identifier_explicit_empty_defaults_to_table_name() {
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", Some(""));
+        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(identifier, "src");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_identifier_explicit_non_empty_is_kept() {
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", Some("custom_identifier"));
+        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(identifier, "custom_identifier");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_database_omitted_defaults_to_default_database() {
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", None);
+        let (database, _, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(database, "default_db");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_database_explicit_empty_is_kept() {
+        let mut source = source_with("dummy_src", None);
+        source.database = Some(String::new());
+        let table = table_with("src", None);
+        let (database, _, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        assert_eq!(database, "");
+    }
 
     #[test]
     fn test_merge_freshness_unwrapped_update_overrides_base() {

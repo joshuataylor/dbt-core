@@ -54,6 +54,7 @@ use dbt_common::{
     artifact_io::write_artifact_to_file,
     cancellation::CancellationToken,
     constants::{DBT_MANIFEST_JSON, DBT_SEMANTIC_MANIFEST_JSON},
+    fail_fast::FailFast,
     fs_err,
     io_args::{
         EvalArgs, EvalArgsBuilder, ListOutputFormat, Phases, ShowOptions,
@@ -119,11 +120,10 @@ use dbt_telemetry::{ArtifactType, ListItemOutput};
 
 use std::{sync::Arc, time::SystemTime};
 
-use serde_json::to_string_pretty;
-
 use crate::utils::update_manifest_with_macro_depends_on;
-
+use dbt_common::io_args::LocalExecutionBackendKind;
 use dbt_schemas::state::NodeResolverTracker;
+use serde_json::to_string_pretty;
 
 fn should_skip_tasks_when_no_selected_nodes(
     command: &FsCommand,
@@ -784,6 +784,8 @@ pub struct DbtProjectCompilation {
     pub(crate) parse_index_publish_failed: bool,
     /// --state
     pub(crate) previous_state: Option<Arc<StateArtifacts>>,
+    /// Request context for service-backed state selection when no local state is available.
+    pub(crate) run_cache_state_selector_args: Option<RunCacheStateSelectorArgs>,
     pub(crate) invocation_id: String,
     /// True when --partial-load actually applied a unique_id filter to the cache load
     /// (either via the fast path or filtered incremental load). False on a full parse
@@ -853,11 +855,11 @@ pub type DbtRunTasksResult = (
     Arc<DbtProjectCompilationCacheState>,
 );
 
-use dbt_compilation::traits::{CompilationCache, CompiledProject};
-
 use crate::partial_parse::{
     PrevCompilationResult, try_lazy_load_fast_path, try_load_prev_compilation,
 };
+use dbt_compilation::traits::{CompilationCache, CompiledProject};
+use dbt_state::selector::RunCacheStateSelectorArgs;
 
 impl DbtProjectCompilation {
     fn dbt_state(&self) -> Arc<DbtState> {
@@ -1505,6 +1507,20 @@ impl DbtProjectCompilation {
             prev_state.set_test_name_truncations(&resolved_state.test_name_truncations);
         }
 
+        // Only initialize run-cache state selector when no local previous state is available.
+        // The lifecycle handles all enablement checks and fail-open logic internally.
+        let run_cache_state_selector_args = if maybe_previous_state.is_none() {
+            create_run_cache_state_selector_args(
+                arg_use_once,
+                &resolved_state,
+                loaded_project.dbt_cloud_config(),
+                loaded_project.root_package().package_root_path.as_path(),
+            )
+            .await?
+        } else {
+            None
+        };
+
         // Refresh node_resolver (no renaming needed - sample plan is resolved after scheduling)
         executor.refresh_node_resolver(
             &loaded_project,
@@ -1533,6 +1549,7 @@ impl DbtProjectCompilation {
                 catalog_artifact: executor.catalog_artifact.take(),
                 parse_index_publish_failed: executor.parse_index_publish_failed,
                 previous_state: maybe_previous_state,
+                run_cache_state_selector_args,
                 invocation_id,
                 partial_load_filter_applied: false,
             },
@@ -1550,6 +1567,7 @@ impl DbtProjectCompilation {
         token: &CancellationToken,
     ) -> FsResult<Schedule<String>> {
         let maybe_previous_state = self.previous_state.clone();
+        let run_cache_state_selector_args = self.run_cache_state_selector_args.as_ref();
 
         // ========================================================================
         // PHASE 3: Use Pipeline for Schedule
@@ -1579,6 +1597,7 @@ impl DbtProjectCompilation {
                 &self.resolved_state,
                 scheduler_args,
                 maybe_previous_state.as_ref().map(|x| x.as_ref()),
+                run_cache_state_selector_args,
                 select_expr,
                 exclude_expr,
                 arg.local_execution_backend,
@@ -1592,6 +1611,7 @@ impl DbtProjectCompilation {
                         &self.resolved_state,
                         scheduler_args,
                         maybe_previous_state.as_ref().map(|x| x.as_ref()),
+                        run_cache_state_selector_args,
                         arg.local_execution_backend,
                         token,
                     )
@@ -1602,6 +1622,7 @@ impl DbtProjectCompilation {
                         &self.resolved_state,
                         scheduler_args,
                         maybe_previous_state.as_ref().map(|x| x.as_ref()),
+                        run_cache_state_selector_args,
                         &custom_schedule_desc.unique_ids,
                         custom_schedule_desc.include_parents,
                         custom_schedule_desc.include_children,
@@ -1616,6 +1637,7 @@ impl DbtProjectCompilation {
                         &self.resolved_state,
                         scheduler_args,
                         maybe_previous_state.as_ref().map(|x| x.as_ref()),
+                        run_cache_state_selector_args,
                         compilation_cache_changes.as_cache_state(),
                         arg.local_execution_backend,
                         token,
@@ -1652,6 +1674,7 @@ impl DbtProjectCompilation {
         let dbt_cloud_config = self.dbt_cloud_config().cloned();
         let metricflow_server_client = self.metricflow_server_client.clone();
         let maybe_previous_state = self.previous_state.clone();
+        let run_cache_state_selector_args = self.run_cache_state_selector_args.as_ref();
         let root_project_quoting = self.resolved_state.root_project_quoting;
         let project_optimize_tests =
             optimize_test_defaults_from_project_flags(self.root_project().flags.as_ref());
@@ -1880,6 +1903,7 @@ impl DbtProjectCompilation {
                         &self.resolved_state,
                         SchedulerArgs::from_eval_args(arg),
                         maybe_previous_state.as_ref().map(|x| x.as_ref()),
+                        run_cache_state_selector_args,
                         arg.local_execution_backend,
                         token,
                     )
@@ -2572,17 +2596,14 @@ pub fn update_resolved_state_node_columns(
 /// Skipped for local execution (`--compute inline`).
 fn spawn_version_check_if_possible(
     config: &CompilationConfig,
-    compute_flag: dbt_common::io_args::LocalExecutionBackendKind,
+    compute_flag: LocalExecutionBackendKind,
     version_check_disabled: bool,
     command_name: &'static str,
 ) -> Option<tokio::task::JoinHandle<Option<String>>> {
     if version_check_disabled {
         return None;
     }
-    let is_local = matches!(
-        compute_flag,
-        dbt_common::io_args::LocalExecutionBackendKind::Inline
-    );
+    let is_local = matches!(compute_flag, LocalExecutionBackendKind::Inline);
     if !is_local {
         let disable_version_check =
             { config.no_version_check || std::env::var("DBT_DISABLE_VERSION_CHECK").is_ok() };
@@ -2875,6 +2896,40 @@ fn run_verify_partial_load(arg: &EvalArgs, schedule: &Schedule<String>) {
     } else {
         tracing::info!("verify-partial-load: {}", line.trim());
     }
+}
+
+async fn create_run_cache_state_selector_args(
+    arg: &EvalArgs,
+    resolved_state: &ResolverState,
+    cloud_config: Option<&ResolvedCloudConfig>,
+    project_root: &std::path::Path,
+) -> FsResult<Option<RunCacheStateSelectorArgs>> {
+    let execute_mode = Execute::from_compute_flag(arg.local_execution_backend);
+    let run_task_args = RunTasksArgs::from_eval_args(arg, FailFast::new());
+    let lifecycle = RunCacheLifecycle::get_or_initialize(
+        run_task_args.as_ref(),
+        execute_mode,
+        resolved_state.adapter_type,
+        cloud_config,
+    )
+    .await?;
+
+    let Some(client) = lifecycle.service_client() else {
+        return Ok(None);
+    };
+
+    let defer_to = lifecycle
+        .defer_to_target(&resolved_state.dbt_profile)
+        .unwrap_or_default();
+    let project_id = cloud_config.and_then(|c| c.project_id.clone());
+
+    Ok(Some(RunCacheStateSelectorArgs {
+        client,
+        defer_to,
+        project_id,
+        macros: resolved_state.macros.macros.clone(),
+        project_root: DbtPath::from(project_root),
+    }))
 }
 
 #[cfg(test)]

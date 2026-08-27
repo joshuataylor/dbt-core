@@ -23,6 +23,10 @@ use std::{
 
 type YmlValue = dbt_yaml::Value;
 
+/// Node selections returned by an external state-selector implementation, keyed by the exact
+/// `state:` criterion value.
+pub type StateSelectorResults = BTreeMap<String, BTreeSet<String>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateModifiedSubType {
     Body,
@@ -92,6 +96,31 @@ pub fn filter_select_criteria(
     previous_state: Option<&StateArtifacts>,
     adapter_type: AdapterType,
 ) -> FsResult<BTreeSet<String>> {
+    filter_select_criteria_with_state_selector_results(
+        nodes,
+        criteria,
+        previous_state,
+        None,
+        adapter_type,
+    )
+}
+
+/// Filter the manifest for a single criterion, optionally using externally evaluated state
+/// selector results.
+pub fn filter_select_criteria_with_state_selector_results(
+    nodes: &Nodes,
+    criteria: &SelectionCriteria,
+    previous_state: Option<&StateArtifacts>,
+    state_selector_results: Option<&StateSelectorResults>,
+    adapter_type: AdapterType,
+) -> FsResult<BTreeSet<String>> {
+    if criteria.method == MethodName::State
+        && let Some(selected) =
+            state_selector_results.and_then(|results| results.get(&criteria.value))
+    {
+        return Ok(selected.iter().cloned().collect());
+    }
+
     let project_name = nodes.project_name.as_deref();
     let result = nodes
         .iter()
@@ -1317,6 +1346,38 @@ mod tests {
                 (ColId { table, column }, value)
             })
             .collect()
+    }
+
+    #[test]
+    fn filter_select_criteria_uses_service_state_selection() {
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            "model.project.selected".to_string(),
+            create_test_node("model.project.selected", vec![]),
+        );
+
+        let select = parse_model_specifiers(&["state:modified".to_string()]).unwrap();
+        let SelectExpression::Atom(criteria) = select else {
+            panic!("expected a single selection criterion");
+        };
+        let results = StateSelectorResults::from([(
+            "modified".to_string(),
+            BTreeSet::from(["model.project.selected".to_string()]),
+        )]);
+
+        let selected = filter_select_criteria_with_state_selector_results(
+            &nodes,
+            &criteria,
+            None,
+            Some(&results),
+            AdapterType::Bigquery,
+        )
+        .unwrap();
+
+        assert_eq!(
+            selected,
+            BTreeSet::from(["model.project.selected".to_string()])
+        );
     }
 
     #[test]

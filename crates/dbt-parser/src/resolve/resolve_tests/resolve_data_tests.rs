@@ -63,6 +63,7 @@ use dbt_schemas::schemas::properties::DataTestProperties;
 use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::DbtRef;
 use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
+use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
 use dbt_schemas::schemas::{
     AdapterAttr, CommonAttributes, DbtTest, InternalDbtNode, NodeBaseAttributes,
 };
@@ -126,7 +127,14 @@ fn build_test_metadata_repr(asset: &GenericTestAsset) -> String {
 
     // column_name (sorted first)
     if let Some(col) = &asset.test_metadata_column_name {
-        kwargs_parts.push(format!("'column_name': '{}'", col));
+        let col_repr = match col {
+            StringOrArrayOfStrings::String(s) => format!("'{s}'"),
+            StringOrArrayOfStrings::ArrayOfStrings(cols) => {
+                let cols_repr: Vec<String> = cols.iter().map(|c| format!("'{c}'")).collect();
+                format!("[{}]", cols_repr.join(", "))
+            }
+        };
+        kwargs_parts.push(format!("'column_name': {col_repr}"));
     }
 
     // combination_of_columns (sorted second if present)
@@ -173,7 +181,7 @@ fn test_metadata_from_asset(asset: &GenericTestAsset) -> Option<TestMetadata> {
             // Fallback for assets constructed without test_metadata_kwargs (e.g. unit tests).
             let mut kwargs = BTreeMap::new();
             if let Some(col) = &asset.test_metadata_column_name {
-                kwargs.insert("column_name".to_string(), YmlValue::string(col.clone()));
+                kwargs.insert("column_name".to_string(), col.to_yaml_value());
             }
             if let Some(cols) = &asset.test_metadata_combination_of_columns {
                 let seq = cols
@@ -783,7 +791,7 @@ pub async fn resolve_data_tests(
                     .and_then(|id| models.get(id))
                     .and_then(|m| m.__model_attr__.group.clone());
                 DbtTestAttr {
-                    column_name: test_asset.and_then(|ta| ta.test_metadata_column_name.clone()),
+                    column_name: test_asset.and_then(|ta| ta.column_name.clone()),
                     attached_node,
                     test_metadata: inferred_test_metadata.clone(),
                     file_key_name: test_asset.and_then(|ta| file_key_name_from_asset(ta)),
@@ -938,9 +946,10 @@ mod tests {
             source_name: None,
             test_name: "not_null_customers_id".to_string(),
             defined_at: Default::default(),
+            column_name: None,
             test_metadata_name: Some("not_null".to_string()),
             test_metadata_namespace: None,
-            test_metadata_column_name: Some("id".to_string()),
+            test_metadata_column_name: Some(StringOrArrayOfStrings::String("id".to_string())),
             test_metadata_combination_of_columns: None,
             test_metadata_model: None,
             test_metadata_kwargs: BTreeMap::new(),
@@ -1077,11 +1086,12 @@ mod tests {
             source_name: None,
             test_name: truncated_name.to_string(),
             defined_at: Default::default(),
+            column_name: None,
             test_metadata_name: Some("not_null".to_string()),
             test_metadata_namespace: None,
-            test_metadata_column_name: Some(
+            test_metadata_column_name: Some(StringOrArrayOfStrings::String(
                 "very_long_column_name_that_exceeds_sixty_four_characters".to_string(),
-            ),
+            )),
             test_metadata_combination_of_columns: None,
             test_metadata_model: Some("ref('my_model')".to_string()),
             test_metadata_kwargs: BTreeMap::new(),
@@ -1121,6 +1131,7 @@ mod tests {
             source_name: None,
             test_name: "unique_combination_of_columns_customers_a__b".to_string(),
             defined_at: Default::default(),
+            column_name: None,
             test_metadata_name: Some("unique_combination_of_columns".to_string()),
             test_metadata_namespace: None,
             test_metadata_column_name: None,

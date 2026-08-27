@@ -386,12 +386,13 @@ pub async fn resolve_data_tests(
     };
     let is_dependency = dependency_package_name.is_some();
     let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, test_key);
+        extract_resource_config_from_raw_project(&package.raw_project_yml, test_key, adapter_type)?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             test_key,
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -409,8 +410,10 @@ pub async fn resolve_data_tests(
             .map(|test_asset| test_asset.dbt_asset.clone()),
     );
 
-    let config_resolver =
-        ProjectConfigResolver::build(root_project_configs.tests.clone(), is_dependency, || {
+    let config_resolver = ProjectConfigResolver::build(
+        root_project_configs.tests.clone(),
+        is_dependency,
+        || {
             let tests_config = match (
                 package.dbt_project.tests.clone(),
                 package.dbt_project.data_tests.clone(),
@@ -429,9 +432,12 @@ pub async fn resolve_data_tests(
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix,
+                adapter_type,
             )
-        })?
-        .with_resolve_defaults((arg.static_analysis.unwrap_or_default(), arg.store_failures));
+        },
+        adapter_type,
+    )?
+    .with_resolve_defaults((arg.static_analysis.unwrap_or_default(), arg.store_failures));
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
@@ -698,7 +704,8 @@ pub async fn resolve_data_tests(
             raw_schema_config,
             raw_inline_config.as_ref(),
             false,
-        );
+            adapter_type,
+        )?;
 
         let mut dbt_test = DbtTest {
             defined_at,
@@ -810,13 +817,7 @@ pub async fn resolve_data_tests(
         };
 
         let components = RelationComponents {
-            database: if matches!(adapter_type, AdapterType::Databricks)
-                && test_config.__warehouse_specific_config__.catalog.is_some()
-            {
-                test_config.__warehouse_specific_config__.catalog.clone()
-            } else {
-                test_config.database.clone()
-            },
+            database: test_config.database.clone(),
             schema: test_config.schema.clone(),
             // When test name was truncated (test_name != fqn_name), use the short form
             // for the alias (table name) per dbt-core convention. dbt-core uses:

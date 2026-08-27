@@ -100,13 +100,17 @@ pub async fn resolve_snapshots(
     };
 
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "snapshots");
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        "snapshots",
+        adapter_type,
+    )?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "snapshots",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -291,8 +295,10 @@ pub async fn resolve_snapshots(
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
             )
         },
+        adapter_type,
     )?
     .with_resolve_defaults((
         arg.static_analysis.unwrap_or_default(),
@@ -506,7 +512,8 @@ pub async fn resolve_snapshots(
                 raw_schema_yml_configs.get(snapshot_name),
                 raw_inline_config.as_ref(),
                 true,
-            );
+                adapter_type,
+            )?;
 
             // Create initial snapshot with default values
             let mut dbt_snapshot = DbtSnapshot {
@@ -620,16 +627,6 @@ pub async fn resolve_snapshots(
                 // For backwards compatibility with target_schema and target_database configs
                 database: if snapshot_config.target_database.is_some() {
                     snapshot_config.target_database.clone()
-                } else if matches!(adapter_type, AdapterType::Databricks)
-                    && snapshot_config
-                        .__warehouse_specific_config__
-                        .catalog
-                        .is_some()
-                {
-                    snapshot_config
-                        .__warehouse_specific_config__
-                        .catalog
-                        .clone()
                 } else {
                     snapshot_config.database.clone()
                 },

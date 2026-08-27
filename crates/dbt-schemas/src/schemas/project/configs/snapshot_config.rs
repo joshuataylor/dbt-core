@@ -31,7 +31,9 @@ use crate::schemas::common::SyncConfig;
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::ResolvableConfig;
 use crate::schemas::project::TypedRecursiveConfig;
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
+use crate::schemas::project::configs::common::{
+    WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+};
 use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::properties::ModelState;
 use crate::schemas::serde::PartitionsConfig;
@@ -1026,6 +1028,26 @@ impl ResolvableConfig<SnapshotConfig> for SnapshotConfig {
 
     fn default_to(&mut self, parent: &SnapshotConfig) {
         self.default_to_fields(parent);
+    }
+
+    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+        if let Some(catalog) = take_databricks_catalog_alias(
+            default_adapter,
+            &mut self.__warehouse_specific_config__,
+            self.database.is_some(),
+        ) {
+            self.database = Some(catalog);
+        }
+        // BigQuery's `project`/`dataset` aliases are already routed to `database`/`schema` by
+        // the pre-existing, ungated serde `alias`es on those fields (D1); nothing to do here.
+        //
+        // Databricks' `target_catalog` -> `target_database` has no dedicated alias field the
+        // way `catalog`/`database` do, so it cannot be canonicalized here; it is handled only
+        // where a raw config-key rename is possible, at the inline `{{ config(...) }}` layer
+        // (`ParseConfig::apply_config`). A `+target_catalog:` in `dbt_project.yml` or a
+        // schema.yml `config:` block remains an unrecognized key -- see the marker test
+        // `test_snapshot_target_catalog_in_project_yml_is_unrecognized_key` in
+        // `dbt-parser/src/dbt_project_config.rs`.
     }
 }
 

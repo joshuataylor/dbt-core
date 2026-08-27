@@ -100,8 +100,10 @@ pub async fn resolve_functions(
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
             )
         },
+        adapter_type,
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
 
@@ -135,13 +137,17 @@ pub async fn resolve_functions(
     // prerequisite — the Stage-1 wholesale comparison requires a fully populated
     // `unrendered_config`).
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "functions");
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        "functions",
+        adapter_type,
+    )?;
     let raw_root_project_functions_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "functions",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -353,7 +359,8 @@ pub async fn resolve_functions(
             raw_schema_yml_configs.get(function_name),
             raw_config_call_dict.as_ref(),
             false,
-        );
+            adapter_type,
+        )?;
 
         let properties = if let Some(properties) = maybe_properties {
             properties
@@ -494,13 +501,7 @@ pub async fn resolve_functions(
         };
 
         let components = RelationComponents {
-            database: if matches!(adapter_type, AdapterType::Databricks)
-                && model_config.__warehouse_specific_config__.catalog.is_some()
-            {
-                model_config.__warehouse_specific_config__.catalog.clone()
-            } else {
-                model_config.database.clone().into_inner().unwrap_or(None)
-            },
+            database: model_config.database.clone().into_inner().unwrap_or(None),
             schema: model_config.schema.clone().into_inner().unwrap_or(None),
             alias: model_config.alias.clone(),
             store_failures: None,

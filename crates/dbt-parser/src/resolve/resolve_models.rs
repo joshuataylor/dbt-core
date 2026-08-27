@@ -211,30 +211,36 @@ pub async fn resolve_models(
     // Best-effort raw parse of the root project's `models:` subtree, used only to hydrate
     // dependency package nodes' `unrendered_config` with root overrides (preserving Jinja).
     let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "models");
+        extract_resource_config_from_raw_project(&package.raw_project_yml, "models", adapter_type)?;
     let raw_root_project_models_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "models",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
 
-    let config_resolver =
-        ProjectConfigResolver::build(root_project_configs.models.clone(), is_dependency, || {
+    let config_resolver = ProjectConfigResolver::build(
+        root_project_configs.models.clone(),
+        is_dependency,
+        || {
             init_project_config(
                 &package.dbt_project.models,
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
             )
-        })?
-        .with_resolve_defaults((
-            arg.static_analysis.unwrap_or_default(),
-            root_package.dbt_project.sync.clone(),
-            Some(default_adapter),
-        ));
+        },
+        adapter_type,
+    )?
+    .with_resolve_defaults((
+        arg.static_analysis.unwrap_or_default(),
+        root_package.dbt_project.sync.clone(),
+        Some(default_adapter),
+    ));
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
@@ -340,6 +346,7 @@ pub async fn resolve_models(
         config_resolver,
         python_files,
         &mut models_properties_sans_semantics,
+        adapter_type,
     )?;
     model_sql_resources_map.extend(python_results);
 
@@ -692,7 +699,8 @@ pub async fn resolve_models(
             raw_schema_yml_configs.get(ref_name),
             raw_config_call_dict.as_ref(),
             true,
-        );
+            adapter_type,
+        )?;
 
         // Quoting is resolved here rather than at the package seed, because both
         // remaining layers depend on which adapter the node runs on, and that is
@@ -913,13 +921,7 @@ pub async fn resolve_models(
         };
 
         let components = RelationComponents {
-            database: if matches!(adapter_type, AdapterType::Databricks)
-                && model_config.__warehouse_specific_config__.catalog.is_some()
-            {
-                model_config.__warehouse_specific_config__.catalog.clone()
-            } else {
-                model_config.database.clone().into_inner().unwrap_or(None)
-            },
+            database: model_config.database.clone().into_inner().unwrap_or(None),
             schema: model_config.schema.clone().into_inner().unwrap_or(None),
             alias: model_config.alias.clone(),
             store_failures: None,
@@ -1294,6 +1296,7 @@ fn process_python_models(
     config_resolver: ProjectConfigResolver<ModelConfig>,
     python_files: Vec<dbt_schemas::state::DbtAsset>,
     models_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    adapter_type: AdapterType,
 ) -> FsResult<Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>> {
     let mut results = Vec::new();
     let dependency_package_name = dependency_package_name_from_ctx(env.as_ref(), base_ctx);
@@ -1329,6 +1332,7 @@ fn process_python_models(
             checksum,
             dependency_package_name,
             Some(python_asset.path.clone()),
+            adapter_type,
         ) {
             Ok(info) => info,
             Err(e) => {

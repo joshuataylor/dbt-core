@@ -71,12 +71,13 @@ pub async fn resolve_seeds(
 
     let is_dependency = dependency_package_name.is_some();
     let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "seeds");
+        extract_resource_config_from_raw_project(&package.raw_project_yml, "seeds", adapter_type)?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "seeds",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -119,16 +120,21 @@ pub async fn resolve_seeds(
         seed_root_dirs.push("seeds".to_string());
     }
 
-    let config_resolver =
-        ProjectConfigResolver::build(root_project_configs.seeds.clone(), is_dependency, || {
+    let config_resolver = ProjectConfigResolver::build(
+        root_project_configs.seeds.clone(),
+        is_dependency,
+        || {
             init_project_config(
                 &package.dbt_project.seeds,
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
             )
-        })?
-        .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+        },
+        adapter_type,
+    )?
+    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
 
     // TODO: update this to be relative of the root project
     let mut duplicate_errors = Vec::new();
@@ -221,7 +227,8 @@ pub async fn resolve_seeds(
             raw_schema_yml_configs.get(seed_name),
             None,
             true,
-        );
+            adapter_type,
+        )?;
 
         // Merge schema_file_info
         let (seed, patch_path) = if let Some(mpe) = seed_properties.remove(seed_name) {
@@ -403,19 +410,7 @@ pub async fn resolve_seeds(
         };
 
         let components = RelationComponents {
-            database: if matches!(adapter_type, AdapterType::Databricks)
-                && properties_config
-                    .__warehouse_specific_config__
-                    .catalog
-                    .is_some()
-            {
-                properties_config
-                    .__warehouse_specific_config__
-                    .catalog
-                    .clone()
-            } else {
-                properties_config.database.clone()
-            },
+            database: properties_config.database.clone(),
             schema: properties_config.schema.clone(),
             alias: properties_config.alias.clone(),
             store_failures: None,

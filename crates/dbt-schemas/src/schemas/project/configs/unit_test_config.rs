@@ -1,3 +1,4 @@
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::serde_utils::Omissible;
@@ -672,6 +673,10 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
     fn default_to(&mut self, parent: &UnitTestConfig) {
         self.default_to_fields(parent);
     }
+
+    // Unit tests have no `database`/`schema` field of their own -- they run against the model
+    // under test's relation, so there is nothing to canonicalize a `catalog`-style alias into.
+    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for UnitTestConfig {

@@ -1,3 +1,4 @@
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::Resolvable;
@@ -621,6 +622,12 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
     fn default_to(&mut self, parent: &SourceConfig) {
         self.default_to_fields(parent);
     }
+
+    // `SourceConfig` has no `database`/`schema` field of its own -- a source's database/schema
+    // are per-table, authored as top-level `SourceProperties`/`Tables` keys in schema.yml
+    // (`resolve_sources.rs`), not through this project-config pipeline. Canonicalized there
+    // instead of here.
+    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
 }
 
 impl ConfigKeys for SourceConfig {

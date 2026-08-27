@@ -33,7 +33,7 @@ use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::log_state_mod_diff;
 use crate::schemas::project::configs::common::{
     WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
-    same_warehouse_config,
+    same_warehouse_config, take_databricks_catalog_alias,
 };
 use crate::schemas::project::configs::config_merge::{Classifiers, Packages, Tags};
 use crate::schemas::project::dbt_project::ResolvableConfig;
@@ -803,6 +803,8 @@ pub struct ModelConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     pub alias: Option<String>,
+    // These aliases (like the `+`-prefixed variants above) are ungated: accepted on every
+    // adapter, unlike dbt-core's per-adapter `_ALIASES` map. Deliberate, see fs#13424.
     #[serde(alias = "project", alias = "data_space")]
     pub database: Omissible<Option<String>>,
     #[serde(alias = "dataset")]
@@ -1402,6 +1404,18 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
     fn finalize(self) -> ResolvedModelConfig {
         self.finalize_resolved()
     }
+
+    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+        if let Some(catalog) = take_databricks_catalog_alias(
+            default_adapter,
+            &mut self.__warehouse_specific_config__,
+            !self.database.is_omitted(),
+        ) {
+            self.database = Omissible::Present(Some(catalog));
+        }
+        // BigQuery's `project`/`dataset` aliases are already routed to `database`/`schema` by
+        // the pre-existing, ungated serde `alias`es on those fields (D1); nothing to do here.
+    }
 }
 
 impl ModelConfig {
@@ -1833,6 +1847,7 @@ impl ConfigKeys for ModelConfig {
         }
 
         // Add known aliases that might not show up in serialization
+        // The first three are ungated adapter aliases (fs#13424).
         field_names.insert("project".to_string()); // alias for database
         field_names.insert("data_space".to_string()); // alias for database
         field_names.insert("dataset".to_string()); // alias for schema

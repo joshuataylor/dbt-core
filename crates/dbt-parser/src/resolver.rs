@@ -715,6 +715,7 @@ pub async fn resolve_inner(
         &jinja_env,
         &base_ctx,
         token,
+        adapter_type,
     )?;
 
     let package_name = package.dbt_project.name.as_str();

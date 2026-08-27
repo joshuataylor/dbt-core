@@ -89,6 +89,59 @@ mod databricks {
         ])
     }
 
+    fn build_location_clause_harness() -> MacroTestHarness {
+        let databricks_location_sql =
+            include_str!("../../src/dbt_macro_assets/dbt-databricks/macros/relations/location.sql");
+
+        MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .with_macro(
+                "dbt",
+                "is_incremental",
+                "{% macro is_incremental() %}{{ return(false) }}{% endmacro %}",
+            )
+            .with_macro_at_path(
+                "dbt_databricks",
+                "location_clause",
+                databricks_location_sql,
+                "dbt_macro_assets/dbt-databricks/macros/relations/location.sql",
+            )
+            .build()
+            .expect("location clause harness should build")
+    }
+
+    fn render_location_clause(external_volume: Option<&str>) -> String {
+        let harness = build_location_clause_harness();
+        let relation = Value::from_object(CatalogRelation {
+            external_volume: external_volume.map(str::to_string),
+            ..CatalogRelation::default_catalog_relation_databricks()
+        });
+
+        harness
+            .render(
+                "{{ location_clause(relation) }}",
+                BTreeMap::from([("relation".to_string(), relation)]),
+            )
+            .expect("render should succeed")
+    }
+
+    #[test]
+    fn location_clause_renders_location_from_relation() {
+        let rendered = render_location_clause(Some("s3://bucket/root/a"));
+        assert!(
+            rendered.contains("location 's3://bucket/root/a'"),
+            "expected a location clause, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn location_clause_renders_nothing_without_location() {
+        let rendered = render_location_clause(None);
+        assert!(
+            !rendered.to_lowercase().contains("location"),
+            "expected no location clause, got: {rendered:?}"
+        );
+    }
+
     #[test]
     fn comment_clause_does_not_render_empty_comment() {
         let harness = build_comment_clause_harness();

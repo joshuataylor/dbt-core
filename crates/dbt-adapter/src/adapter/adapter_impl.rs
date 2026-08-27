@@ -4632,22 +4632,17 @@ impl AdapterImpl {
                     .include_full_name_in_path
                     .unwrap_or_default();
 
-                // Build path using the same logic as posixpath.join
+                // Build path using the same logic as posixpath.join.
                 let path = if include_full_name_in_path {
                     format!(
                         "{}/{}/{}/{}",
                         location_root.trim_end_matches('/'),
                         node.database().trim_end_matches('/'),
                         node.schema().trim_end_matches('/'),
-                        node.name()
+                        node.alias()
                     )
                 } else {
-                    format!(
-                        "{}/{}/{}",
-                        location_root.trim_end_matches('/'),
-                        node.database().trim_end_matches('/'),
-                        node.name()
-                    )
+                    format!("{}/{}", location_root.trim_end_matches('/'), node.alias())
                 };
 
                 let path = if is_incremental {
@@ -6128,6 +6123,52 @@ mod tests {
     fn test_adapter_type() {
         let adapter = AdapterImpl::new(engine(Snowflake), None);
         assert_eq!(adapter.adapter_type(), Snowflake);
+    }
+
+    fn databricks_external_path(include_full_name_in_path: bool, is_incremental: bool) -> String {
+        use crate::relation::databricks::config::test_helpers::{
+            TestModelConfig, create_mock_dbt_model,
+        };
+        use dbt_schemas::schemas::project::WarehouseSpecificNodeConfig;
+
+        let adapter = AdapterImpl::new(engine(Databricks), None);
+        let node = create_mock_dbt_model(TestModelConfig::default());
+        let config = ModelConfig {
+            __warehouse_specific_config__: WarehouseSpecificNodeConfig {
+                location_root: Some("s3://bucket/root".to_string()),
+                include_full_name_in_path: Some(include_full_name_in_path),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        adapter
+            .compute_external_path(config, &node, is_incremental)
+            .expect("location_root is set")
+    }
+
+    #[test]
+    fn test_databricks_compute_external_path_uses_alias_without_full_name() {
+        assert_eq!(
+            databricks_external_path(false, false),
+            "s3://bucket/root/test_table"
+        );
+    }
+
+    #[test]
+    fn test_databricks_compute_external_path_with_full_name() {
+        assert_eq!(
+            databricks_external_path(true, false),
+            "s3://bucket/root/test_db/test_schema/test_table"
+        );
+    }
+
+    #[test]
+    fn test_databricks_compute_external_path_incremental_suffix() {
+        assert_eq!(
+            databricks_external_path(false, true),
+            "s3://bucket/root/test_table_tmp"
+        );
     }
 
     #[test]

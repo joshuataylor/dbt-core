@@ -81,7 +81,9 @@ pub(super) fn from_model_config_and_catalogs_v2(
 
             match model_catalog_name {
                 None if !wants_iceberg => {
-                    return Ok(CatalogRelation::default_catalog_relation_databricks());
+                    return Ok(
+                        CatalogRelation::default_catalog_relation_databricks_for_model(model),
+                    );
                 }
                 None => {
                     let use_uniform =
@@ -1363,6 +1365,34 @@ catalogs:
             .unwrap();
 
             assert_eq!(r.catalog_database.as_deref(), Some("PROD_DB"));
+        }
+    }
+
+    #[test]
+    fn databricks_v2_no_catalog_name_default_honors_location_root() {
+        let catalogs = load_catalogs_yaml("catalogs: []\n");
+        let conf = json!({
+            "location_root": "s3://bucket/root",
+            "database": "db",
+            "schema": "sc",
+            "alias": "a",
+        });
+        let ms = [
+            model(AdapterType::Databricks, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+
+        for m in ms {
+            let r = from_model_config_and_catalogs_v2(
+                AdapterType::Databricks,
+                &m,
+                Arc::new(catalogs.clone()),
+            )
+            .unwrap();
+
+            assert!(r.catalog_name.is_none());
+            assert_eq!(r.catalog_type, CatalogType::Unity);
+            assert_eq!(r.external_volume.as_deref(), Some("s3://bucket/root/a"));
         }
     }
 

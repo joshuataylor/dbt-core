@@ -108,8 +108,8 @@ use tracing::Instrument;
 use vortex_events::{adapter_info_event, resource_counts_event};
 
 use dbt_schemas::schemas::{
-    InternalDbtNode, OnManifestLoadFailure, StateArtifacts, legacy_catalog::DbtCatalog,
-    manifest::build_manifest,
+    InternalDbtNode, InternalDbtNodeAttributes, OnManifestLoadFailure, StateArtifacts,
+    legacy_catalog::DbtCatalog, manifest::build_manifest,
 };
 
 use dbt_compilation::config::CompilationConfig;
@@ -2146,6 +2146,12 @@ impl DbtProjectCompilation {
         if let Some(replay_adapter) = adapter.as_replay() {
             for (truncated, full_name) in resolved_state.test_name_truncations.iter() {
                 replay_adapter.record_test_name_truncation(truncated, full_name);
+            }
+            // A versioned model's unique_id ends in `.v<N>`, which is not its alias, so an
+            // ephemeral+versioned model's own node_id can't be traced back to the CTE name
+            // dbt-core compiled it under without this. See fs#11684.
+            for model in resolved_state.nodes.models.values() {
+                replay_adapter.record_node_alias(&model.unique_id(), &model.alias());
             }
         }
 

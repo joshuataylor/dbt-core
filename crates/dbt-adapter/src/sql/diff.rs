@@ -1871,8 +1871,16 @@ fn split_union_all_top_level(s: &str) -> Option<Vec<String>> {
 }
 
 fn parse_create_as_subquery(s: &str) -> Option<(&str, &str, Vec<&str>)> {
-    // Recognize: CREATE [OR REPLACE] <stuff> AS (<subquery>)
-    // Case-insensitive for keywords; preserve exact <stuff> for equality check
+    // Recognize: CREATE [OR REPLACE] <stuff> AS (<subquery>)  or  CREATE [OR REPLACE] <stuff> AS <subquery>
+    // Case-insensitive for keywords; preserve exact <stuff> for equality check.
+    //
+    // The bare (unparenthesized) form matters because `AS (<subquery>)` and `AS <subquery>` are
+    // always semantically identical SQL, and not every code path that emits a `CREATE ... AS`
+    // statement wraps the body in parens -- e.g. dbt-core's hand-rolled `latest_version`
+    // pointer-view SQL is a bare `create or replace view X as select ...`, while a parametrized
+    // materialization macro might always wrap the body as `as (\n ... \n)`. This scan still
+    // prefers a parenthesized match when one exists (identical to the original behavior), and
+    // only falls back to the bare form when no `AS (` is found anywhere in the statement.
     let mut i = skip_ws(s, 0);
     i = eat_keyword_ci(s, i, "create")?;
     i = skip_ws(s, i);
@@ -1896,12 +1904,14 @@ fn parse_create_as_subquery(s: &str) -> Option<(&str, &str, Vec<&str>)> {
     }
 
     let stuff_start = i;
-    // Find 'as' followed by '(' (case-insensitive), not inside parentheses
+    // Find the wrapped form's 'as' followed by '(' (case-insensitive), not inside parentheses,
+    // while also tracking the last bare, whole-word top-level 'as' as a fallback.
     let lower = s.to_ascii_lowercase();
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
     let mut depth = 0usize;
-    let mut as_pos: Option<usize> = None;
-    let iter = lower.char_indices().peekable();
-    for (j, ch) in iter {
+    let mut wrapped_as_pos: Option<usize> = None;
+    let mut bare_as_pos: Option<usize> = None;
+    for (j, ch) in lower.char_indices() {
         if j < i {
             continue;
         }
@@ -1913,25 +1923,46 @@ fn parse_create_as_subquery(s: &str) -> Option<(&str, &str, Vec<&str>)> {
             continue;
         }
         if depth == 0 && lower[j..].starts_with("as") {
+            let prev_is_word = lower[..j].chars().next_back().is_some_and(is_word_char);
+            let next_is_word = lower[j + 2..].chars().next().is_some_and(is_word_char);
+            if prev_is_word || next_is_word {
+                continue; // part of a longer identifier (e.g. "alias"), not the keyword
+            }
             let mut k = j + 2;
             k = skip_ws(&lower, k);
             if k < lower.len() && (lower.as_bytes()[k] as char) == '(' {
-                as_pos = Some(j);
+                wrapped_as_pos = Some(j);
                 break;
             }
+            bare_as_pos = Some(j);
         }
     }
-    let as_pos = as_pos?;
+
+    if let Some(as_pos) = wrapped_as_pos {
+        let stuff = s[stuff_start..as_pos].trim();
+        let mut k = as_pos + 2;
+        k = skip_ws(s, k);
+        if k >= s.len() || s.as_bytes()[k] as char != '(' {
+            return None;
+        }
+        let open = k;
+        let close = find_matching_paren(s, open)?;
+        let sub = s[open + 1..close].trim();
+        return Some((stuff, sub, keywords));
+    }
+
+    let as_pos = bare_as_pos?;
     let stuff = s[stuff_start..as_pos].trim();
-    // Move to '('
     let mut k = as_pos + 2;
     k = skip_ws(s, k);
-    if k >= s.len() || s.as_bytes()[k] as char != '(' {
+    if k >= s.len() {
         return None;
     }
-    let open = k;
-    let close = find_matching_paren(s, open)?;
-    let sub = s[open + 1..close].trim();
+    let sub = s[k..].trim();
+    let sub = sub.strip_suffix(';').unwrap_or(sub).trim();
+    if sub.is_empty() {
+        return None;
+    }
     Some((stuff, sub, keywords))
 }
 
@@ -3318,6 +3349,33 @@ mod tests {
         assert!(
             result.is_err(),
             "Should detect content differences even with newlines"
+        );
+    }
+
+    #[test]
+    fn test_create_view_as_tolerates_asymmetric_wrapping_parens() {
+        // `AS (<subquery>)` and `AS <subquery>` are always semantically identical. Some code
+        // paths (e.g. dbt-core's hand-rolled `latest_version` pointer-view SQL) emit the bare
+        // form while others always wrap the body in parens -- see fs#13705.
+        let wrapped = "create or replace view db.sch.v as (\n    select * from db.sch.t\n  );";
+        let bare = "create or replace view db.sch.v as select * from db.sch.t";
+
+        compare_sql(wrapped, bare, AdapterType::Snowflake)
+            .expect("wrapped vs bare CREATE VIEW body should compare as equal");
+        compare_sql(bare, wrapped, AdapterType::Snowflake)
+            .expect("bare vs wrapped CREATE VIEW body should compare as equal (order-independent)");
+    }
+
+    #[test]
+    fn test_create_view_as_bare_form_still_detects_real_mismatches() {
+        // Guard against over-relaxing: two bare (unwrapped) bodies that are actually different
+        // must still be reported as a mismatch.
+        let actual = "create or replace view db.sch.v as select * from db.sch.t1";
+        let expected = "create or replace view db.sch.v as select * from db.sch.t2";
+
+        assert!(
+            compare_sql(actual, expected, AdapterType::Snowflake).is_err(),
+            "genuinely different bare CREATE VIEW bodies must not compare as equal"
         );
     }
 

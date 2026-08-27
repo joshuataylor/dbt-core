@@ -49,6 +49,7 @@ use dbt_tasks_core::test_aggregation::GenericTestRelationships;
 use dbt_telemetry::ExecutionPhase;
 use dbt_yaml::Verbatim;
 use minijinja::Value;
+use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::listener::RenderingEventListener;
 use tracing::debug;
 
@@ -885,21 +886,45 @@ pub fn materialize_latest_version_pointer(
 
     let source_relation_str = source_relation.render_self_as_str();
 
-    let pointer_sql = format!("SELECT * FROM {source_relation_str}");
+    let pointer_sql = format!("select * from {source_relation_str}");
+
+    let unique_id = format!(
+        "{}__latest_version_pointer",
+        model.__common_attr__.unique_id
+    );
 
     // Build a synthetic model with the pointer's alias and view materialization.
     // Clone the model and override:
+    //   - unique_id → the synthetic pointer id, so the pointer view's own adapter calls carry a
+    //     distinct replay identity. dbt-core records the pointer view's create-view/grant
+    //     statements on the base model's thread, interleaved before the base model's own trailing
+    //     grants/persist_docs/column calls, but Fusion runs the base model's materialization
+    //     macro (including those trailing calls) to completion before this function ever runs.
+    //     Sequential replay would let the trailing calls permanently consume (and discard) the
+    //     earlier pointer-view records while skipping past them. A distinct id lets the replay
+    //     adapter route these calls through unordered, content-based matching instead
+    //     (`find_key_for_node_id`'s `__latest_version_pointer` handling) rather than the shared
+    //     sequential cursor. See fs#13705.
     //   - alias → pointer identifier
     //   - materialization → "view"
     //   - hooks cleared (pre/post hooks should not run for the pointer)
     //   - persist_docs cleared (avoid duplicating doc persistence)
+    //   - contract cleared: dbt-core never contract-checks the synthetic pointer view (it's a
+    //     plain `create or replace view as select *`, not an independent contracted node), but
+    //     Fusion's `snowflake__create_or_replace_view` reads `config.get('contract')` off this
+    //     same cloned model. Left enforced, it calls `get_assert_columns_equivalent` ->
+    //     `get_column_schema_from_query` for the pointer, a call dbt-core's recording never
+    //     made, producing a genuine ReplayDataMissing. See fs#13705.
     let mut pointer_model = model.clone();
+    pointer_model.__common_attr__.unique_id = unique_id.clone();
     pointer_model.__base_attr__.alias = pointer_identifier.clone();
     pointer_model.__base_attr__.materialized = DbtMaterialization::View;
     pointer_model.deprecated_config.materialized = Some(DbtMaterialization::View);
     pointer_model.deprecated_config.pre_hook = Verbatim::from(None);
     pointer_model.deprecated_config.post_hook = Verbatim::from(None);
     pointer_model.deprecated_config.persist_docs = None;
+    pointer_model.deprecated_config.contract = None;
+    pointer_model.__model_attr__.contract = None;
 
     debug!(
         "Creating latest version pointer view '{}' -> '{}' for model '{}'",
@@ -925,10 +950,13 @@ pub fn materialize_latest_version_pointer(
         "compiled_code".to_string(),
         Value::from(pointer_sql.as_str()),
     );
-
-    let unique_id = format!(
-        "{}__latest_version_pointer",
-        model.__common_attr__.unique_id
+    // Belt-and-suspenders: some adapter methods read `TARGET_UNIQUE_ID` directly out of Jinja
+    // state rather than deserializing it back out of the `model` context key `pointer_model`
+    // seeds above (via `node_id_from_state`/`query_ctx_from_state`). Set both so every lookup
+    // path lands on the same synthetic id. See fs#13705.
+    context.insert(
+        TARGET_UNIQUE_ID.to_string(),
+        Value::from(unique_id.as_str()),
     );
 
     let run_path = model

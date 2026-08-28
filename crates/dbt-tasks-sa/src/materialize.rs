@@ -51,6 +51,7 @@ use dbt_yaml::Verbatim;
 use minijinja::Value;
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::listener::RenderingEventListener;
+use minijinja::value::mutable_map::MutableMap;
 use tracing::debug;
 
 /// Macro to handle NULL values in Arrow arrays
@@ -1009,9 +1010,21 @@ pub fn materialize_microbatch_model(
         &io_args.out_dir,
     )?;
 
-    // Insert the batch SQL into context
-    run_node_context.insert("sql".to_string(), Value::from(batch_sql.as_str()));
-    run_node_context.insert("compiled_code".to_string(), Value::from(batch_sql.as_str()));
+    let batch_sql = Value::from(batch_sql);
+
+    // Databricks incremental materialization reads `model['compiled_code']`.
+    let batch_model = run_node_context
+        .get("model")
+        .and_then(|model| model.downcast_object_ref::<MutableMap>())
+        .ok_or_else(|| {
+            unexpected_fs_err!(
+                "No batch-local model context for microbatch model {}",
+                batch_ctx.id,
+            )
+        })?;
+    batch_model.insert(Value::from("compiled_code"), batch_sql.clone());
+    run_node_context.insert("sql".to_string(), batch_sql.clone());
+    run_node_context.insert("compiled_code".to_string(), batch_sql);
 
     // Get the incremental materialization macro
     let macro_name = materialization_resolver.find_materialization_macro_by_name(

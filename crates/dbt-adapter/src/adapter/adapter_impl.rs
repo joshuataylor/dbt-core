@@ -1013,6 +1013,7 @@ impl AdapterImpl {
     /// PostgresAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-postgres/src/dbt/adapters/postgres/impl.py#L175
     /// RedshiftAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-redshift/src/dbt/adapters/redshift/impl.py#L490
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L502
+    /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L808
     pub fn valid_incremental_strategies(&self) -> &[DbtIncrementalStrategy] {
         use DbtIncrementalStrategy::*;
 
@@ -1020,7 +1021,7 @@ impl AdapterImpl {
             Postgres | DuckDB | Alt => &[Append, DeleteInsert, Merge, Microbatch],
             Snowflake => &[Append, DeleteInsert, InsertOverwrite, Merge, Microbatch],
             Bigquery => &[Append],
-            Databricks => &[Append, Merge, InsertOverwrite, ReplaceWhere],
+            Databricks => &[Append, Merge, InsertOverwrite, ReplaceWhere, Microbatch],
             Redshift => &[Append, DeleteInsert, Merge, Microbatch],
             Fabric => &[Append, DeleteInsert, Merge, Microbatch],
             Salesforce => &[Append, Merge],

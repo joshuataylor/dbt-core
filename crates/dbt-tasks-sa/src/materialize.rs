@@ -660,10 +660,16 @@ pub fn materialize_model(
 
     let unique_id = model.__common_attr__.unique_id.clone();
     let node_alias = model.__base_attr__.alias.clone();
-    // Runtime-phase errors report the run/Executable path per the path-requirements matrix.
-    let run_path = model
-        .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
-        .into_owned();
+    // Python models execute from their source file. SQL models execute from target/run.
+    let run_path = if model.__common_attr__.language.as_deref() == Some("python") {
+        io_args
+            .in_dir
+            .join(&model.__common_attr__.original_file_path)
+    } else {
+        model
+            .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
+            .into_owned()
+    };
 
     let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
         unexpected_fs_err!(

@@ -247,10 +247,37 @@ fn normalize_tmp_suffixes(value: &serde_json::Value) -> serde_json::Value {
 fn python_job_args_match(recorded: &serde_json::Value, actual: &serde_json::Value) -> bool {
     fn strip_model_raw_code(args: &serde_json::Value) -> serde_json::Value {
         let mut args = args.clone();
-        if let Some(model) = args.as_array_mut().and_then(|arr| arr.first_mut())
-            && let Some(obj) = model.as_object_mut()
+        if let Some(model) = args.as_array_mut().and_then(|arr| arr.first_mut()) {
+            fn strip(value: &mut serde_json::Value, inside_model: bool) {
+                if let Some(obj) = value.as_object_mut() {
+                    let is_model = obj
+                        .get("__type__")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|type_name| type_name.ends_with("LazyModelWrapper"));
+                    if is_model || inside_model && obj.contains_key("adapter") {
+                        obj.remove("raw_code");
+                        obj.remove("adapter");
+                    }
+                    for child in obj.values_mut() {
+                        strip(child, is_model || inside_model);
+                    }
+                } else if let Some(array) = value.as_array_mut() {
+                    for child in array {
+                        strip(child, inside_model);
+                    }
+                }
+            }
+            strip(model, false);
+        }
+        if let Some(code) = args.as_array_mut().and_then(|arr| arr.get_mut(1))
+            && let Some(code) = code.as_str()
         {
-            obj.remove("raw_code");
+            *args.as_array_mut().unwrap().get_mut(1).unwrap() = serde_json::Value::String(
+                code.lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
         }
         args
     }
@@ -1353,15 +1380,12 @@ pub fn validate_replay(
                 actual: actual_args.len(),
             });
         } else {
-            for (i, (expected, actual)) in recorded_args.iter().zip(actual_args.iter()).enumerate()
-            {
-                if !values_match(expected, actual) {
-                    differences.push(ReplayDifference::ArgValueMismatch {
-                        index: i,
-                        expected: expected.clone(),
-                        actual: actual.clone(),
-                    });
-                }
+            if !adapter_args_match_for_type(method, &recorded.args, args, adapter_type) {
+                differences.push(ReplayDifference::ArgValueMismatch {
+                    index: 0,
+                    expected: recorded.args.clone(),
+                    actual: args.clone(),
+                });
             }
         }
     }

@@ -65,6 +65,8 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_test_temp_relation_identifiers(&expected);
     let actual = canonicalize_dbt_model_tmp_suffix(&actual);
     let expected = canonicalize_dbt_model_tmp_suffix(&expected);
+    let actual = canonicalize_dbt_backup_timestamp_suffix(&actual);
+    let expected = canonicalize_dbt_backup_timestamp_suffix(&expected);
     let actual = canonicalize_elementary_metadata_pkg_version(&actual);
     let expected = canonicalize_elementary_metadata_pkg_version(&expected);
     let actual = canonicalize_python_config_dict(&actual, &expected);
@@ -2558,6 +2560,29 @@ fn canonicalize_dbt_model_tmp_suffix(sql: &str) -> String {
     });
 
     RE.replace_all(sql, "${1}SUFFIX").to_string()
+}
+
+/// Canonicalize backup relation identifiers whose suffix is derived from the wall clock, such as
+/// the ones custom materializations build with `py_current_timestring()`:
+///   ANALYTICS.SCH.orders_DBT_BACKUP_20260824102757911107255
+///   ANALYTICS.SCH.orders__dbt_backup_20240101000000000000
+/// both become `..._DBT_BACKUP_TIMESTAMP`.
+///
+/// The recorded suffix is fixed at record time and replay regenerates it, so the identifiers can
+/// never match. This is intentionally narrow:
+/// - Only matches a `_dbt_backup_` marker (case-insensitive) immediately followed by digits.
+/// - Only matches a plausible `py_current_timestring()` value: a year in 2000-2100 followed by at
+///   least 8 more digits (the format is `%Y%m%d%H%M%S%f`, so the shortest real value is 14 digits).
+fn canonicalize_dbt_backup_timestamp_suffix(sql: &str) -> String {
+    // Fast-path: avoid regex work on the common case.
+    if !contains_ignore_ascii_case(sql, "_dbt_backup_") {
+        return sql.to_string();
+    }
+
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)(_dbt_backup_)(?:20[0-9]{2}|2100)[0-9]{8,}").unwrap());
+
+    RE.replace_all(sql, "${1}TIMESTAMP").to_string()
 }
 
 /// Check whether two SQL strings are identical modulo a top-level
@@ -6485,6 +6510,58 @@ SELECT
         assert!(
             result.is_ok(),
             "etl_batch_id literal drift with a non-number cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_timestamp_suffix_drift_ignored() {
+        // dbt1405: a custom materialization naming its backup relation with
+        // `py_current_timestring()`, which replay re-evaluates, so the fresh suffix can never
+        // equal the recorded one. The 23-digit actual is what preview.212 rendered, before #13684
+        // fixed `%f` to Python's microsecond precision; masking has to cover both widths.
+        let actual = "CREATE OR REPLACE TABLE REPRO_DATABASE.REPRO_SCHEMA.backup_probe_DBT_BACKUP_20260824102757911107255\nCLONE REPRO_DATABASE.REPRO_SCHEMA.source_probe";
+        let expected = "CREATE OR REPLACE TABLE REPRO_DATABASE.REPRO_SCHEMA.backup_probe_DBT_BACKUP_20000101000000000000\nCLONE REPRO_DATABASE.REPRO_SCHEMA.source_probe";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "backup relation timestamp suffix drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_lowercase_suffix_drift_ignored() {
+        // Same shape, but with the `__dbt_backup_` spelling dbt's own naming convention uses.
+        let actual = "create or replace table analytics.sch.orders__dbt_backup_20260824102757911107255 clone analytics.sch.orders";
+        let expected = "create or replace table analytics.sch.orders__dbt_backup_20240101000000000000 clone analytics.sch.orders";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "lowercase backup relation timestamp suffix drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_source_drift_still_fails() {
+        // Guardrail: masking the suffix must not hide a different clone source.
+        let actual = "create or replace table analytics.sch.orders__dbt_backup_20260824102757911107255 clone analytics.sch.orders";
+        let expected = "create or replace table analytics.sch.orders__dbt_backup_20240101000000000000 clone analytics.sch.customers";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "a different clone source must still be reported as a mismatch"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_non_timestamp_suffix_drift_still_fails() {
+        // Guardrail: only plausible `py_current_timestring()` values are masked, so a short
+        // numeric suffix (e.g. a user-chosen batch number) still has to match.
+        let actual = "create or replace table analytics.sch.orders__dbt_backup_17 clone analytics.sch.orders";
+        let expected = "create or replace table analytics.sch.orders__dbt_backup_42 clone analytics.sch.orders";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "a non-timestamp backup suffix must still be reported as a mismatch"
         );
     }
 

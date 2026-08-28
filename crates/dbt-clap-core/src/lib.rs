@@ -2991,9 +2991,10 @@ pub struct InitArgs {
     #[arg(long, default_value = "false")]
     pub skip_profile_setup: bool,
 
-    /// Run the Fusion onboarding/upgrade flow
-    #[arg(long, default_value = "false")]
-    pub fusion_upgrade: bool,
+    /// Run the dbt v2 onboarding/upgrade flow
+    #[arg(long = "v2-upgrade", alias = "fusion-upgrade", default_value = "false")]
+    #[serde(alias = "fusion_upgrade")]
+    pub v2_upgrade: bool,
 
     /// The sample project to initialize with
     #[arg(long, default_value = "jaffle-shop")]

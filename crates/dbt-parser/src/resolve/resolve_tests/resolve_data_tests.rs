@@ -362,7 +362,7 @@ pub async fn resolve_data_tests(
     test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    adapter_type: AdapterType,
+    default_adapter: AdapterType,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     runtime_config: Arc<DbtRuntimeConfig>,
@@ -370,7 +370,6 @@ pub async fn resolve_data_tests(
     node_resolver: &NodeResolver,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-    default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     models: &BTreeMap<String, Arc<DbtModel>>,
     disabled_models: &BTreeMap<String, Arc<DbtModel>>,
@@ -389,13 +388,16 @@ pub async fn resolve_data_tests(
         "tests"
     };
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, test_key, adapter_type)?;
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        test_key,
+        default_adapter,
+    )?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             test_key,
-            adapter_type,
+            default_adapter,
         )?)
     } else {
         None
@@ -436,10 +438,10 @@ pub async fn resolve_data_tests(
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix,
-                adapter_type,
+                default_adapter,
             )
         },
-        adapter_type,
+        default_adapter,
     )?
     .with_resolve_defaults((arg.static_analysis.unwrap_or_default(), arg.store_failures));
 
@@ -453,7 +455,7 @@ pub async fn resolve_data_tests(
             defer_render_errors_to_compile: true,
             base_ctx: base_ctx.clone(),
             package_name: package_name.to_string(),
-            adapter_type,
+            adapter_type: default_adapter,
             database: database.to_string(),
             schema: schema.to_string(),
             // tests can be defined in any yaml config
@@ -624,10 +626,9 @@ pub async fn resolve_data_tests(
         // validation -- it was already validated on the node that materializes.
         let resolved_node_adapter = validate_node_adapter(
             test_config.adapter,
-            default_adapter,
             &DbtMaterialization::Test,
             None,
-            adapter_type,
+            default_adapter,
             dbt_adapter::load_catalogs::fetch_use_catalogs_v2(),
             false,
             &dbt_asset.path,
@@ -636,7 +637,7 @@ pub async fn resolve_data_tests(
 
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.
-        let selected_adapter = resolved_node_adapter.unwrap_or(adapter_type);
+        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         test_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => test_config.quoting.filled_from(authored),
@@ -708,7 +709,7 @@ pub async fn resolve_data_tests(
             raw_schema_config,
             raw_inline_config.as_ref(),
             false,
-            adapter_type,
+            default_adapter,
         )?;
 
         let mut dbt_test = DbtTest {
@@ -814,7 +815,7 @@ pub async fn resolve_data_tests(
             },
             __adapter_attr__: AdapterAttr::from_config_and_dialect(
                 &test_config.__warehouse_specific_config__,
-                adapter_type,
+                default_adapter,
             ),
             deprecated_config: test_config.clone().into(),
             __other__: BTreeMap::new(),
@@ -847,7 +848,7 @@ pub async fn resolve_data_tests(
             package_name,
             base_ctx,
             &components,
-            adapter_type,
+            default_adapter,
         )?;
 
         // Mirror dbt-core behavior: when the synthesized name was truncated and the user
@@ -915,7 +916,7 @@ pub async fn resolve_data_tests(
         nodes_with_execute,
         node_resolver,
         env.clone(),
-        adapter_type,
+        default_adapter,
         package.dbt_project.name.as_str(),
         &root_package.dbt_project.name,
         runtime_config,

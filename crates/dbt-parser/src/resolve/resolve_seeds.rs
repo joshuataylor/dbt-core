@@ -53,9 +53,6 @@ pub async fn resolve_seeds(
     root_project_configs: &RootProjectConfigs,
     database: &str,
     schema: &str,
-    adapter_type: AdapterType,
-    // Every adapter the active target declares, for resolving `+adapter`.
-    // The target's default adapter.
     default_adapter: AdapterType,
     package_name: &str,
     jinja_env: &JinjaEnv,
@@ -70,13 +67,16 @@ pub async fn resolve_seeds(
     let dependency_package_name = dependency_package_name_from_ctx(jinja_env, base_ctx);
 
     let is_dependency = dependency_package_name.is_some();
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "seeds", adapter_type)?;
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        "seeds",
+        default_adapter,
+    )?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "seeds",
-            adapter_type,
+            default_adapter,
         )?)
     } else {
         None
@@ -129,10 +129,10 @@ pub async fn resolve_seeds(
                 DbtQuoting::default(),
                 dependency_package_name,
                 disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
-                adapter_type,
+                default_adapter,
             )
         },
-        adapter_type,
+        default_adapter,
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
 
@@ -227,7 +227,7 @@ pub async fn resolve_seeds(
             raw_schema_yml_configs.get(seed_name),
             None,
             true,
-            adapter_type,
+            default_adapter,
         )?;
 
         // Merge schema_file_info
@@ -262,7 +262,7 @@ pub async fn resolve_seeds(
         );
 
         // XXX: normalize column_types to uppercase if it is snowflake
-        if matches!(adapter_type, AdapterType::Snowflake)
+        if matches!(default_adapter, AdapterType::Snowflake)
             && let Some(column_types) = &properties_config.column_types
         {
             let column_types = column_types
@@ -321,10 +321,9 @@ pub async fn resolve_seeds(
 
         let resolved_node_adapter = validate_node_adapter(
             properties_config.adapter,
-            default_adapter,
             &DbtMaterialization::Table,
             properties_config.catalog_name.as_deref(),
-            adapter_type,
+            default_adapter,
             dbt_adapter::load_catalogs::fetch_use_catalogs_v2(),
             false,
             &path,
@@ -338,13 +337,13 @@ pub async fn resolve_seeds(
         // See `resolve_models`: both remaining layers depend on the node's
         // `+adapter`, which the config merge cannot know. Written back so
         // `deprecated_config` carries the resolved value too.
-        let selected_adapter = resolved_node_adapter.unwrap_or(adapter_type);
+        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         properties_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => properties_config.quoting.filled_from(authored),
                 None => properties_config.quoting,
             }),
-            resolved_node_adapter.unwrap_or(adapter_type),
+            resolved_node_adapter.unwrap_or(default_adapter),
         );
 
         // Create initial seed with default values
@@ -423,7 +422,7 @@ pub async fn resolve_seeds(
             package_name,
             base_ctx,
             &components,
-            adapter_type,
+            default_adapter,
         )?;
 
         let status = if is_enabled {
@@ -432,7 +431,7 @@ pub async fn resolve_seeds(
             ModelStatus::Disabled
         };
 
-        match node_resolver.insert_ref(&dbt_seed, adapter_type, status, false) {
+        match node_resolver.insert_ref(&dbt_seed, default_adapter, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());
@@ -449,7 +448,7 @@ pub async fn resolve_seeds(
                         &root_package.dbt_project.name,
                         collected_generic_tests,
                         test_name_truncations,
-                        adapter_type,
+                        default_adapter,
                         io_args,
                         patch_path.as_ref().unwrap_or(&path),
                         false,

@@ -346,10 +346,9 @@ pub(crate) fn validate_compute(compute: Option<ComputeArg>, path: &Path) -> FsRe
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_node_adapter(
     adapter: Option<AdapterType>,
-    default_adapter: AdapterType,
     materialized: &DbtMaterialization,
     catalog_name: Option<&str>,
-    adapter_type: AdapterType,
+    default_adapter: AdapterType,
     use_catalogs_v2: bool,
     is_python: bool,
     path: &Path,
@@ -390,11 +389,11 @@ pub(crate) fn validate_node_adapter(
 
     // Rule 2: v1 warehouse guard.
     if !matches!(
-        adapter_type,
+        default_adapter,
         AdapterType::Snowflake | AdapterType::DuckDB | AdapterType::Alt
     ) {
         return Err(err(format!(
-            "adapter: '{name}' in v1 supports Snowflake and lake compute only;              the target's default adapter is '{adapter_type}'"
+            "adapter: '{name}' in v1 supports Snowflake and lake compute only;              the target's default adapter is '{default_adapter}'"
         )));
     }
 
@@ -444,20 +443,19 @@ mod tests {
     use super::*;
     use crate::utils::RawProjectConfig;
 
-    /// Validate a selection of the `alt` adapter.
+    /// Validate a selection of the `alt` adapter against a given target default.
     fn validate_alt(
         materialized: DbtMaterialization,
         catalog_name: Option<&str>,
-        adapter_type: AdapterType,
+        default_adapter: AdapterType,
         use_catalogs_v2: bool,
         is_python: bool,
     ) -> FsResult<Option<AdapterType>> {
         validate_node_adapter(
             Some(AdapterType::Alt),
-            AdapterType::Snowflake,
             &materialized,
             catalog_name,
-            adapter_type,
+            default_adapter,
             use_catalogs_v2,
             is_python,
             Path::new("models/m.sql"),
@@ -467,7 +465,6 @@ mod tests {
     fn validate_selection(selected: Option<AdapterType>) -> FsResult<Option<AdapterType>> {
         validate_node_adapter(
             selected,
-            AdapterType::Snowflake,
             &DbtMaterialization::Table,
             Some("horizon"),
             AdapterType::Snowflake,
@@ -483,7 +480,6 @@ mod tests {
         assert_eq!(
             validate_node_adapter(
                 None,
-                AdapterType::Snowflake,
                 &DbtMaterialization::MaterializedView,
                 None,
                 AdapterType::Bigquery,
@@ -551,11 +547,11 @@ mod tests {
 
     #[test]
     fn alt_happy_paths() {
-        for adapter in [
-            AdapterType::Snowflake,
-            AdapterType::DuckDB,
-            AdapterType::Alt,
-        ] {
+        // The warehouses rule 2 admits as a target default. `alt` itself is not
+        // among them: an `alt` selection against an `alt` default is the no-op
+        // asserted by `alt_on_an_alt_target_is_the_default_selection_no_op`, and
+        // never reaches rule 2.
+        for adapter in [AdapterType::Snowflake, AdapterType::DuckDB] {
             assert!(
                 validate_alt(
                     DbtMaterialization::Table,
@@ -598,6 +594,26 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// When the target's default adapter *is* `alt`, selecting `alt` names the
+    /// default explicitly: it returns at the no-op guard before any of the alt
+    /// preconditions run, so even inputs rule 1 and rule 3 would reject pass.
+    /// This is also why rule 2's own `AdapterType::Alt` arm is unreachable: rule 2
+    /// runs only when the selection is `alt` *and* differs from the default.
+    #[test]
+    fn alt_on_an_alt_target_is_the_default_selection_no_op() {
+        let resolved = validate_alt(
+            DbtMaterialization::MaterializedView,
+            None,
+            AdapterType::Alt,
+            false,
+            false,
+        )
+        .expect("naming the target's own default adapter is always allowed")
+        .expect("an explicit selection resolves to itself");
+
+        assert_eq!(resolved, AdapterType::Alt);
     }
 
     #[test]
@@ -701,7 +717,6 @@ mod tests {
             assert_eq!(
                 validate_node_adapter(
                     Some(AdapterType::DuckDB),
-                    AdapterType::Snowflake,
                     &mat,
                     None,
                     AdapterType::Snowflake,
@@ -728,7 +743,6 @@ mod tests {
         ] {
             let resolved = validate_node_adapter(
                 Some(AdapterType::Redshift),
-                AdapterType::Snowflake,
                 &mat,
                 None,
                 AdapterType::Snowflake,

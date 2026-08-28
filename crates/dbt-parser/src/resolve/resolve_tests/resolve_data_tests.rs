@@ -52,6 +52,7 @@ use dbt_schemas::schemas::common::DocsConfig;
 use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::common::merge_vec;
+use dbt_schemas::schemas::common::normalize_sql;
 use dbt_schemas::schemas::nodes::DbtModel;
 use dbt_schemas::schemas::nodes::DbtSeed;
 use dbt_schemas::schemas::nodes::DbtSnapshot;
@@ -259,15 +260,18 @@ fn file_key_name_from_asset(asset: &GenericTestAsset) -> Option<String> {
 /// Checksum for a data test node, matching dbt-core.
 ///
 /// A singular data test is parsed from its own `tests/*.sql` file, and dbt-core hashes that
-/// file's contents (`FileHash.from_contents`: sha256 over the whitespace-stripped UTF-8
-/// contents — the same bytes it keeps as `raw_code`). Pass those contents here.
+/// file's *whitespace-normalized* contents, not the raw bytes:
+/// `normalize_file_contents(contents) = " ".join(contents.split())`
+/// (`core/dbt/parser/read_files.py:44-48`), then `FileHash.from_contents` over that
+/// (`core/dbt/parser/read_files.py:91-96`). This matches how models and snapshots already hash
+/// their bodies via `normalize_sql` (`dbt_schemas::schemas::common`).
 ///
 /// A generic data test is synthesized from a `schema.yml` entry and has no file of its own, so
 /// dbt-core leaves it at `FileHash.empty()` (`{"name": "none", "checksum": ""}`) — pass `None`.
 /// That also keeps generic-test checksums stable across runs when schema names change.
 fn data_test_checksum(singular_test_file_contents: Option<&str>) -> DbtChecksum {
     match singular_test_file_contents {
-        Some(contents) => DbtChecksum::hash(contents.as_bytes()),
+        Some(contents) => DbtChecksum::hash(normalize_sql(contents).as_bytes()),
         None => DbtChecksum::default(),
     }
 }
@@ -974,14 +978,16 @@ mod tests {
     }
 
     /// A singular data test is parsed from its own `.sql` file, so its checksum must be the
-    /// sha256 of that file's contents — the value dbt-core's `FileHash.from_contents` produces.
-    /// The expected digest below is computed independently of this crate:
+    /// sha256 of that file's *whitespace-normalized* contents — the value dbt-core's
+    /// `FileHash.from_contents(normalize_file_contents(contents))` produces
+    /// (`core/dbt/parser/read_files.py:44-48,91-96`). The expected digest below is computed
+    /// independently of this crate:
     ///
     /// ```text
     /// printf %s "select 1 from {{ ref('customers') }} where x < 0" | sha256sum
     /// ```
     #[test]
-    fn test_singular_data_test_checksum_is_sha256_of_file_contents() {
+    fn test_singular_data_test_checksum_is_sha256_of_normalized_file_contents() {
         const SQL: &str = "select 1 from {{ ref('customers') }} where x < 0";
         const EXPECTED_SHA256: &str =
             "0189810ca51b8d0a3a0dd389ed3b616ca34a50d47248d42af82d2cdd16158ff8";
@@ -1004,6 +1010,24 @@ mod tests {
             DbtChecksum::Object(object) => assert_eq!(object.name, "sha256"),
             other => panic!("expected object-form checksum, got {other:?}"),
         }
+    }
+
+    /// The invariant Defect 1 (fs#13735) was missing: two singular test bodies that differ only
+    /// in whitespace (blank lines, indentation, newline-vs-space) must hash identically, matching
+    /// dbt-core's `normalize_file_contents = " ".join(contents.split())`.
+    #[test]
+    fn test_singular_data_test_checksum_is_whitespace_invariant() {
+        let compact = "select *\nfrom {{ ref('my_model') }}\nwhere id is null";
+        let spread = "select *\n\n    from {{ ref('my_model') }}\n\n\n    where id is null";
+
+        let checksum_compact = data_test_checksum(Some(compact));
+        let checksum_spread = data_test_checksum(Some(spread));
+        assert_eq!(checksum_compact, checksum_spread);
+
+        // Sanity: a genuine content change (not whitespace-only) still hashes differently.
+        let different = "select * from {{ ref('my_model') }}";
+        let checksum_different = data_test_checksum(Some(different));
+        assert_ne!(checksum_compact, checksum_different);
     }
 
     /// A generic data test is synthesized from `schema.yml` and has no file of its own, so it

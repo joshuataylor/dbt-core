@@ -2000,22 +2000,66 @@ impl InternalDbtNode for DbtTest {
         if let Some(other_test) = other.as_any().downcast_ref::<DbtTest>() {
             let same_fqn_result = self.common().fqn == other_test.common().fqn;
 
-            if !same_fqn_result {
-                log_state_mod_diff(
-                    &self.__common_attr__.unique_id,
-                    "test",
-                    [(
-                        "same_fqn",
-                        same_fqn_result,
-                        Some((
-                            format!("{:?}", &self.common().fqn),
-                            format!("{:?}", &other_test.common().fqn),
-                        )),
-                    )],
-                );
-            }
+            // dbt-core: `GenericTestNode.same_contents` overrides `ParsedNode`'s to
+            // `same_config and same_fqn` (nodes.py:1170-1174) -- a generic test's body is just
+            // the macro-call text, not authored content, so body is deliberately excluded.
+            // `SingularTestNode` has no such override, so it inherits `ParsedNode.same_contents`,
+            // which ANDs `same_body` (nodes.py:373-374,402-416). `test_metadata` is populated only
+            // for generic tests (see `DbtTestAttr`), so it's the same discriminator dbt-core's
+            // class split encodes.
+            if self.__test_attr__.test_metadata.is_some() {
+                // Generic test: unchanged, fqn only.
+                if !same_fqn_result {
+                    log_state_mod_diff(
+                        &self.__common_attr__.unique_id,
+                        "test",
+                        [(
+                            "same_fqn",
+                            same_fqn_result,
+                            Some((
+                                format!("{:?}", &self.common().fqn),
+                                format!("{:?}", &other_test.common().fqn),
+                            )),
+                        )],
+                    );
+                }
 
-            same_fqn_result
+                same_fqn_result
+            } else {
+                // Singular test: also consult body (checksum-based, like `DbtModel`'s).
+                //
+                // Deliberately stop at `same_fqn && same_body`. `ParsedNode.same_contents` also
+                // ANDs relation, persisted-description and contract, but do NOT add those checks
+                // here: `is_modified`'s `Any` case (`prev_state/mod.rs`) already ORs
+                // `check_relation_modified`, `check_persisted_descriptions_modified`,
+                // `check_modified_macros` and `check_contract_modified` for every node type,
+                // singular tests included. Re-adding them here would double-count -- the
+                // selection result would be unchanged, but the `[state_mod_diff]` trace would
+                // misattribute which sub-check actually caught the difference.
+                let same_body_result =
+                    same_body(&self.__common_attr__, &other_test.__common_attr__);
+                let result = same_fqn_result && same_body_result;
+
+                if !result {
+                    log_state_mod_diff(
+                        &self.__common_attr__.unique_id,
+                        "test",
+                        [
+                            (
+                                "same_fqn",
+                                same_fqn_result,
+                                Some((
+                                    format!("{:?}", &self.common().fqn),
+                                    format!("{:?}", &other_test.common().fqn),
+                                )),
+                            ),
+                            ("same_body", same_body_result, None),
+                        ],
+                    );
+                }
+
+                result
+            }
         } else {
             false
         }

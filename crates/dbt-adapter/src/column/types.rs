@@ -245,7 +245,11 @@ impl ColumnStatic {
                 _ => column_type,
             },
         };
-        translated.to_string()
+        match self.0 {
+            // https://github.com/databricks/dbt-databricks/blob/45351e11517d3f37c5ac7a736b5fcba453d3f368/dbt/adapters/databricks/column.py#L24
+            AdapterType::Databricks => translated.to_lowercase(),
+            _ => translated.to_string(),
+        }
     }
 
     pub fn numeric_type(&self, dtype: &str, precision: Option<u64>, scale: Option<u64>) -> String {
@@ -1248,6 +1252,33 @@ mod tests {
 
         let (dtype, _) = Column::make_degenerate_types(AdapterType::Snowflake, "BLAH NOT NULL");
         assert_eq!(dtype, "BLAH");
+    }
+
+    #[test]
+    fn test_translate_type_lowercases_for_databricks_only() {
+        // Databricks lowercases translated types; the input type is preserved
+        // otherwise (DECIMAL(10, 2) does not match any rewrite rule).
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Databricks).translate_type("DECIMAL(10, 2)"),
+            "decimal(10, 2)"
+        );
+
+        // Snowflake (and other adapters) preserve the original casing.
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Snowflake).translate_type("DECIMAL(10, 2)"),
+            "DECIMAL(10, 2)"
+        );
+
+        // The rewrite still applies before lowercasing on Databricks.
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Databricks).translate_type("LONG"),
+            "bigint"
+        );
+        // Spark shares the same rewrite but is not lowercased.
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Spark).translate_type("LONG"),
+            "BIGINT"
+        );
     }
 
     #[test]

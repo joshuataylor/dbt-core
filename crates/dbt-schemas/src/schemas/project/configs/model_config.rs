@@ -276,7 +276,7 @@ pub struct ProjectModelConfig {
     )]
     pub include_full_name_in_path: Option<bool>,
     #[serde(rename = "+incremental_predicates")]
-    pub incremental_predicates: Option<Vec<String>>,
+    pub incremental_predicates: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+incremental_strategy")]
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
     #[serde(rename = "+constraints")]
@@ -831,7 +831,7 @@ pub struct ModelConfig {
     #[resolved(promote, default = DbtMaterialization::View)]
     pub materialized: Option<DbtMaterialization>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
-    pub incremental_predicates: Option<Vec<String>>,
+    pub incremental_predicates: Option<StringOrArrayOfStrings>,
     // Model-level constraints authored via `{{ config(constraints=[...]) }}`, as opposed to
     // the schema.yml `constraints:` model property (see `resolve_models.rs`, which prefers
     // this when set and otherwise falls back to the schema.yml-resolved value).

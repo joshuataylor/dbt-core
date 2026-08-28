@@ -870,7 +870,7 @@ pub struct ManifestModelConfig {
     pub materialized: Option<DbtMaterialization>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub incremental_predicates: Option<Vec<String>>,
+    pub incremental_predicates: Option<StringOrArrayOfStrings>,
     pub batch_size: Option<DbtBatchSize>,
     pub lookback: Option<i32>,
     pub begin: Option<String>,

@@ -282,7 +282,7 @@ pub struct ProjectSeedConfig {
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+dist")]
-    pub dist: Option<String>,
+    pub dist: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+sort")]
     pub sort: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+sort_type")]

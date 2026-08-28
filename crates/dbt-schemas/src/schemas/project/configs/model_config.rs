@@ -44,7 +44,8 @@ use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::{
     IndexesConfig, PrimaryKeyConfig, StringOrInteger, bool_or_string_bool, column_types_map,
     default_type, event_time_or_map_to_string, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, string_or_number_to_string, u64_or_string_u64,
+    hours_to_expiration_or_string_omissible, model_constraints_or_map, string_or_number_to_string,
+    u64_or_string_u64,
 };
 use dbt_proc_macros::{DefaultTo, Resolvable};
 use dbt_yaml::ShouldBe;
@@ -216,7 +217,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+description")]
     pub description: Option<String>,
     #[serde(rename = "+dist")]
-    pub dist: Option<String>,
+    pub dist: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+docs")]
     pub docs: Option<DocsConfig>,
     #[serde(
@@ -283,7 +284,11 @@ pub struct ProjectModelConfig {
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+incremental_strategy")]
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
-    #[serde(rename = "+constraints")]
+    #[serde(
+        default,
+        rename = "+constraints",
+        deserialize_with = "model_constraints_or_map"
+    )]
     pub constraints: Option<Vec<ModelConstraint>>,
     #[serde(rename = "+initialize")]
     pub initialize: Option<String>,
@@ -838,9 +843,9 @@ pub struct ModelConfig {
     pub materialized: Option<DbtMaterialization>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
-    // Model-level constraints authored via `{{ config(constraints=[...]) }}`, as opposed to
-    // the schema.yml `constraints:` model property (see `resolve_models.rs`, which prefers
-    // this when set and otherwise falls back to the schema.yml-resolved value).
+    // Hashed into the run-cache key only; the functional source of a model's constraints is the
+    // schema.yml `constraints:` property (`resolve_models.rs:1163`). Matches dbt-core.
+    #[serde(default, deserialize_with = "model_constraints_or_map")]
     pub constraints: Option<Vec<ModelConstraint>>,
     pub batch_size: Option<DbtBatchSize>,
     #[resolved(promote, default = 1)]
@@ -1998,7 +2003,7 @@ fn materialized_eq(a: &Option<DbtMaterialization>, b: &Option<DbtMaterialization
 #[cfg(test)]
 mod tests {
     use super::ModelConfig;
-    use crate::schemas::common::{FreshnessPeriod, UpdatesOn};
+    use crate::schemas::common::{ConstraintType, FreshnessPeriod, UpdatesOn};
     use crate::schemas::manifest::ManifestModelConfig;
     use crate::schemas::project::configs::model_config::ProjectModelConfig;
     use crate::schemas::properties::StatePreClone;
@@ -2283,6 +2288,38 @@ __warehouse_specific_config__: {}
             config.event_time.as_deref(),
             Some(r#"{"column":"event_at"}"#)
         );
+    }
+
+    /// dbt-core accepts a mapping-valued `config: constraints:` and yields no constraint from
+    /// it, while the sequence shape still parses into typed constraints.
+    #[test]
+    fn test_model_config_constraints_accepts_mapping_and_sequence() {
+        let mapping: ModelConfig = dbt_yaml::from_str(
+            r#"
+constraints:
+  primary_key:
+    - id
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(mapping.constraints, None);
+
+        let sequence: ModelConfig = dbt_yaml::from_str(
+            r#"
+constraints:
+  - type: primary_key
+    columns: [id]
+__warehouse_specific_config__: {}
+"#,
+        )
+        .unwrap();
+
+        let constraints = sequence.constraints.expect("constraints should parse");
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].type_, ConstraintType::PrimaryKey);
+        assert_eq!(constraints[0].columns, Some(vec!["id".to_string()]));
     }
 
     #[test]

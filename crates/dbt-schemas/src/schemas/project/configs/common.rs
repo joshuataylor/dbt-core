@@ -230,7 +230,7 @@ pub struct WarehouseSpecificNodeConfig {
     pub backup: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
-    pub dist: Option<String>,
+    pub dist: Option<StringOrArrayOfStrings>,
     pub sort: Option<StringOrArrayOfStrings>,
     pub sort_type: Option<String>,
 

@@ -6299,7 +6299,7 @@ pub struct RedshiftAttr {
     pub auto_refresh: Option<bool>,
     pub backup: Option<bool>,
     pub bind: Option<bool>,
-    pub dist: Option<String>,
+    pub dist: Option<StringOrArrayOfStrings>,
     pub sort: Option<StringOrArrayOfStrings>,
     pub sort_type: Option<String>,
 }

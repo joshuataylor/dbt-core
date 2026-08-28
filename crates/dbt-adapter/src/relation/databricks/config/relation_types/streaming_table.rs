@@ -13,10 +13,9 @@ fn requires_full_refresh(components: &IndexMap<&'static str, ComponentConfigChan
 /// Create a `RelationConfigLoader` for Databricks streaming tables
 pub(crate) fn new_loader() -> RelationConfigLoader<'static, DatabricksRelationMetadata> {
     // TODO: missing from Python dbt-databricks:
-    // - liquid clustering
     // - relation tags
-    let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 6] = [
-        // Box::new(components::LiquidClusteringLoader),
+    let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 7] = [
+        Box::new(components::LiquidClusteringLoader),
         Box::new(components::PartitionByLoader),
         Box::new(components::RelationCommentLoader),
         Box::new(components::TblPropertiesLoader),
@@ -99,7 +98,15 @@ mod tests {
                 expected_changeset: RelationComponentConfigChangeSet::new(
                     AdapterType::Databricks,
                     [
-                        // TODO: add liquid clustering to changeset here once that gets implemented
+                        (
+                            components::LiquidClusteringLoader.type_name(),
+                            ComponentConfigChange::Some(
+                                components::LiquidClusteringLoader::new_component_type_erased(
+                                    false,
+                                    vec!["cluster_by_new".to_string()],
+                                ),
+                            ),
+                        ),
                         (
                             components::RefreshLoader.type_name(),
                             ComponentConfigChange::Some(
@@ -151,6 +158,14 @@ mod tests {
                     requires_full_refresh,
                 ),
                 changeset_jinja: "
+<liquid_clustering>
+    <auto_cluster>
+        False
+    </auto_cluster>
+    <cluster_by>
+        cluster_by_new
+    </cluster_by>
+</liquid_clustering>
 <comment>
     <comment>
         new comment

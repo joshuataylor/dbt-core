@@ -405,8 +405,8 @@ impl<'a> CompilationPhasesExecutor<'a> {
     fn publish_parse_index(&mut self, resolved_state: &ResolverState) {
         // `write_index` is still consulted, just not as the *trigger*: `--no-write-index` clears it
         // (see `effective_write_index`), and an explicit opt-out has to win even here. The gate
-        // then skips because `write_index` is false — no `CheckIndexUnavailable`, that code is for
-        // a write that was requested and failed.
+        // then skips because `write_index` is false — the gate warns under `CheckIndexDisabled`
+        // rather than `CheckIndexUnavailable`, which is for a write that was requested and failed.
         //
         // `nodes.checks` is enabled-only (`resolve_checks` inserts a node only when enabled), so an
         // empty map means nothing will read the parse layer early even on `build`/`check`.

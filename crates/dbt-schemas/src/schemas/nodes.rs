@@ -3111,15 +3111,15 @@ impl InternalDbtNode for DbtCheck {
                 self.deprecated_config.enabled == other_check.deprecated_config.enabled;
             let severity_eq =
                 self.deprecated_config.severity == other_check.deprecated_config.severity;
-            let node_fqn_eq =
-                self.deprecated_config.node_fqn == other_check.deprecated_config.node_fqn;
+            let selection_filter_on_eq = self.deprecated_config.selection_filter_on
+                == other_check.deprecated_config.selection_filter_on;
             // Resolved tags live on common_attr, not the config wrapper (cf. DbtSavedQuery).
             let tags_eq = tags_eq_vec(
                 &self.__common_attr__.tags,
                 &other_check.__common_attr__.tags,
             );
 
-            let result = enabled_eq && severity_eq && node_fqn_eq && tags_eq;
+            let result = enabled_eq && severity_eq && selection_filter_on_eq && tags_eq;
 
             if !result {
                 log_state_mod_diff(
@@ -3143,11 +3143,11 @@ impl InternalDbtNode for DbtCheck {
                             )),
                         ),
                         (
-                            "node_fqn",
-                            node_fqn_eq,
+                            "selection_filter_on",
+                            selection_filter_on_eq,
                             Some((
-                                format!("{:?}", &self.deprecated_config.node_fqn),
-                                format!("{:?}", &other_check.deprecated_config.node_fqn),
+                                format!("{:?}", &self.deprecated_config.selection_filter_on),
+                                format!("{:?}", &other_check.deprecated_config.selection_filter_on),
                             )),
                         ),
                         (

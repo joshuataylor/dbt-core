@@ -158,8 +158,8 @@ pub mod schemas {
             AnalysesConfig, ProjectAnalysisConfig, ResolvedAnalysesConfig,
         };
         pub use configs::check_config::{
-            CheckConfig, DEFAULT_CHECK_SEVERITY, InfoSchemaConfig, NodeFqn, ProjectCheckConfig,
-            ResolvedCheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS,
+            CheckConfig, DEFAULT_CHECK_SEVERITY, InfoSchemaConfig, ProjectCheckConfig,
+            ResolvedCheckConfig, SUPPORTED_INFO_SCHEMA_VERSIONS, SelectionFilterOn,
         };
         pub use configs::common::{WarehouseSpecificNodeConfig, same_warehouse_config};
         pub use configs::config_keys::ConfigKeys;

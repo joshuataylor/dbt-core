@@ -1208,7 +1208,9 @@ fn default_show() -> bool {
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, Default, DbtSchema)]
 pub struct PersistDocsConfig {
+    #[serde(deserialize_with = "bool_or_string_bool", default)]
     pub columns: Option<bool>,
+    #[serde(deserialize_with = "bool_or_string_bool", default)]
     pub relation: Option<bool>,
 }
 

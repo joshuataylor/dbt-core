@@ -5845,6 +5845,92 @@ impl AdapterImpl {
         metadata::clickhouse::server_capabilities(self, state, token).is_at_or_after(version)
     }
 
+    /// ClickHouse `adapter.calculate_incremental_strategy(strategy)` — see
+    /// [`metadata::clickhouse::calculate_incremental_strategy`].
+    pub fn calculate_incremental_strategy(
+        &self,
+        state: &State,
+        strategy: Option<&str>,
+        token: CancellationToken,
+    ) -> String {
+        metadata::clickhouse::calculate_incremental_strategy(
+            strategy,
+            metadata::clickhouse::server_capabilities(self, state, token).use_lw_deletes,
+        )
+    }
+
+    /// ClickHouse `adapter.validate_incremental_strategy(strategy, predicates,
+    /// unique_key, partition_by)` — see
+    /// [`metadata::clickhouse::validate_incremental_strategy`].
+    pub fn validate_incremental_strategy(
+        &self,
+        state: &State,
+        strategy: &str,
+        has_predicates: bool,
+        has_unique_key: bool,
+        has_partition_by: bool,
+        token: CancellationToken,
+    ) -> AdapterResult<()> {
+        metadata::clickhouse::validate_incremental_strategy(
+            strategy,
+            has_predicates,
+            has_unique_key,
+            has_partition_by,
+            metadata::clickhouse::server_capabilities(self, state, token).has_lw_deletes,
+        )
+    }
+
+    /// ClickHouse `adapter.check_incremental_schema_changes(...)` — see
+    /// [`metadata::clickhouse::column_changes_value`]. Returns none when the
+    /// relation does not exist yet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_incremental_schema_changes(
+        &self,
+        state: &State,
+        on_schema_change: &str,
+        existing: Option<Arc<dyn BaseRelation>>,
+        target_sql: &str,
+        materialization: &str,
+        // dbt-clickhouse #689: applied to the DESCRIBE probe so introspected
+        // types match runtime (e.g. join_use_nulls).
+        query_settings: Option<&Value>,
+        token: CancellationToken,
+    ) -> AdapterResult<Value> {
+        if !matches!(
+            on_schema_change,
+            "fail" | "ignore" | "append_new_columns" | "sync_all_columns"
+        ) {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                "Only `fail`, `ignore`, `append_new_columns`, and `sync_all_columns` supported for `on_schema_change`.",
+            ));
+        }
+        let Some(existing) = existing else {
+            return Ok(none_value());
+        };
+
+        let source = self.get_columns_in_relation(state, existing.as_ref())?;
+        let target = {
+            let ctx = query_ctx_from_state(state)?.with_desc("check_incremental_schema_changes");
+            let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+            self.get_column_schema_from_query(
+                state,
+                conn.as_mut(),
+                &ctx,
+                target_sql,
+                query_settings,
+                token,
+            )?
+        };
+
+        metadata::clickhouse::column_changes_value(
+            on_schema_change,
+            source,
+            target,
+            materialization,
+        )
+    }
+
     /// ClickHouse: render the model's `settings` config as a table-level `SETTINGS ...`
     /// block for CREATE TABLE DDL. The leading `-- end_of_sql` marker is what
     /// `clickhouse__place_limit` (utils/utils.sql) splits on to inject LIMIT ahead of
@@ -5886,8 +5972,6 @@ impl AdapterImpl {
 
     /// ClickHouse: render the model's `query_settings` config as a query-level
     /// `SETTINGS ...` clause appended to the SELECT; empty string when unset.
-    /// The lightweight-delete query-settings injection arrives with the
-    /// incremental-strategies port.
     pub fn get_model_query_settings(&self, model: &Value) -> String {
         let settings = metadata::clickhouse::model_config_map(model, "query_settings");
         let settings_str = metadata::clickhouse::build_settings_str(&settings);

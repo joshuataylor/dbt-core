@@ -42,3 +42,6 @@ pub use context::is_pool_worker;
 mod future;
 mod park;
 mod util;
+
+pub use dbt_runtime_macros::main;
+pub use dbt_runtime_macros::test;

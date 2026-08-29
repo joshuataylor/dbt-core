@@ -3,6 +3,20 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use dbt_runtime::builder::Builder;
 
+#[dbt_runtime::test]
+async fn test_macro_provides_dbt_runtime_handle() {
+    let handle = dbt_runtime::Handle::try_current().expect("handle should be set");
+    let result = handle.spawn_blocking(|| 6 * 7).await.unwrap();
+    assert_eq!(result, 42);
+}
+
+#[dbt_runtime::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_macro_multi_thread() {
+    let handle = dbt_runtime::Handle::try_current().expect("handle should be set");
+    let result = handle.spawn_blocking(|| 6 * 7).await.unwrap();
+    assert_eq!(result, 42);
+}
+
 #[test]
 fn runs_a_blocking_task_end_to_end() {
     let rt = Builder::new().max_blocking_threads(2).build();

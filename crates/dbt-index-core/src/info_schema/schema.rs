@@ -173,9 +173,9 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
         filter: Filter::ResourceTypeIn(&["analysis"]),
         cols: node_cols![],
     },
-    // Empty for now: operations are not part of the node set, so nothing
-    // reaches this table. The shape is published so it can be filled later
-    // without a schema change.
+    // Project `on_run_start` / `on_run_end` operations, as node rows with
+    // `resource_type = 'operation'`. `sql_operation` is kept so a future
+    // resource type can land here without a schema change.
     TableSpec {
         ns: Ns::Dbt,
         name: "hooks",

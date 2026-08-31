@@ -41,7 +41,7 @@ pub mod schema;
 pub mod spec;
 pub mod views;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -252,22 +252,76 @@ fn internal_packages(adapter_type: Option<&str>) -> Vec<String> {
     v
 }
 
+type VarMap = BTreeMap<String, serde_json::Value>;
+
+/// Render a var value the way `serde_json::Value` displays: a plain string
+/// bare, anything else as JSON.
+fn render_var_value(value: serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }
+}
+
+/// Split a package's vars map into scalar variables and package-scoped nested
+/// maps. A nested object is a scope only when its key is an installed package;
+/// otherwise it stays an object-valued variable on the parent.
+fn split_scoped_vars(map: VarMap, installed: &HashSet<String>) -> (VarMap, Vec<(String, VarMap)>) {
+    let mut scalars = BTreeMap::new();
+    let mut scopes = Vec::new();
+    for (key, value) in map {
+        if let serde_json::Value::Object(obj) = value {
+            if installed.contains(&key) {
+                scopes.push((key, obj.into_iter().collect()));
+                continue;
+            }
+            scalars.insert(key, serde_json::Value::Object(obj));
+        } else {
+            scalars.insert(key, value);
+        }
+    }
+    (scalars, scopes)
+}
+
 /// `dbt.project_vars`, one row per (project, variable).
 ///
 /// The source table holds one row per package, with the package name in
 /// `var_name` and that package's whole variable map encoded in `var_value`.
 /// Un-nest it so each variable is its own row and the package it applies to is
-/// its own column.
+/// its own column. Nested object keys that name an installed package become
+/// their own `project_name` rows, inheriting the parent's scalar vars and
+/// overlaying the nested map.
 fn build_project_vars(staging_dir: &Path, out: &SchemaRef) -> Result<Vec<RecordBatch>, IndexError> {
     let adapter = read_source(staging_dir, "project")
         .first()
         .and_then(|b| str_col(b, "adapter_type").map(|c| c.value(0).to_string()));
     let skip = internal_packages(adapter.as_deref());
 
+    let mut installed: HashSet<String> = HashSet::new();
+    for batch in read_source(staging_dir, "packages") {
+        let Some(col) = str_col(&batch, "package_name") else {
+            continue;
+        };
+        for row in 0..batch.num_rows() {
+            if !col.is_null(row) {
+                installed.insert(col.value(row).to_string());
+            }
+        }
+    }
+
     let mut projects: Vec<String> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     let mut values: Vec<String> = Vec::new();
     let mut stamps: Vec<i64> = Vec::new();
+
+    let mut emit = |package: &str, map: BTreeMap<String, serde_json::Value>, stamp: i64| {
+        for (name, value) in map {
+            projects.push(package.to_string());
+            names.push(name);
+            values.push(render_var_value(value));
+            stamps.push(stamp);
+        }
+    };
 
     for batch in read_source(staging_dir, "project_vars") {
         let Some(pkg_col) = str_col(&batch, "var_name") else {
@@ -295,15 +349,15 @@ fn build_project_vars(staging_dir: &Path, out: &SchemaRef) -> Result<Vec<RecordB
                 .filter(|c| !c.is_null(row))
                 .map(|c| c.value(row))
                 .unwrap_or(0);
-            for (name, value) in map {
-                projects.push(package.to_string());
-                names.push(name);
-                // Render plain strings bare; anything else keeps its JSON form.
-                values.push(match value {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                });
-                stamps.push(stamp);
+            let (scalars, scopes) = split_scoped_vars(map, &installed);
+            emit(package, scalars.clone(), stamp);
+            for (scope_pkg, nested) in scopes {
+                if skip.iter().any(|s| s == &scope_pkg) {
+                    continue;
+                }
+                let mut inherited = scalars.clone();
+                inherited.extend(nested);
+                emit(&scope_pkg, inherited, stamp);
             }
         }
     }

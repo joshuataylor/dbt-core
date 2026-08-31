@@ -416,6 +416,7 @@ fn resource_types_split_into_their_own_tables() {
     assert_eq!(out_rows(out.path(), "dbt.snapshots.parquet").len(), 1);
     // Nothing leaks into a table it does not belong to.
     assert_eq!(out_rows(out.path(), "dbt.analyses.parquet").len(), 0);
+    assert_eq!(out_rows(out.path(), "dbt.hooks.parquet").len(), 0);
 
     let models = out_columns(out.path(), "dbt.models.parquet");
     assert!(!models.contains(&"source_name".to_string()));
@@ -575,6 +576,65 @@ fn dag_nodes_spans_the_whole_graph() {
     );
 }
 
+/// Operations land in `dbt.hooks`, not in the per-type resource tables.
+#[test]
+fn operations_land_in_hooks() {
+    let staging = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write_source(
+        staging.path(),
+        "nodes",
+        &[
+            node_row(
+                "operation.pkg.pkg-on-run-start-0",
+                "pkg-on-run-start-0",
+                "operation",
+            ),
+            node_row("model.pkg.a", "a", "model"),
+        ],
+    );
+    super::project_all(staging.path(), out.path()).unwrap();
+
+    let hooks = out_rows(out.path(), "dbt.hooks.parquet");
+    assert_eq!(hooks.len(), 1);
+    assert_eq!(
+        hooks[0]["unique_id"],
+        json!("operation.pkg.pkg-on-run-start-0")
+    );
+    assert_eq!(out_rows(out.path(), "dbt.models.parquet").len(), 1);
+}
+
+/// `dbt.packages` is one row per installed package name.
+#[test]
+fn packages_is_one_row_per_installed_package() {
+    let staging = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write_source(
+        staging.path(),
+        "packages",
+        &[
+            json!({
+                "package_name": "pkg",
+                "ingested_at": "2026-08-21T00:00:00Z",
+            }),
+            json!({
+                "package_name": "dbt_utils",
+                "ingested_at": "2026-08-21T00:00:00Z",
+            }),
+        ],
+    );
+    super::project_all(staging.path(), out.path()).unwrap();
+
+    let rows = out_rows(out.path(), "dbt.packages.parquet");
+    assert_eq!(rows.len(), 2);
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| r["package_name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"pkg"));
+    assert!(names.contains(&"dbt_utils"));
+}
+
 /// `project_vars` is one row per (project, variable), and the adapter's
 /// built-in packages are left out.
 #[test]
@@ -623,6 +683,68 @@ fn project_vars_is_one_row_per_project_and_variable() {
         .find(|r| r["var_name"] == json!("retention_days"))
         .unwrap();
     assert_eq!(retention["var_value"], json!("90"));
+}
+
+/// A nested vars block whose key is an installed package is a scope, not a
+/// variable: the parent's scalars are inherited and the nested map overlays
+/// them. An object whose key is not installed stays an object-valued variable.
+#[test]
+fn project_vars_inherits_into_installed_package_scopes() {
+    let staging = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    write_source(
+        staging.path(),
+        "project",
+        &[json!({
+            "project_name": "my_project",
+            "adapter_type": "duckdb",
+            "ingested_at": "2026-08-21T00:00:00Z",
+        })],
+    );
+    write_source(
+        staging.path(),
+        "packages",
+        &[
+            json!({"package_name": "my_project", "ingested_at": "2026-08-21T00:00:00Z"}),
+            json!({"package_name": "dbt_utils", "ingested_at": "2026-08-21T00:00:00Z"}),
+        ],
+    );
+    let vars = r#"{"region":"emea","retention_days":90,"dbt_utils":{"region":"apac"},"uninstalled":{"foo":1}}"#;
+    write_source(
+        staging.path(),
+        "project_vars",
+        &[json!({
+            "var_name": "my_project",
+            "var_value": vars,
+            "ingested_at": "2026-08-21T00:00:00Z",
+        })],
+    );
+    super::project_all(staging.path(), out.path()).unwrap();
+
+    let rows = out_rows(out.path(), "dbt.project_vars.parquet");
+    let pair = |r: &Value| {
+        (
+            r["project_name"].as_str().unwrap().to_string(),
+            r["var_name"].as_str().unwrap().to_string(),
+            r["var_value"].as_str().unwrap().to_string(),
+        )
+    };
+    let got: Vec<_> = rows.iter().map(pair).collect();
+    assert!(got.contains(&("my_project".into(), "region".into(), "emea".into())));
+    assert!(got.contains(&("my_project".into(), "retention_days".into(), "90".into())));
+    assert!(got.contains(&("dbt_utils".into(), "region".into(), "apac".into())));
+    assert!(got.contains(&("dbt_utils".into(), "retention_days".into(), "90".into())));
+    let uninstalled = rows
+        .iter()
+        .find(|r| r["var_name"] == json!("uninstalled"))
+        .expect("uninstalled nested map stays a variable on the parent");
+    assert_eq!(uninstalled["project_name"], json!("my_project"));
+    assert_eq!(uninstalled["var_value"], json!("{\"foo\":1}"));
+    assert!(
+        !got.iter()
+            .any(|(p, n, _)| p == "my_project" && n == "dbt_utils"),
+        "installed nested maps are scopes, not variables on the parent"
+    );
 }
 
 /// Column lineage is renamed to parent/child.

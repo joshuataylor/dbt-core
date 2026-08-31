@@ -55,8 +55,10 @@ use std::sync::Arc;
 
 pub mod adapter_factory;
 pub mod adapter_impl;
+pub mod store;
 pub use adapter_factory::*;
 pub use adapter_impl::{AdapterImpl, alias_types_from_state, quote_component, quote_ident};
+pub use store::{AdapterBuilder, AdapterStore};
 #[cfg(test)]
 mod tests;
 

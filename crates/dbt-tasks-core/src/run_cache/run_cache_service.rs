@@ -4572,6 +4572,7 @@ fn record_submit_skipped(node: &dyn InternalDbtNodeAttributes, reason: &'static 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_adapter::{AdapterBuilder, AdapterStore};
     use dbt_schemas::state::ProfileAdapter;
     use indexmap::IndexMap;
     use std::any::Any;
@@ -7550,6 +7551,7 @@ mod tests {
             Default::default(),
             Arc::new(crate::span_manager::SpanManager::new_empty()),
             Execute::Remote,
+            test_adapter_store(),
             sources_extractor,
             RunCacheCtx {
                 run_cache_metadata: Arc::new(RunCacheMetadataCache::new()),
@@ -7578,6 +7580,22 @@ mod tests {
             rendering_listener_factory: Arc::new(DefaultRenderingEventListenerFactory::default()),
             thread_id: 0,
         }
+    }
+
+    /// A store these tests never read from. Building a real `Adapter` needs a
+    /// `TypeOps` impl and a connection config, and nothing here executes SQL --
+    /// so the builder fails, which the store treats as "not built yet".
+    fn test_adapter_store() -> Arc<AdapterStore> {
+        let build: AdapterBuilder = Box::new(|_| {
+            Err(fs_err!(
+                ErrorCode::Unexpected,
+                "adapters are not built in run cache service tests"
+            ))
+        });
+        Arc::new(
+            AdapterStore::new(vec![AdapterType::Snowflake], AdapterType::Snowflake, build)
+                .expect("valid store"),
+        )
     }
 
     fn test_resolver_state_with_nodes(nodes: Nodes) -> ResolverState {

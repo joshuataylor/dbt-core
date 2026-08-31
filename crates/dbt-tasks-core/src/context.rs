@@ -11,6 +11,7 @@ use crate::run_cache::run_cache_service::{
 };
 use arrow::array::RecordBatch;
 use arrow_schema::SchemaRef;
+use dbt_adapter::AdapterStore;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter_core::AdapterType;
@@ -176,6 +177,12 @@ pub struct TaskRunnerCtxInner {
     pub materialization_resolver: Arc<MaterializationResolver>,
     pub root_project_name: String,
     pub adapter_type: AdapterType,
+    /// Every adapter the active target declares, built on first use.
+    ///
+    /// A task that knows its node's adapter type asks this for the adapter that
+    /// executes it, rather than re-deriving one from the profile. `adapter_type`
+    /// above is the *default*, which is what an unannotated node runs on.
+    pub adapter_store: Arc<AdapterStore>,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
@@ -205,6 +212,7 @@ impl TaskRunnerCtxInner {
         generic_test_relationships: GenericTestRelationships,
         span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
         execute: dbt_schemas::schemas::profiles::Execute,
+        adapter_store: Arc<AdapterStore>,
         sources_extractor: Arc<dyn SourcesExtractor>,
         run_cache_ctx: RunCacheCtx,
     ) -> Self {
@@ -256,6 +264,7 @@ impl TaskRunnerCtxInner {
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
             adapter_type: resolver_state.adapter_type,
+            adapter_store,
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
@@ -385,6 +394,12 @@ impl TaskRunnerCtx {
 
     pub fn adapter_type(&self) -> AdapterType {
         self.inner.adapter_type
+    }
+
+    /// Every adapter the active target declares. Ask it for the adapter that
+    /// executes a given adapter type; see [`AdapterStore`].
+    pub fn adapter_store(&self) -> &Arc<AdapterStore> {
+        &self.inner.adapter_store
     }
 
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {

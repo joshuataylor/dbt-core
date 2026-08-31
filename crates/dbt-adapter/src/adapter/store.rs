@@ -4,17 +4,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use dbt_adapter::Adapter;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
+
+use crate::Adapter;
 
 /// How the store builds an adapter it has not built yet.
 ///
 /// Construction is not a pure function of the adapter type -- it depends on the
-/// replay mode, the schema store, the execution backend and more, all of which
-/// [`crate::core::DbtLoadedProject`] already knows how to assemble. So the store
-/// takes a builder rather than those inputs: its job is identity and memoisation,
-/// not construction.
+/// replay mode, the schema store, the execution backend and more, none of which
+/// this crate knows about. So the store takes a builder rather than those
+/// inputs: its job is identity and memoisation, not construction.
 pub type AdapterBuilder = Box<dyn Fn(AdapterType) -> FsResult<Arc<Adapter>> + Send + Sync>;
 
 /// One adapter per adapter type the active target declares, built on first use.

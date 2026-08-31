@@ -6,10 +6,9 @@ use std::{
     time::SystemTime,
 };
 
-use crate::adapter_store::{AdapterBuilder, AdapterStore};
 use crate::config::CompilationConfig;
 use dbt_adapter::{
-    Adapter, AdapterEngine, AdapterImpl, AdapterType,
+    Adapter, AdapterBuilder, AdapterEngine, AdapterImpl, AdapterStore, AdapterType,
     adapter::AdapterFactory,
     cache::RelationCache,
     config::AdapterConfig,
@@ -623,7 +622,14 @@ impl DbtLoadedProject {
 
         let project = self.clone();
         let flags = Self::flags_from_env(jinja_env)?;
-        let root_project_quoting = resolved_state.root_project_quoting;
+        // The *authored* `quoting:` block, not `resolved_state.root_project_quoting`.
+        // The latter has already had its unset fields filled from the default
+        // adapter's policy, so handing it to a non-default adapter of another type
+        // silently applies the wrong one -- quote-everything to an adapter that
+        // does not quote renders identifiers it then cannot find. Each adapter
+        // resolves the same authored block against its own defaults instead, which
+        // is what `resolve_package_quoting` is field-wise for.
+        let authored_quoting = *self.dbt_state.root_project().quoting;
         let query_comment = resolved_state.runtime_config.inner.query_comment.clone();
         let cloud_config = self.dbt_cloud_config().cloned();
         // One budget for every adapter for now; per-adapter threads is a follow-up.
@@ -648,6 +654,7 @@ impl DbtLoadedProject {
                         "could not read the '{adapter_type}' connection: {e}"
                     )
                 })?;
+            let quoting = resolve_package_quoting(authored_quoting, adapter_type).try_into()?;
             project.build_adapter(
                 adapter_type,
                 db_config,
@@ -658,7 +665,7 @@ impl DbtLoadedProject {
                 sidecar_client.clone(),
                 execute,
                 infer_schemas,
-                root_project_quoting,
+                quoting,
                 query_comment.clone(),
                 cloud_config.clone(),
                 threads,
@@ -750,6 +757,9 @@ impl DbtLoadedProject {
         // This mode also applies to compile with --no-introspect
         // DuckDB is a local database — use the AdapterFactory for proper adapter creation
         // instead of a MockAdapter, so we get real query logging and telemetry.
+        // Lake compute joins it for the same reason from the other direction: it is
+        // an execution engine in its own right, and a node routed to it has no
+        // fallback path, so a mock would silently do nothing rather than degrade.
         //
         // Under `--dbt-replay`, the mock/sidecar adapter below has no metadata
         // adapter, so unit-test `given` upstream schemas cannot resolve from the
@@ -760,7 +770,7 @@ impl DbtLoadedProject {
             || infer_schemas
             || matches!(execute, Execute::Sidecar | Execute::Service);
         let use_local_mock_adapter = executes_locally && !is_mantle_replay;
-        let adapter = if adapter_type == AdapterType::DuckDB {
+        let adapter = if matches!(adapter_type, AdapterType::DuckDB | AdapterType::LakeCompute) {
             adapter_factory
                 .create_adapter(
                     adapter_type,

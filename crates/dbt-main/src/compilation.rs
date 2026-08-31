@@ -1922,7 +1922,19 @@ impl DbtProjectCompilation {
         };
 
         // FEATURES: auth record_replay
-        // Initialize adapter
+        // Initialize adapters. The store is kept, not just the adapter selected
+        // off it: a task that knows its node's adapter type asks it for the one
+        // that executes that node.
+        let adapter_store = self.loaded_project().init_adapter_store(
+            &self.resolved_state,
+            arg.replay.clone(),
+            &jinja_env,
+            Some(schema_store.clone()),
+            token,
+            sidecar_client.clone(),
+            execute_mode,
+            arg.infer_schemas,
+        )?;
         let adapter = if let Some(adapter_override) = arg
             .adapter_override
             .as_deref()
@@ -1934,29 +1946,9 @@ impl DbtProjectCompilation {
                     "--adapter '{adapter_override}' is not a recognized adapter type"
                 )
             })?;
-            self.loaded_project()
-                .init_adapter_store(
-                    &self.resolved_state,
-                    arg.replay.clone(),
-                    &jinja_env,
-                    Some(schema_store.clone()),
-                    token,
-                    sidecar_client.clone(),
-                    execute_mode,
-                    arg.infer_schemas,
-                )?
-                .get(adapter_type)?
+            adapter_store.get(adapter_type)?
         } else {
-            self.loaded_project().init_adapter(
-                &self.resolved_state,
-                arg.replay.clone(),
-                &jinja_env,
-                Some(schema_store.clone()),
-                token,
-                sidecar_client.clone(),
-                execute_mode,
-                arg.infer_schemas,
-            )?
+            adapter_store.default_adapter()?
         };
         token.check_cancellation()?;
 
@@ -2309,6 +2301,7 @@ impl DbtProjectCompilation {
         let task_runner = TaskRunner::new(
             hooks,
             adapter.clone(),
+            adapter_store,
             resolved_state,
             jinja_env,
             schema_store.clone(),

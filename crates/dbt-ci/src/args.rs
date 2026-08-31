@@ -28,7 +28,7 @@ pub struct PypiPublishArgs {
 
     /// Dir holding the `pyproject.toml` whose `[project]` metadata drives the
     /// wheel name and sdist. Defaults to the cargo workspace root (the `dbt` CLI);
-    /// point at `fs/sa/crates/dbt-python` for the `dbt-core` extension package.
+    /// point at `fs/sa/crates/dbt-sa-python` for the `dbt-core` extension package.
     #[arg(long, value_name = "DIR")]
     pub project_dir: Option<PathBuf>,
 

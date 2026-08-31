@@ -1,13 +1,17 @@
+//! The engine glue every dbt distribution's Python extension module shares.
+//!
+//! A distribution supplies its CLI surface and feature set via [`Distribution`]
+//! and calls [`register`] from its `#[pymodule]`; everything else lives here.
+
 use dbt_clap_core::commands::{Command, CoreCommand};
-use dbt_clap_core::{Cli, CliParser, CliParserFactory as _, from_lib, from_main};
+use dbt_clap_core::{Cli, CliParser, from_lib, from_main};
+pub use dbt_common::FsResult;
 use dbt_common::io_args::{FsCommand, SystemArgs};
 use dbt_common::tracing::FsTraceConfig;
 use dbt_common::tracing::dbt_init::{
     InvocationTracingGuard, ProcessTracing, init_tracing_cli_reloadable,
 };
-use dbt_features::cli::DefaultCliParserFactory;
-use dbt_features::feature_stack::{FeatureStack, FeatureStackConfig};
-use dbt_features::feature_stack_builder::FeatureStackBuilder;
+use dbt_features::feature_stack::FeatureStack;
 use dbt_features::tracing::TracingFeature;
 use dbt_main::{print_trimmed_error, run_cli_with_code};
 use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
@@ -33,6 +37,63 @@ fn on_tokio_thread_stop() {
 }
 
 mod contracts;
+
+// Re-exported so a distribution can write a [`CliTracingFactory`] without depending
+// on the tracing crates directly.
+pub use dbt_common::tracing::TracingConfigProvider;
+pub use dbt_tracing::init::TelemetryHandle;
+
+/// Builds this distribution's CLI surface. A factory rather than a built parser so
+/// [`Distribution`] stays a plain `Sync` value.
+pub type CliParserFactory = fn() -> CliParser;
+
+/// Installs process tracing for the console-script entrypoint, and may adjust
+/// [`SystemArgs`] for the command being run.
+///
+/// A distribution overrides this when one of its commands needs a different sink
+/// stack than the CLI's — a language server speaking JSON-RPC over stdio cannot have
+/// log lines on stdout. `None` uses the ordinary CLI tracing.
+pub type CliTracingFactory = fn(
+    &Cli,
+    &CliParser,
+    &mut SystemArgs,
+) -> FsResult<(TelemetryHandle, Box<dyn TracingConfigProvider>)>;
+
+/// Builds this distribution's feature set from the invocation's tracing feature.
+///
+/// Takes the parsed `Cli` as well as the derived args: a distribution's feature set
+/// can hinge on its own flags, which never reach [`SystemArgs`].
+pub type FeatureStackFactory = fn(TracingFeature, &Cli, &SystemArgs) -> Arc<FeatureStack>;
+
+/// All that separates one distribution's extension module from another.
+pub struct Distribution {
+    pub cli_parser: CliParserFactory,
+    pub feature_stack: FeatureStackFactory,
+    pub cli_tracing: Option<CliTracingFactory>,
+}
+
+/// Set once by [`register`]. Process-global because the classes below are
+/// constructed by Python, which cannot hand them a distribution.
+static DISTRIBUTION: OnceLock<Distribution> = OnceLock::new();
+
+fn distribution() -> &'static Distribution {
+    DISTRIBUTION
+        .get()
+        .expect("register() sets this at module import, before Python can call anything")
+}
+
+/// Adds this crate's classes and functions to a distribution's `_core` module.
+pub fn register(m: &Bound<'_, PyModule>, distribution: Distribution) -> PyResult<()> {
+    DISTRIBUTION
+        .set(distribution)
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("`_core` initialized twice"))?;
+
+    // No artifact classes; they are dataclasses under dbt/artifacts/schemas/.
+    m.add_class::<DbtRunner>()?;
+    m.add_class::<DbtRunnerResult>()?;
+    m.add_function(wrap_pyfunction!(run_cli, m)?)?;
+    Ok(())
+}
 
 /// Initialized once without consumer layers; each invocation installs its own.
 static PROCESS_TRACING: OnceLock<ProcessTracing> = OnceLock::new();
@@ -189,7 +250,7 @@ impl DbtRunner {
     #[new]
     fn new() -> Self {
         DbtRunner {
-            cli_parser: dbt_core_cli_parser(),
+            cli_parser: (distribution().cli_parser)(),
         }
     }
 
@@ -202,7 +263,7 @@ impl DbtRunner {
         // invoke_inner is pure Rust; run it GIL-released, serialize after.
         let cli_parser = &self.cli_parser;
         let (exit_code, command, exec, exception) =
-            py.detach(|| invoke_inner(argv, cli_parser, dbt_core_feature_stack))?;
+            py.detach(|| invoke_inner(argv, cli_parser, distribution().feature_stack))?;
         let (result, catalog_msgpack) = match exec {
             Some(mut exec) => (
                 build_result_msgpack(py, command, &mut exec)?,
@@ -243,15 +304,6 @@ fn describe_engine_error(captured: Option<&str>, e: &dbt_common::FsError) -> Str
     }
 }
 
-/// This distribution's CLI surface.
-fn dbt_core_cli_parser() -> CliParser {
-    DefaultCliParserFactory.create("dbt-core", env!("CARGO_PKG_VERSION"))
-}
-
-fn dbt_core_feature_stack(tracing: TracingFeature) -> Box<FeatureStack> {
-    FeatureStackBuilder::new(tracing).build()
-}
-
 fn invoke_inner<F>(
     argv: Vec<String>,
     cli_parser: &CliParser,
@@ -263,7 +315,7 @@ fn invoke_inner<F>(
     Option<String>,
 )>
 where
-    F: FnOnce(TracingFeature) -> Box<FeatureStack>,
+    F: FnOnce(TracingFeature, &Cli, &SystemArgs) -> Arc<FeatureStack>,
 {
     let cli = cli_parser
         .try_parse_from(argv)
@@ -289,13 +341,7 @@ where
         &mut arg,
     )?;
 
-    let feature_stack: Arc<FeatureStack> = {
-        let feature_stack = feature_stack_builder(tracing);
-        let config = FeatureStackConfig {
-            send_anonymous_usage_stats: arg.io.send_anonymous_usage_stats,
-        };
-        feature_stack.configure(&config).into()
-    };
+    let feature_stack = feature_stack_builder(tracing, &cli, &arg);
 
     // Apply ANTLR parser config from common args, as run_cli does (main_impl.rs);
     // skipping it diverges in-process parsing from the CLI.
@@ -379,17 +425,25 @@ where
 /// the standalone `dbt` binary: clap and the engine drive the process exit code.
 #[pyfunction]
 fn run_cli(py: Python<'_>, argv: Vec<String>) -> PyResult<()> {
-    let code = py.detach(|| run_cli_inner(argv, &dbt_core_cli_parser(), dbt_core_feature_stack));
+    let distribution = distribution();
+    let code = py.detach(|| {
+        run_cli_inner(
+            argv,
+            &(distribution.cli_parser)(),
+            distribution.feature_stack,
+        )
+    });
     std::process::exit(code as i32);
 }
 
 fn run_cli_inner<F>(argv: Vec<String>, cli_parser: &CliParser, feature_stack_builder: F) -> u8
 where
-    F: FnOnce(TracingFeature) -> Box<FeatureStack>,
+    F: FnOnce(TracingFeature, &Cli, &SystemArgs) -> Arc<FeatureStack>,
 {
-    // TODO: ensure .env loading is handled similarly to rust main entry point
     // argv is Python's sys.argv; parse it explicitly since the process is the
-    // interpreter, not `dbt`.
+    // interpreter, not `dbt`. Load .env first, same as the standalone binary's
+    // `prepare_cli_or_exit`, so clap's `env = "VAR"` attributes see it too.
+    dbt_main::init_env_before_parse();
     let cli = match cli_parser.try_parse_from(argv) {
         Ok(cli) => cli,
         // clap printed help/version/usage with the right code; honor it.
@@ -404,15 +458,18 @@ where
 
     let mut arg = from_main(&cli);
 
-    let (telemetry_handle, tracing_config_provider) =
-        match trace_config(&cli, cli_parser, &arg).init() {
-            Ok(handle) => handle,
-            Err(e) => {
-                let msg = e.to_string();
-                print_trimmed_error(msg);
-                std::process::exit(1);
-            }
-        };
+    let init_tracing = match distribution().cli_tracing {
+        Some(factory) => factory(&cli, cli_parser, &mut arg),
+        None => trace_config(&cli, cli_parser, &arg).init(),
+    };
+    let (telemetry_handle, tracing_config_provider) = match init_tracing {
+        Ok(handle) => handle,
+        Err(e) => {
+            let msg = e.to_string();
+            print_trimmed_error(msg);
+            std::process::exit(1);
+        }
+    };
 
     let tracing = TracingFeature::default()
         .with_config_provider(tracing_config_provider)
@@ -422,23 +479,7 @@ where
         arg.io.log_path = Some(resolved_file_log_path.to_path_buf());
     }
 
-    let feature_stack: Arc<FeatureStack> = {
-        let feature_stack = feature_stack_builder(tracing);
-        let config = FeatureStackConfig {
-            send_anonymous_usage_stats: arg.io.send_anonymous_usage_stats,
-        };
-        feature_stack.configure(&config).into()
-    };
+    let feature_stack = feature_stack_builder(tracing, &cli, &arg);
 
     run_cli_with_code(cli, arg, feature_stack)
-}
-
-#[pymodule]
-#[pyo3(name = "_core")]
-fn dbt_core_pyo3(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // No artifact classes; they are dataclasses under dbt/artifacts/schemas/.
-    m.add_class::<DbtRunner>()?;
-    m.add_class::<DbtRunnerResult>()?;
-    m.add_function(wrap_pyfunction!(run_cli, m)?)?;
-    Ok(())
 }

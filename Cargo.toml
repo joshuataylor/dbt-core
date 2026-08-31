@@ -46,7 +46,8 @@ members = [
   "crates/dbt-metadata",
   "crates/dbt-metadata-parquet",
   "crates/dbt-profile",
-  "crates/dbt-python",
+  "crates/dbt-python-core",
+  "crates/dbt-sa-python",
   "crates/dbt-state",
   "crates/dbt-schemas",
   "crates/dbt-schema-store",
@@ -277,6 +278,7 @@ dbt-platform-auth = { path = "crates/dbt-platform-auth" }
 dbt-pretty-table = { path = "crates/dbt-pretty-table" }
 dbt-proc-macros = { path = "crates/dbt-proc-macros" }
 dbt-profile = { path = "crates/dbt-profile" }
+dbt-python-core = { path = "crates/dbt-python-core" }
 dbt-runtime = { path = "crates/dbt-runtime" }
 dbt-runtime-macros = { path = "crates/dbt-runtime-macros" }
 dbt-scheduler = { path = "crates/dbt-scheduler" }

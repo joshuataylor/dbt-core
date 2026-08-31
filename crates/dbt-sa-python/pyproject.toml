@@ -27,6 +27,10 @@ lint = ["ruff>=0.16", "mypy>=2.3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The fixtures live in a plugin module, not a conftest, so every distribution's
+# tests can load them; these two keep a bare `pytest` in this crate working.
+pythonpath = ["tests"]
+addopts = "-p dbt_test_fixtures"
 
 [tool.ruff]
 target-version = "py311"

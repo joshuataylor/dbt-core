@@ -14,6 +14,9 @@ pub(crate) struct Spec {
     pub(crate) pyproject_dir: PathBuf,
     pub(crate) summary: Option<String>,
     pub(crate) requires_python: Option<String>,
+    /// PEP 621 `dependencies`, emitted as `Requires-Dist`. Installers that trust an
+    /// sdist's static metadata (uv does; pip re-derives it from the built wheel)
+    /// install nothing at all when these are dropped.
     pub(crate) dependencies: Vec<String>,
     pub(crate) classifiers: Vec<String>,
     pub(crate) urls: Vec<(String, String)>,
@@ -252,6 +255,7 @@ name = "my-thing"
         assert_eq!(spec.wheel_name, "my-thing");
         assert_eq!(spec.pyproject_dir, tmp.path());
         assert!(spec.summary.is_none());
+        assert!(spec.dependencies.is_empty());
         assert!(spec.authors.is_empty());
         assert!(spec.license.is_none());
         assert!(spec.description.is_none());
@@ -308,6 +312,7 @@ name = "dbt-sa-cli"
 description = "dbt fusion standalone analyzer CLI"
 authors = [{ name = "dbt Labs", email = "info@dbtlabs.com" }]
 requires-python = ">=3.9"
+dependencies = ["mashumaro[msgpack]>=3.14", "packaging>=24"]
 license = "Apache-2.0"
 readme = "README.md"
 classifiers = [
@@ -334,6 +339,10 @@ Repository = "https://github.com/dbt-labs/dbt-fusion"
             Some("dbt fusion standalone analyzer CLI")
         );
         assert_eq!(spec.requires_python.as_deref(), Some(">=3.9"));
+        assert_eq!(
+            spec.dependencies,
+            vec!["mashumaro[msgpack]>=3.14", "packaging>=24"]
+        );
         assert_eq!(spec.classifiers.len(), 2);
         assert_eq!(spec.urls.len(), 2);
         assert_eq!(spec.authors.len(), 1);

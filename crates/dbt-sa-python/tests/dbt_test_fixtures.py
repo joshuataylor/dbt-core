@@ -1,4 +1,8 @@
-"""Shared pytest fixtures.
+"""Shared pytest fixtures, loaded as a plugin (`-p dbt_test_fixtures`).
+
+A module rather than a conftest, so every distribution's test directory can use
+these — pytest merges conftests down a single path, and only honors
+`pytest_plugins` in the rootdir conftest.
 
 Every fixture project targets duckdb, so the hermetic tier runs a real adapter
 with no credentials and tests can assert on artifacts instead of on stdout.
@@ -15,7 +19,7 @@ import pytest
 from dbt.cli.main import dbtRunner, dbtRunnerResult
 
 TESTS_DIR = Path(__file__).parent
-FIXTURES_DIR = TESTS_DIR / "fixtures"
+FIXTURES_DIR = TESTS_DIR / "integration" / "fixtures"
 
 
 @pytest.fixture

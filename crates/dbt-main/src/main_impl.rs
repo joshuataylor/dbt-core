@@ -65,7 +65,7 @@ fn maybe_load_dotenv() {
     }
 }
 
-fn init_env_before_parse() {
+pub fn init_env_before_parse() {
     // Find project root and load .env BEFORE CLI parsing so that environment
     // variables from .env are available for clap's `env = "VAR"` attributes.
     maybe_load_dotenv();

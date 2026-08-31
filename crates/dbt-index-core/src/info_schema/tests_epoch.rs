@@ -38,7 +38,7 @@ use crate::format::cell_to_string;
 
 use super::schema::INFO_SCHEMA;
 use super::spec::TableSpec;
-use super::{epoch, epoch_views, write_info_schema};
+use super::{Materializer, epoch, epoch_views, write_info_schema_with};
 
 /// Columns dropped from the comparison, and why.
 ///
@@ -112,12 +112,13 @@ fn view_layer_matches_materialized_layer() {
     // `target/info_schema/` is left alone.
     let tmp = tempfile::tempdir().expect("tempdir");
     let out_root = tmp.path().join("info_schema");
-    write_info_schema(
+    write_info_schema_with(
+        Materializer::Copy,
         &metadata_dir,
         &out_root,
         &tmp.path().join(super::STAGING_DIR_NAME),
     )
-    .expect("write_info_schema");
+    .expect("write_info_schema COPY");
     let parquet_dir = super::versioned_dir(&out_root);
 
     // View layer, executed statement by statement rather than by splitting the

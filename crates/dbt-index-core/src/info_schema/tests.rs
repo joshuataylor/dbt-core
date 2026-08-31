@@ -874,6 +874,10 @@ fn output_lands_under_the_version_directory() {
         format!("v{}", super::INFO_SCHEMA_VERSION)
     );
     assert!(versioned.join("views.sql").exists());
+    assert!(
+        !versioned.join("epoch_views.sql").exists(),
+        "epoch_views.sql reads the private metadata layout and must not ship"
+    );
     for table in INFO_SCHEMA {
         assert!(
             versioned.join(table.file_name()).exists(),
@@ -960,13 +964,41 @@ fn bench_external_corpus_stage_attribution() {
         .and_then(|p| p.file_name())
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| corpus.clone());
-    let report = super::bench::run(label, &metadata, workdir.path(), 5).unwrap();
 
-    eprintln!("\n{}", report.table());
+    let arrow_dir = workdir.path().join("arrow");
+    let arrow = super::bench::run_with(
+        super::Materializer::Arrow,
+        format!("{label} arrow"),
+        &metadata,
+        &arrow_dir,
+        5,
+    )
+    .unwrap();
+    eprintln!("\n{}", arrow.table());
     assert!(
-        report.calls(crate::ingest::timings::Stage::EpochRead) > 0,
+        arrow.calls(crate::ingest::timings::Stage::EpochRead) > 0,
         "no epoch file was read — {corpus} holds no epoch metadata, so these \
          numbers measure nothing:\n{}",
-        report.table()
+        arrow.table()
     );
+
+    let copy_dir = workdir.path().join("copy");
+    match super::bench::run_with(
+        super::Materializer::Copy,
+        format!("{label} copy"),
+        &metadata,
+        &copy_dir,
+        5,
+    ) {
+        Ok(copy) => {
+            eprintln!("\n{}", copy.table());
+            assert_eq!(copy.iterations[0].tables, INFO_SCHEMA.len());
+            assert!(
+                copy.calls(crate::ingest::timings::Stage::Copy) > 0,
+                "COPY wrote no tables:\n{}",
+                copy.table()
+            );
+        }
+        Err(e) => eprintln!("COPY skipped: {e}"),
+    }
 }

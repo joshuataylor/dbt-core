@@ -9,23 +9,25 @@
 //!
 //! # How it is produced
 //!
-//! Two steps. The first is the existing metadata ingest, run into a staging
-//! directory: it walks the epoch layers, applies the merge and carry-forward
-//! rules, and produces one file per source table. The second projects those
-//! files into the information schema shape — renaming, dropping and splitting
-//! columns per [`schema::INFO_SCHEMA`].
+//! Two materializers, selected by [`Materializer`]. Production uses
+//! [`Materializer::Auto`]: DuckDB `COPY` from the epoch-view layer when a
+//! driver is available, Arrow ingest-and-project otherwise (air-gapped CI).
 //!
-//! The staging directory is the flat index at `target/index` when one is already
-//! present: the metadata ingest that builds the index and the one that feeds this
-//! projection are the same code, so an index built by `--write-index` (or a prior
-//! run) is reused via the delta path instead of re-ingesting the epochs. When
-//! there is no index to reuse — `--no-write-index`, or a `parse` that never builds
-//! one — the ingest runs into a private staging directory instead, so requesting
-//! the information schema never materialises an index the caller opted out of.
-//! Reusing the ingest verbatim either way keeps a single implementation of the
-//! epoch and merge semantics. The projection step runs unconditionally on every
-//! invocation, so removing the output directory is enough to force a rebuild even
-//! when staging is up to date.
+//! The Arrow path is two steps. The first is the existing metadata ingest, run
+//! into a staging directory: it walks the epoch layers, applies the merge and
+//! carry-forward rules, and produces one file per source table. The second
+//! projects those files into the information schema shape — renaming, dropping
+//! and splitting columns per [`schema::INFO_SCHEMA`]. The staging directory is
+//! the flat index at `target/index` when one is already present, so an index
+//! built by `--write-index` (or a prior run) is reused via the delta path.
+//! When there is no index to reuse, the ingest runs into a private staging
+//! directory instead. The projection step runs unconditionally on every
+//! invocation, so removing the output directory is enough to force a rebuild
+//! even when staging is up to date.
+//!
+//! The COPY path skips staging. It executes [`epoch_views::generate`] on one
+//! in-memory connection and `COPY (SELECT * FROM <view>) TO '<file>'` per
+//! table. Cold and steady cost the same: every run re-reads the epochs.
 //!
 //! Tables are described declaratively so the schema can be reviewed as data
 //! rather than as code, and so output column types are derived from their
@@ -34,6 +36,7 @@
 // Gated: a measurement tool, not shipped library code. See info_schema/bench.rs.
 #[cfg(any(test, feature = "bench"))]
 pub mod bench;
+mod copy;
 pub mod epoch;
 pub mod epoch_views;
 pub mod project;
@@ -91,20 +94,82 @@ pub fn versioned_dir(info_schema_dir: &Path) -> std::path::PathBuf {
 /// and a caller globbing the information schema must never pick them up.
 pub const STAGING_DIR_NAME: &str = ".info_schema_staging";
 
+/// How [`write_info_schema`] materializes parquet.
+///
+/// Production uses [`Materializer::Auto`]: DuckDB `COPY` from the epoch-view
+/// layer when a driver loads, Arrow ingest-and-project otherwise. The bench
+/// pins [`Materializer::Arrow`] and [`Materializer::Copy`] so the two can be
+/// timed on the same corpus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Materializer {
+    /// DuckDB `COPY` from epoch views, falling back to Arrow if the driver is
+    /// missing or `COPY` fails.
+    #[default]
+    Auto,
+    /// Ingest epochs into staging parquet, then project. No DuckDB.
+    Arrow,
+    /// DuckDB `COPY` only. Errors if the driver is unavailable or a statement
+    /// fails, so a measurement cannot silently time the fallback.
+    Copy,
+}
+
+impl Materializer {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Arrow => "arrow",
+            Self::Copy => "copy",
+        }
+    }
+}
+
 /// Build the information schema at `info_schema_dir` from the metadata at
 /// `metadata_dir`, staging the intermediate source tables in `staging_dir`.
 ///
 /// `staging_dir` holds the intermediate source-shaped tables (not the information
-/// schema shape). The caller passes the flat index directory (`target/index`) when
-/// one already exists, so its ingest is reused via the delta path rather than
-/// re-run; otherwise it passes a private fallback directory. See
+/// schema shape). Used only by the Arrow path: the caller passes the flat index
+/// directory (`target/index`) when one already exists, so its ingest is reused
+/// via the delta path rather than re-run; otherwise it passes a private fallback
+/// directory. See
 /// [`has_persisted_state`](crate::ingest::metadata_to_parquet::has_persisted_state).
+/// The COPY path ignores `staging_dir`.
 ///
 /// Tables land in this version's subdirectory, not in `info_schema_dir`
 /// itself, so several versions can coexist under one root.
 ///
 /// Returns the number of tables written.
 pub fn write_info_schema(
+    metadata_dir: &Path,
+    info_schema_dir: &Path,
+    staging_dir: &Path,
+) -> Result<usize, IndexError> {
+    write_info_schema_with(
+        Materializer::Auto,
+        metadata_dir,
+        info_schema_dir,
+        staging_dir,
+    )
+}
+
+/// [`write_info_schema`] with an explicit materializer. The bench pins Arrow
+/// vs Copy; production goes through [`write_info_schema`].
+pub fn write_info_schema_with(
+    how: Materializer,
+    metadata_dir: &Path,
+    info_schema_dir: &Path,
+    staging_dir: &Path,
+) -> Result<usize, IndexError> {
+    match how {
+        Materializer::Arrow => write_via_arrow(metadata_dir, info_schema_dir, staging_dir),
+        Materializer::Copy => copy::write_via_copy(metadata_dir, info_schema_dir),
+        Materializer::Auto => match copy::write_via_copy(metadata_dir, info_schema_dir) {
+            Ok(n) => Ok(n),
+            Err(_) => write_via_arrow(metadata_dir, info_schema_dir, staging_dir),
+        },
+    }
+}
+
+fn write_via_arrow(
     metadata_dir: &Path,
     info_schema_dir: &Path,
     staging_dir: &Path,
@@ -155,14 +220,24 @@ fn read_source(staging_dir: &Path, table: &str) -> Vec<RecordBatch> {
 /// Write one output table. Always writes the file, even with no rows, because
 /// `views.sql` creates a view per table and a view over a missing file fails
 /// every query against the database.
-fn write_output(
+pub(super) fn write_output(
     dir: &Path,
     spec: &TableSpec,
     out: &SchemaRef,
     batches: &[RecordBatch],
 ) -> Result<(), IndexError> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(spec.file_name());
+    write_parquet(&dir.join(spec.file_name()), out, batches)
+}
+
+/// Write `path` as zstd parquet with [`INFO_SCHEMA_VERSION_KEY`] in the file
+/// metadata. Used by the Arrow writer and by the COPY path when DuckDB did not
+/// stamp the KV itself.
+pub(super) fn write_parquet(
+    path: &Path,
+    schema: &SchemaRef,
+    batches: &[RecordBatch],
+) -> Result<(), IndexError> {
     let tmp = path.with_extension("parquet.tmp");
     // Stamp the version into the file itself, so a parquet file that has been
     // copied out of its versioned directory is still self-describing.
@@ -174,7 +249,7 @@ fn write_output(
         )]))
         .build();
     let file = std::fs::File::create(&tmp)?;
-    let mut writer = ArrowWriter::try_new(file, Arc::clone(out), Some(props))
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(schema), Some(props))
         .map_err(|e| IndexError::Other(format!("info schema writer: {e}")))?;
     for batch in batches {
         writer
@@ -184,7 +259,7 @@ fn write_output(
     writer
         .close()
         .map_err(|e| IndexError::Other(format!("info schema close: {e}")))?;
-    std::fs::rename(&tmp, &path)?;
+    std::fs::rename(&tmp, path)?;
     Ok(())
 }
 
@@ -539,5 +614,7 @@ fn fill_last_full_parse_at(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_copy;
 #[cfg(test)]
 mod tests_epoch;

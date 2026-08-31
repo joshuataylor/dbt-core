@@ -1766,17 +1766,16 @@ pub fn conform_normalized_snapshot_raw_code_to_mantle_format(normalized_full: &s
     let sql_without_opening = find_opening(normalized_full)
         .and_then(|start_pos| {
             let after_tag_start = &normalized_full[start_pos..];
+            // Scoped to this tag's own boundary: the *nearest* `%}` after
+            // `start_pos` always closes this tag, dashed or not, because a
+            // snapshot name is a bare identifier that can't itself contain
+            // `%}`. Searching for `-%}` first (as before) would skip past
+            // this tag's own plain `%}` and match a later, unrelated inner
+            // tag's dashed close instead (e.g. `{% snapshot foo %} ...
+            // {% for x in y -%}`), stripping real body content.
             after_tag_start
-                .find("-%}")
-                .or_else(|| after_tag_start.find("%}"))
-                .map(|end_offset| {
-                    let tag_end = if after_tag_start[end_offset..].starts_with("-%}") {
-                        end_offset + 3
-                    } else {
-                        end_offset + 2
-                    };
-                    &normalized_full[start_pos + tag_end..]
-                })
+                .find("%}")
+                .map(|end_offset| &normalized_full[start_pos + end_offset + 2..])
         })
         .unwrap_or(normalized_full);
 
@@ -2216,6 +2215,31 @@ exclude: 3
             conform_normalized_snapshot_raw_code_to_mantle_format(already),
             already,
             "already-stripped input should be returned unchanged"
+        );
+    }
+
+    #[test]
+    fn test_conform_normalized_snapshot_dashed_inner_tag_does_not_leak_into_opening_strip() {
+        // Regression for dbt-labs/dbt-core#15956 (FUSCSE-58): a plain outer
+        // `{% snapshot %}` tag combined with any inner whitespace-controlled tag
+        // caused the opening-tag boundary search to skip past this tag's own
+        // nearby `%}` and match the inner tag's dashed close instead, silently
+        // dropping real body content before hashing and falsely flagging
+        // unchanged snapshots as `state:modified.body`.
+        let trigger = "{% snapshot repro %} select {% for c in cols -%} {{ c }}{%- if not loop.last %},{%- endif -%} {%- endfor %} from t {% endsnapshot %}";
+        let control = "{%- snapshot repro -%} select {% for c in cols -%} {{ c }}{%- if not loop.last %},{%- endif -%} {%- endfor %} from t {%- endsnapshot -%}";
+
+        let stripped_trigger = conform_normalized_snapshot_raw_code_to_mantle_format(trigger);
+        let stripped_control = conform_normalized_snapshot_raw_code_to_mantle_format(control);
+
+        assert!(
+            stripped_trigger.contains("select") && stripped_trigger.contains("from t"),
+            "body content before/after the inner dashed tag must survive stripping, got: {stripped_trigger:?}"
+        );
+        assert_eq!(
+            stripped_trigger, stripped_control,
+            "plain and dashed outer tags must normalize to the same stripped body; \
+             the previous bug made these diverge, causing a false state:modified.body"
         );
     }
 

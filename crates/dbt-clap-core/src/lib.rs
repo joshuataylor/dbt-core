@@ -1635,17 +1635,17 @@ impl DocsArgs {
 pub enum DocsSubcommand {
     /// Generate a self-contained, statically hostable docs site.
     ///
-    /// Runs `compile --write-index`, then writes the site that index describes to
+    /// Compiles the project, then writes the site that compile describes to
     /// `--output-dir`. The result is a plain directory of files: host it anywhere,
     /// no server process required.
     ///
-    /// Pass `--no-compile` to skip the compile and export the index a previous
-    /// `--write-index` run wrote, which is then an error if there is none.
+    /// Pass `--no-compile` to skip the compile and export an existing index,
+    /// which is then an error if there is none.
     Generate(DocsGenerateArgs),
     /// Start the dbt docs v2 server backed by parquet artifacts in the target directory.
     ///
-    /// Reads parquet artifacts written by `--use-index` (or `--write-index`) and
-    /// exposes a local HTTP server. Does not require a dbt project.
+    /// Reads parquet artifacts from a previous `build` / `run` / `docs generate`
+    /// and exposes a local HTTP server. Does not require a dbt project.
     Serve(DocsServeArgs),
     #[command(external_subcommand)]
     Other(Vec<String>),
@@ -1686,9 +1686,9 @@ impl Default for DocsServeArgs {
 /// Args for `dbt docs generate`.
 ///
 /// Mirrors [`DocsServeArgs`] on `--target-path`, including the env var, so both
-/// docs subcommands locate the index identically. `generate` compiles with
-/// `--write-index` and exports the index that produces, so it needs a project
-/// directory and a warehouse connection — unless `--no-compile` reduces it to the
+/// docs subcommands locate the index identically. `generate` compiles and
+/// exports the index that compile produces, so it needs a project directory
+/// and a warehouse connection — unless `--no-compile` reduces it to the
 /// exporter it used to be.
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DocsGenerateArgs {
@@ -1711,11 +1711,11 @@ pub struct DocsGenerateArgs {
 
     /// Export only what is already indexed; never compile.
     ///
-    /// Without this, `compile --write-index` runs first, so the site always reflects
-    /// the project as it is now. With it, the export reads the index a previous
-    /// `--write-index` run wrote and a missing one is an error naming that remedy —
-    /// useful where the warehouse is unreachable, or to keep the command cheap and
-    /// read-only.
+    /// Without this, a compile runs first, so the site always reflects the
+    /// project as it is now. With it, the export reads the index a previous
+    /// `build` / `run` / `docs generate` wrote and a missing one is an error
+    /// naming that remedy — useful where the warehouse is unreachable, or to
+    /// keep the command cheap and read-only.
     #[arg(long, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), env = "DBT_DOCS_NO_COMPILE", overrides_with = "compile")]
     pub no_compile: bool,
 
@@ -1972,17 +1972,17 @@ pub struct CommonArgs {
     /// Enable full metadata output: incremental parse cache, epoch parquet state, and no JSON
     /// artifacts. Implies --partial-parse --no-write-json.
     ///
-    /// Not user-facing: kept for backwards compatibility with programmatic callers. Use
-    /// --write-index instead.
+    /// Not user-facing: kept for backwards compatibility with programmatic callers.
     #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_METADATA", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_metadata: bool,
 
-    /// Write the parquet index to target/index/. With --static-analysis strict, also writes
-    /// column schemas and column-level lineage.
-    #[arg(global = true, long = "write-index", alias = "use-index", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_USE_INDEX", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
+    /// Internal engine index at target/index/. Not a user API — `build` / `run` /
+    /// `check` write it by default. Hidden; still accepted for programmatic callers.
+    #[arg(global = true, long = "write-index", alias = "use-index", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_USE_INDEX", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_index: bool,
     /// Opt out of the index that `build` writes by default. `--write-index` is `SetTrue` with
     /// no negation, so without this flag defaulting it on would leave no way back.
+    /// Hidden; still accepted for existing scripts.
     #[arg(global = true, long, action = ArgAction::SetTrue, default_value_t=false, value_parser = BoolishValueParser::new(), hide = true)]
     pub no_write_index: bool,
 
@@ -1997,13 +1997,7 @@ pub struct CommonArgs {
     pub metadata_dir: Option<PathBuf>,
 
     /// Directory for index parquet output (default: <target>/index/)
-    #[arg(
-        global = true,
-        long,
-        env = "DBT_INDEX_DIR",
-        help_heading = help_headings::ARTIFACTS,
-        hide_short_help = true
-    )]
+    #[arg(global = true, long, env = "DBT_INDEX_DIR", hide = true)]
     pub index_dir: Option<PathBuf>,
 
     /// Write the dbt information schema to target/info_schema/: a queryable
@@ -2023,9 +2017,10 @@ pub struct CommonArgs {
     pub info_schema_dir: Option<PathBuf>,
 
     /// Compute and write column-level lineage into compile/cll parquet.
-    /// Requires --write-index and --static-analysis strict. Omitting this flag
-    /// skips the expensive CLL graph build, keeping index writing fast.
-    #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_LINEAGE", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS, hide_short_help = true)]
+    ///
+    /// Hidden. Auto-enabled when `--generate-info-schema` (or the hidden
+    /// `--write-index`) is combined with `--static-analysis strict`.
+    #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_LINEAGE", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_lineage: bool,
 
     // Support for query cache
@@ -3211,6 +3206,50 @@ mod tests {
         assert!(!args.effective_write_index());
         assert!(args.effective_partial_parse());
         assert!(args.effective_partial_load());
+    }
+
+    #[test]
+    fn hidden_artifact_flags_are_absent_from_long_help_but_still_parse() {
+        use clap::CommandFactory;
+
+        let help = CommonArgs::command().render_long_help().to_string();
+        for flag in [
+            "--write-lineage",
+            "--write-index",
+            "--write-metadata",
+            "--lineage",
+        ] {
+            assert!(
+                !help.contains(flag),
+                "{flag} must be hidden from --help, got:\n{help}"
+            );
+        }
+        assert!(
+            help.contains("--generate-info-schema"),
+            "public artifacts flag must remain in --help, got:\n{help}"
+        );
+        assert!(
+            help.contains("--write-catalog"),
+            "--write-catalog stays in --help, got:\n{help}"
+        );
+
+        let parsed = CommonArgs::try_parse_from([
+            "dbt",
+            "--write-catalog",
+            "--write-lineage",
+            "--write-index",
+            "--write-metadata",
+        ])
+        .expect("hidden artifact flags must remain accepted");
+        assert!(parsed.write_catalog);
+        assert!(parsed.write_lineage);
+        assert!(parsed.write_index);
+        assert!(parsed.write_metadata);
+
+        assert!(
+            CommonArgs::try_parse_from(["dbt", "--lineage"]).is_err(),
+            "--lineage is not a clap flag"
+        );
     }
 
     #[test]

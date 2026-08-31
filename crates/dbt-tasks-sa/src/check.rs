@@ -115,7 +115,7 @@ pub fn index_unavailable_reason(metadata_dir: &Path, index_dir: &Path) -> Option
     }
     Some(format!(
         "no current metadata index at {} — checks read the index but never build it; \
-         run with `--write-index`, or use `dbt check`",
+         run `dbt build` or `dbt check`",
         index_dir.display()
     ))
 }

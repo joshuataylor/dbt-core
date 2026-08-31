@@ -1127,8 +1127,10 @@ impl<'a> AllPhasesExecutor<'a> {
         let (mut compilation, jinja_env, compilation_cache_changes) =
             self.load_and_resolve_state(token).await?;
 
-        // Inform the user that schemas require --static-analysis strict, and CLL requires
-        // --write-lineage in addition. Emitted after load_and_resolve_state so the project's
+        // Inform the user that schemas and CLL require --static-analysis strict.
+        // CLL is auto-enabled when generate-info-schema (or write-index) meets
+        // strict SA; this advisory covers the remaining epochs-only path.
+        // Emitted after load_and_resolve_state so the project's
         // warn_error_options (applied during loading) can silence/upgrade these warnings.
         //
         // Not when `docs generate` drove this compile: the user passed none of these flags,
@@ -1150,12 +1152,15 @@ impl<'a> AllPhasesExecutor<'a> {
             .arg
             .static_analysis
             .is_some_and(dbt_common::static_analysis::is_strict_static_analysis);
-        // Name the flag the user actually passed, so the advice is actionable.
-        let advised_flag = match (self.arg.write_index, self.arg.generate_info_schema) {
-            (true, true) => "--write-index / --generate-info-schema",
-            (false, true) => "--generate-info-schema",
-            (true, false) => "--write-index",
-            (false, false) => "--write-metadata",
+        // Name the public flag when the user passed one, so the advice is actionable.
+        // `--write-index` / `--write-metadata` are hidden; still name them if that is
+        // what the invocation actually set.
+        let advised_flag = if self.arg.generate_info_schema {
+            "--generate-info-schema"
+        } else if self.arg.write_index {
+            "--write-index"
+        } else {
+            "--write-metadata"
         };
         if advise_index_flags && !strict_static_analysis {
             emit_warn_log_message(
@@ -1168,7 +1173,7 @@ impl<'a> AllPhasesExecutor<'a> {
             emit_warn_log_message(
                 ErrorCode::Generic,
                 format!(
-                    "{advised_flag}: add `--write-lineage` to write column-level lineage into compile/cll parquet."
+                    "{advised_flag}: column-level lineage is not written. Pass `--generate-info-schema` with `--static-analysis strict` to include it."
                 ),
             );
         }
@@ -1843,7 +1848,7 @@ impl<'a> AllPhasesExecutor<'a> {
                         if column_lineage.is_empty() {
                             emit_warn_log_message(
                                 ErrorCode::Generic,
-                                "--lineage requires --static-analysis strict; no column lineage written.",
+                                "column-level lineage requires --static-analysis strict; no column lineage written.",
                             );
                         }
                         write_metadata_parquet(
@@ -2174,8 +2179,7 @@ async fn run_docs_generate(
     // to the export, and to the error below when there is nothing to export.
     if !generate_args.no_compile {
         emit_info_log_message(
-            "Running `compile --write-index`; pass `--no-compile` to export the existing \
-             index instead.",
+            "Running compile; pass `--no-compile` to export the existing index instead.",
         );
         build_index_for_docs(
             &target_dir,
@@ -2248,8 +2252,7 @@ async fn run_docs_generate(
             if summary.has_column_lineage {
                 ""
             } else {
-                " — no column lineage; rerun the compile or build with \
-                 `--write-index --static-analysis strict` to include it"
+                " — no column lineage; rerun with `--static-analysis strict` to include it"
             },
         ),
     ));
@@ -2437,7 +2440,7 @@ async fn run_docs_serve(
             format!(
                 "dbt docs serve: no data to serve\n\n\
                  Index directory not found: {}\n\
-                 Run `dbt --write-index <run|build|compile>` to generate parquet artifacts,\n\
+                 Run `dbt build` or `dbt docs generate` to generate parquet artifacts,\n\
                  or pass `--target-path <DIR>` pointing at a directory whose `index/` subdirectory contains them.",
                 index_dir.display(),
             ),

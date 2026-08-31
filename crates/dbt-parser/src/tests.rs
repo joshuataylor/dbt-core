@@ -1963,4 +1963,120 @@ mod tests {
             "environment_key should not be reported unused, got {unused_keys:?}"
         );
     }
+
+    #[test]
+    fn test_literal_block_scalar_names_drop_trailing_newline() {
+        use dbt_schemas::schemas::properties::{
+            MinimalSchemaValue, MinimalTableValue, SourceProperties, Tables,
+        };
+        use dbt_schemas::schemas::serde::strip_one_trailing_newline_at_keys;
+
+        // YAML hands a literal block scalar to serde with its final newline intact. dbt-core
+        // loses it because every schema-yaml string goes through `get_rendered(..., native=True)`,
+        // which never takes the no-jinja fast path and so always runs the Jinja lexer
+        // (`keep_trailing_newline=False`). Fusion's fast path returns the string untouched, so the
+        // newline has to be dropped -- otherwise it lands in the source identity and
+        // `source('declared_source', 'rates')` cannot resolve it (#13842).
+        let yaml = r#"
+        name: |
+          declared_source
+        schema: |
+          raw
+        database: |
+          analytics
+        tables:
+          - name: |
+              rates
+            identifier: |
+              raw_rates
+        "#;
+
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        strip_one_trailing_newline_at_keys(&mut val, &["name", "schema", "database", "catalog"]);
+        let source: SourceProperties = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val.clone(),
+            false,
+            &env,
+            &ctx,
+            &listeners,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(source.name, "declared_source");
+        assert_eq!(source.schema.as_deref(), Some("raw"));
+        assert_eq!(source.database.as_deref(), Some("analytics"));
+        // `tables` is nested, so the entries are stripped where they are deserialized instead.
+        let table = &source.tables.expect("tables")[0];
+        assert_eq!(table.name, "rates\n");
+
+        // The same YAML is also read as a `MinimalSchemaValue` to build the resolver keys, and
+        // that name has to agree with the one above or the source is registered under one key
+        // and looked up under another.
+        let minimal: MinimalSchemaValue = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        assert_eq!(minimal.name, "declared_source");
+
+        let mut table_val: dbt_yaml::Value =
+            dbt_yaml::from_str("name: |\n  rates\nidentifier: |\n  raw_rates\n").unwrap();
+        strip_one_trailing_newline_at_keys(&mut table_val, &["name", "identifier"]);
+        let minimal_table: MinimalTableValue = dbt_jinja_utils::serde::into_typed_with_jinja(
+            table_val.clone(),
+            false,
+            &env,
+            &ctx,
+            &listeners,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(minimal_table.name.as_ref(), "rates");
+        // The strip rebuilds the scalar with its original span, so diagnostics still point at it.
+        assert_ne!(minimal_table.name.span(), &dbt_yaml::Span::default());
+
+        let table: Tables = dbt_jinja_utils::serde::into_typed_with_jinja(
+            table_val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        assert_eq!(table.name, "rates");
+        assert_eq!(table.identifier.as_deref(), Some("raw_rates"));
+    }
+
+    #[test]
+    fn test_jinja_produced_trailing_newline_survives() {
+        use dbt_schemas::schemas::properties::SourceProperties;
+        use dbt_schemas::schemas::serde::strip_one_trailing_newline_at_keys;
+
+        // dbt-core strips the newline off the *template source*, then evaluates, so a newline
+        // that the expression itself returns is kept. Stripping after rendering would eat it and
+        // diverge from Core in the opposite direction -- hence the pre-render pass above.
+        // `schema` is a plain scalar, `database` a block scalar wrapping the same expression;
+        // Core renders both to a value that still ends in `\n`.
+        let yaml = r#"
+        name: declared_source
+        schema: "{{ 'raw' ~ '\n' }}"
+        database: |
+          {{ 'analytics' ~ '\n' }}
+        "#;
+
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        strip_one_trailing_newline_at_keys(&mut val, &["name", "schema", "database", "catalog"]);
+        let source: SourceProperties = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        assert_eq!(source.name, "declared_source");
+        assert_eq!(source.schema.as_deref(), Some("raw\n"));
+        assert_eq!(source.database.as_deref(), Some("analytics\n"));
+    }
 }

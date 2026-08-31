@@ -362,6 +362,25 @@ where
     }
 }
 
+/// Drops one trailing `\n` from each of `keys` in `value`, preserving spans. Must run before
+/// Jinja: dbt-core strips the template source, so an expression's own newline survives.
+pub fn strip_one_trailing_newline_at_keys(value: &mut YmlValue, keys: &[&str]) {
+    for key in keys {
+        let Some(field) = value.get_mut(*key) else {
+            continue;
+        };
+        let Some(stripped) = field
+            .as_str()
+            .and_then(|s| s.strip_suffix('\n'))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let span = field.span().clone();
+        *field = YmlValue::string(stripped).with_span(span);
+    }
+}
+
 /// Accepts the sequence-valued `column_types` entries Core tolerates, joined into one string.
 pub fn column_types_map<'de, D>(
     deserializer: D,
@@ -1681,6 +1700,37 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<W>(r#"{"h":"null"}"#).unwrap().h,
             Omissible::Present(Some(StringOrInteger::String("null".to_string())))
+        );
+    }
+
+    #[test]
+    fn strip_one_trailing_newline_at_keys_matches_core_get_rendered_native() {
+        // Verified against dbt-core's `get_rendered(..., native=True)`, which never takes the
+        // no-jinja fast path and so always runs the Jinja lexer -- dropping exactly one trailing
+        // newline and nothing else. `untouched` stands in for a key not on the allowlist.
+        let mut value: YmlValue = dbt_yaml::from_str(
+            "one: \"declared_source\\n\"\ntwo: \"declared_source\\n\\n\"\npadded: \"  declared_source  \\n\"\nplain: declared_source\nuntouched: \"declared_source\\n\"\n",
+        )
+        .unwrap();
+
+        strip_one_trailing_newline_at_keys(&mut value, &["one", "two", "padded", "plain"]);
+
+        assert_eq!(value.get("one").unwrap().as_str(), Some("declared_source"));
+        assert_eq!(
+            value.get("two").unwrap().as_str(),
+            Some("declared_source\n")
+        );
+        assert_eq!(
+            value.get("padded").unwrap().as_str(),
+            Some("  declared_source  ")
+        );
+        assert_eq!(
+            value.get("plain").unwrap().as_str(),
+            Some("declared_source")
+        );
+        assert_eq!(
+            value.get("untouched").unwrap().as_str(),
+            Some("declared_source\n")
         );
     }
 }

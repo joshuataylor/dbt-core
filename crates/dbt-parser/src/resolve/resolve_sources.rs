@@ -24,6 +24,7 @@ use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::{ResolvableConfig, SourceConfig, Tags};
 use dbt_schemas::schemas::properties::{SourceProperties, Tables, TablesConfig};
 use dbt_schemas::schemas::relations::default_dbt_quoting_for;
+use dbt_schemas::schemas::serde::strip_one_trailing_newline_at_keys;
 use dbt_schemas::schemas::{CommonAttributes, DbtSource, DbtSourceAttr, NodeBaseAttributes};
 use dbt_schemas::state::{DbtPackage, GenericTestAsset, ModelStatus, NodeResolverTracker};
 use minijinja::Value as MinijinjaValue;
@@ -297,8 +298,16 @@ pub async fn resolve_sources(
             .map(extract_test_unrendered_configs)
             .unwrap_or_default();
 
+        // Strip before Jinja renders, not after; `unrendered_*` above deliberately keeps the
+        // raw newline, matching a Core-produced state manifest.
+        let mut schema_value = mpe.schema_value;
+        strip_one_trailing_newline_at_keys(
+            &mut schema_value,
+            &["name", "schema", "database", "catalog"],
+        );
+
         let mut source: SourceProperties = into_typed_with_jinja(
-            mpe.schema_value,
+            schema_value,
             false,
             jinja_env,
             base_ctx,
@@ -321,8 +330,11 @@ pub async fn resolve_sources(
             source.database = Some(catalog);
         }
 
+        let mut table_value = mpe.table_value.unwrap();
+        strip_one_trailing_newline_at_keys(&mut table_value, &["name", "identifier"]);
+
         let table: Tables = into_typed_with_jinja(
-            mpe.table_value.unwrap(),
+            table_value,
             false,
             jinja_env,
             base_ctx,

@@ -16,7 +16,7 @@ use dbt_schemas::schemas::properties::{
     AnalysesProperties, CheckProperties, DbtPropertiesFileValues, MinimalSchemaValue,
     MinimalTableValue, MinimalUnitTestValue,
 };
-use dbt_schemas::schemas::serde::FloatOrString;
+use dbt_schemas::schemas::serde::{FloatOrString, strip_one_trailing_newline_at_keys};
 use dbt_schemas::state::DbtPackage;
 use dbt_telemetry::AssetParsed;
 use dbt_yaml::{Span, Spanned, Verbatim};
@@ -76,7 +76,7 @@ impl MinimalProperties {
             // Extend but error on duplicate keys
             for model_value in models {
                 let model = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    model_value.clone(),
+                    name_stripped(&model_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -117,7 +117,7 @@ impl MinimalProperties {
         if let Some(analyses) = other.analyses {
             for analysis_value in analyses {
                 let analysis = into_typed_with_jinja::<AnalysesProperties, _>(
-                    analysis_value.clone(),
+                    name_stripped(&analysis_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -148,7 +148,7 @@ impl MinimalProperties {
         if let Some(checks) = other.checks {
             for check_value in checks {
                 let check = into_typed_with_jinja::<CheckProperties, _>(
-                    check_value.clone(),
+                    name_stripped(&check_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -187,7 +187,7 @@ impl MinimalProperties {
                 pre_render_tables_field(&mut source_value, jinja_env, base_ctx);
 
                 let source = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    source_value.clone(),
+                    name_stripped(&source_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -212,7 +212,7 @@ impl MinimalProperties {
                     validate_resource_name(&source.name)?;
                     for table in tables.iter() {
                         let minimum_table_value = into_typed_with_jinja::<MinimalTableValue, _>(
-                            table.clone(),
+                            name_stripped(table),
                             false,
                             jinja_env,
                             base_ctx,
@@ -270,7 +270,7 @@ impl MinimalProperties {
         if let Some(seeds) = other.seeds {
             for seed_value in seeds {
                 let seed = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    seed_value.clone(),
+                    name_stripped(&seed_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -301,7 +301,7 @@ impl MinimalProperties {
         if let Some(snapshots) = other.snapshots {
             for snapshot_value in snapshots {
                 let snapshot = into_typed_with_jinja::<MinimalSnapshotValue, _>(
-                    snapshot_value.clone(),
+                    name_stripped(&snapshot_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -332,7 +332,7 @@ impl MinimalProperties {
         if let Some(functions) = other.functions {
             for function_value in functions {
                 let function = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    function_value.clone(),
+                    name_stripped(&function_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -363,7 +363,7 @@ impl MinimalProperties {
         if let Some(exposures) = other.exposures {
             for exposure_value in exposures {
                 let exposure = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    exposure_value.clone(),
+                    name_stripped(&exposure_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -388,7 +388,7 @@ impl MinimalProperties {
         if let Some(metrics) = other.metrics {
             for metric_value in metrics {
                 let metric = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    metric_value.clone(),
+                    name_stripped(&metric_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -419,7 +419,7 @@ impl MinimalProperties {
         if let Some(saved_queries) = other.saved_queries {
             for saved_query_value in saved_queries {
                 let saved_query = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    saved_query_value.clone(),
+                    name_stripped(&saved_query_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -450,7 +450,7 @@ impl MinimalProperties {
         if let Some(unit_tests) = other.unit_tests {
             for unit_test_value in unit_tests {
                 let unit_test = into_typed_with_jinja::<MinimalUnitTestValue, _>(
-                    unit_test_value.clone(),
+                    name_stripped(&unit_test_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -481,7 +481,7 @@ impl MinimalProperties {
         if let Some(tests) = other.tests {
             for test_value in tests {
                 let test = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    test_value.clone(),
+                    name_stripped(&test_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -512,7 +512,7 @@ impl MinimalProperties {
         if let Some(data_tests) = other.data_tests {
             for test_value in data_tests {
                 let test = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    test_value.clone(),
+                    name_stripped(&test_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -543,7 +543,7 @@ impl MinimalProperties {
         if let Some(groups) = other.groups {
             for group_value in groups {
                 let group = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    group_value.clone(),
+                    name_stripped(&group_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -576,7 +576,7 @@ impl MinimalProperties {
                 // Only `name` is needed here. The full `MacrosProperties` renders every string
                 // field and discards it, double-rendering what `apply_macro_patches` renders.
                 let macro_props = into_typed_with_jinja::<MinimalSchemaValue, _>(
-                    macro_value.clone(),
+                    name_stripped(&macro_value),
                     false,
                     jinja_env,
                     base_ctx,
@@ -890,6 +890,13 @@ pub fn collect_model_version_info(
 /// `MinimalSchemaValue.tables` is wrapped in `Verbatim` (to protect table
 /// *contents* from premature rendering), which also blocks the field-level
 /// Jinja transform that would normally expand the string into a sequence.
+/// Clone of a schema-yaml entry with `name`'s trailing newline dropped, before Jinja runs.
+fn name_stripped(value: &dbt_yaml::Value) -> dbt_yaml::Value {
+    let mut value = value.clone();
+    strip_one_trailing_newline_at_keys(&mut value, &["name"]);
+    value
+}
+
 fn pre_render_tables_field(
     source_value: &mut dbt_yaml::Value,
     jinja_env: &JinjaEnv,

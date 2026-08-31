@@ -2238,20 +2238,8 @@ fn parse_csv_rows(data: &[u8]) -> FsResult<Vec<BTreeMap<String, YmlValue>>> {
         let mut row = BTreeMap::new();
         for (i, header) in headers.iter().enumerate() {
             let value = match record.get(i) {
-                None | Some("") => YmlValue::null(),
-                Some(field) => {
-                    if let Ok(v) = field.parse::<i64>() {
-                        YmlValue::number(v.into())
-                    } else if let Ok(v) = field.parse::<f64>() {
-                        YmlValue::number(v.into())
-                    } else if field.eq_ignore_ascii_case("true") {
-                        YmlValue::bool(true)
-                    } else if field.eq_ignore_ascii_case("false") {
-                        YmlValue::bool(false)
-                    } else {
-                        YmlValue::string(field.to_string())
-                    }
-                }
+                None => YmlValue::null(),
+                Some(field) => YmlValue::string(field.to_string()),
             };
             row.insert(header.to_string(), value);
         }
@@ -2307,6 +2295,26 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("note"), Some(&YmlValue::null()));
         assert_eq!(rows[0].len(), 3);
+    }
+
+    #[test]
+    fn test_parse_csv_rows_preserves_scalar_text() {
+        let rows = parse_csv_rows(b"id,code,enabled,ratio,empty\n1,000001,true,1.5,\n")
+            .expect("present CSV cells should preserve DictReader string semantics");
+
+        assert_eq!(rows.len(), 1);
+        for (column, expected) in [
+            ("id", "1"),
+            ("code", "000001"),
+            ("enabled", "true"),
+            ("ratio", "1.5"),
+            ("empty", ""),
+        ] {
+            assert_eq!(
+                rows[0].get(column),
+                Some(&YmlValue::string(expected.to_string()))
+            );
+        }
     }
 
     #[test]

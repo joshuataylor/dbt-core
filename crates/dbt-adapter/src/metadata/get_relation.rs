@@ -68,7 +68,7 @@ pub fn get_relation(
         AdapterType::Spark => {
             spark_get_relation(adapter, state, ctx, conn, schema, identifier, token)
         }
-        AdapterType::DuckDB | AdapterType::Alt => duckdb_get_relation(
+        AdapterType::DuckDB | AdapterType::LakeCompute => duckdb_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
         AdapterType::Fabric => fabric_get_relation(

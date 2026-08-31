@@ -438,8 +438,8 @@ pub async fn resolve_snapshots(
             // Resolved here rather than in the config merge, for the reason given in
             // `resolve_models`: the merge cannot see the target's adapter list. A
             // snapshot selects explicitly -- it has no attached node to inherit from --
-            // and an `alt` selection is rejected by the materialization rule, since
-            // `alt` does not materialize snapshots in v1.
+            // and an `lake_compute` selection is rejected by the materialization rule, since
+            // `lake_compute` does not materialize snapshots in v1.
             let resolved_node_adapter = validate_node_adapter(
                 snapshot_config.adapter,
                 &DbtMaterialization::Snapshot,

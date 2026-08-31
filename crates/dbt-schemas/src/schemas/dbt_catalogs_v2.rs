@@ -19,8 +19,6 @@ use dbt_common::serde_utils::try_get_bool;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_yaml::{self as yml};
 
-// `lake_compute` is `AdapterType::Alt`'s external name; the Rust side still
-// says `Alt` (see `GLUE_ALT_FIELDS` and friends below).
 const ALL_V2_PLATFORMS: &[&str] = &[
     "snowflake",
     "databricks",
@@ -148,11 +146,11 @@ const LINKED_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
     FieldSpec::u32_plain("iceberg_version").doc("Iceberg spec version, e.g. 3 for Iceberg V3."),
 ];
 
-// Direct AWS creds for the Alt (dbt Compute) backend, which signs Glue's
+// Direct AWS creds for the lake compute backend, which signs Glue's
 // Iceberg REST endpoint itself (SigV4) server-side rather than attaching via
 // a local DuckDB secret -- so it needs the raw credential fields, not a
 // `secret`/`endpoint_type` reference like DUCKDB_ICEBERG_FIELDS.
-const GLUE_ALT_FIELDS: &[FieldSpec] = &[
+const GLUE_LAKE_COMPUTE_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("catalog_id")
         .required()
         .non_empty()
@@ -308,7 +306,7 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
-            PlatformBlock::new("lake_compute", GLUE_ALT_FIELDS),
+            PlatformBlock::new("lake_compute", GLUE_LAKE_COMPUTE_FIELDS),
         ],
     },
     CatalogTypeSchema {

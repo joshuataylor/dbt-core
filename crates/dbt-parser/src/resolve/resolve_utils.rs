@@ -320,25 +320,25 @@ pub(crate) fn validate_compute(compute: Option<ComputeArg>, path: &Path) -> FsRe
 /// that will actually execute is known; see
 /// `check_scheduled_adapters_are_declared`.
 ///
-/// What is checked here is only what no selection can rescue: an `alt`-typed
+/// What is checked here is only what no selection can rescue: an `lake_compute`-typed
 /// selection must satisfy the v1 preconditions:
 ///
 /// 1. catalogs v2 must be enabled and the node must resolve a `catalog_name`
 ///    (the compute target reads its inputs and writes its output through an
 ///    attached catalog);
 /// 2. the default adapter must be one of the v1-supported warehouses
-///    (`snowflake`, or `duckdb`/`alt` for the standalone/dev case);
+///    (`snowflake`, or `duckdb`/`lake_compute` for the standalone/dev case);
 /// 3. the materialization must be one that runs natively — `table`, `view`, or
 ///    `incremental` — or a custom (user-authored) materialization; the managed
 ///    materializations that are out of v1 scope (`snapshot`, `materialized_view`,
 ///    `dynamic_table`, `streaming_table`) are rejected;
 /// 4. Python models are not supported in v1.
 ///
-/// Rule 3 is what keeps `alt` off the node types it cannot materialize: a
+/// Rule 3 is what keeps `lake_compute` off the node types it cannot materialize: a
 /// snapshot arrives with `DbtMaterialization::Snapshot` and a function with
-/// `Function`, so an `alt` selection on either is rejected here rather than
+/// `Function`, so an `lake_compute` selection on either is rejected here rather than
 /// failing at run time. Data tests inherit their adapter from the node they are
-/// attached to instead, and never inherit `alt` (see `resolve_data_tests`).
+/// attached to instead, and never inherit `lake_compute` (see `resolve_data_tests`).
 ///
 /// The upstream-reachability check (every `ref`/`source` input must be available
 /// through a reachable catalog) is enforced later, at DAG build, where the
@@ -371,10 +371,10 @@ pub(crate) fn validate_node_adapter(
     }
 
     // Selecting any declared adapter is allowed -- the primitive is that several
-    // adapters are supported. What follows are `alt`'s own preconditions, not an
-    // allowlist of selectable adapters, so a non-`alt` selection passes straight
+    // adapters are supported. What follows are `lake_compute`'s own preconditions, not an
+    // allowlist of selectable adapters, so a non-`lake_compute` selection passes straight
     // through.
-    if selected_type != AdapterType::Alt {
+    if selected_type != AdapterType::LakeCompute {
         return Ok(Some(selected_type));
     }
     // The external name (`lake_compute`), so diagnostics quote what the author wrote.
@@ -390,7 +390,7 @@ pub(crate) fn validate_node_adapter(
     // Rule 2: v1 warehouse guard.
     if !matches!(
         default_adapter,
-        AdapterType::Snowflake | AdapterType::DuckDB | AdapterType::Alt
+        AdapterType::Snowflake | AdapterType::DuckDB | AdapterType::LakeCompute
     ) {
         return Err(err(format!(
             "adapter: '{name}' in v1 supports Snowflake and lake compute only;              the target's default adapter is '{default_adapter}'"
@@ -443,8 +443,9 @@ mod tests {
     use super::*;
     use crate::utils::RawProjectConfig;
 
-    /// Validate a selection of the `alt` adapter against a given target default.
-    fn validate_alt(
+    /// Validate a selection of the `lake_compute` adapter against a given target
+    /// default.
+    fn validate_lake_compute(
         materialized: DbtMaterialization,
         catalog_name: Option<&str>,
         default_adapter: AdapterType,
@@ -452,7 +453,7 @@ mod tests {
         is_python: bool,
     ) -> FsResult<Option<AdapterType>> {
         validate_node_adapter(
-            Some(AdapterType::Alt),
+            Some(AdapterType::LakeCompute),
             &materialized,
             catalog_name,
             default_adapter,
@@ -492,7 +493,7 @@ mod tests {
         );
     }
 
-    /// Naming the default adapter explicitly is a no-op, and skips the alt
+    /// Naming the default adapter explicitly is a no-op, and skips the lake compute
     /// preconditions entirely.
     #[test]
     fn selecting_the_default_adapter_is_accepted() {
@@ -520,10 +521,10 @@ mod tests {
 
     /// Selecting any declared adapter is allowed -- the primitive is that several
     /// adapters are supported, so there is no allowlist of selectable types. The
-    /// `alt` preconditions that follow gate on the *selected* adapter being `alt`,
+    /// `lake_compute` preconditions that follow gate on the *selected* adapter being `lake_compute`,
     /// so a DuckDB selection skips them entirely.
     #[test]
-    fn selecting_a_declared_non_alt_adapter_is_accepted() {
+    fn selecting_a_declared_non_lake_compute_adapter_is_accepted() {
         let resolved = validate_selection(Some(AdapterType::DuckDB))
             .unwrap()
             .unwrap();
@@ -531,8 +532,8 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_alt_selection_resolves_to_its_name_and_type() {
-        let resolved = validate_alt(
+    fn a_valid_lake_compute_selection_resolves_to_its_name_and_type() {
+        let resolved = validate_lake_compute(
             DbtMaterialization::Table,
             Some("horizon"),
             AdapterType::Snowflake,
@@ -542,18 +543,19 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        assert_eq!(resolved, AdapterType::Alt);
+        assert_eq!(resolved, AdapterType::LakeCompute);
     }
 
     #[test]
-    fn alt_happy_paths() {
-        // The warehouses rule 2 admits as a target default. `alt` itself is not
-        // among them: an `alt` selection against an `alt` default is the no-op
-        // asserted by `alt_on_an_alt_target_is_the_default_selection_no_op`, and
-        // never reaches rule 2.
+    fn lake_compute_happy_paths() {
+        // The warehouses rule 2 admits as a target default. `lake_compute` itself
+        // is not among them: a `lake_compute` selection against a `lake_compute`
+        // default is the no-op asserted by
+        // `lake_compute_on_a_lake_compute_target_is_the_default_selection_no_op`,
+        // and never reaches rule 2.
         for adapter in [AdapterType::Snowflake, AdapterType::DuckDB] {
             assert!(
-                validate_alt(
+                validate_lake_compute(
                     DbtMaterialization::Table,
                     Some("horizon"),
                     adapter,
@@ -565,7 +567,7 @@ mod tests {
         }
         // view + incremental + a custom materialization are all accepted.
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::View,
                 Some("horizon"),
                 AdapterType::Snowflake,
@@ -575,7 +577,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::Incremental,
                 Some("horizon"),
                 AdapterType::Snowflake,
@@ -585,7 +587,7 @@ mod tests {
             .is_ok()
         );
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::Unknown("my_custom_mat".to_string()),
                 Some("horizon"),
                 AdapterType::Snowflake,
@@ -596,30 +598,31 @@ mod tests {
         );
     }
 
-    /// When the target's default adapter *is* `alt`, selecting `alt` names the
-    /// default explicitly: it returns at the no-op guard before any of the alt
-    /// preconditions run, so even inputs rule 1 and rule 3 would reject pass.
-    /// This is also why rule 2's own `AdapterType::Alt` arm is unreachable: rule 2
-    /// runs only when the selection is `alt` *and* differs from the default.
+    /// When the target's default adapter *is* `lake_compute`, selecting
+    /// `lake_compute` names the default explicitly: it returns at the no-op guard
+    /// before any of the lake compute preconditions run, so even inputs rule 1 and
+    /// rule 3 would reject pass. This is also why rule 2's own
+    /// `AdapterType::LakeCompute` arm is unreachable: rule 2 runs only when the
+    /// selection is `lake_compute` *and* differs from the default.
     #[test]
-    fn alt_on_an_alt_target_is_the_default_selection_no_op() {
-        let resolved = validate_alt(
+    fn lake_compute_on_a_lake_compute_target_is_the_default_selection_no_op() {
+        let resolved = validate_lake_compute(
             DbtMaterialization::MaterializedView,
             None,
-            AdapterType::Alt,
+            AdapterType::LakeCompute,
             false,
             false,
         )
         .expect("naming the target's own default adapter is always allowed")
         .expect("an explicit selection resolves to itself");
 
-        assert_eq!(resolved, AdapterType::Alt);
+        assert_eq!(resolved, AdapterType::LakeCompute);
     }
 
     #[test]
-    fn alt_rejects_python_models() {
+    fn lake_compute_rejects_python_models() {
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::Table,
                 Some("horizon"),
                 AdapterType::Snowflake,
@@ -631,9 +634,9 @@ mod tests {
     }
 
     #[test]
-    fn alt_rejects_unsupported_warehouse() {
+    fn lake_compute_rejects_unsupported_warehouse() {
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::Table,
                 Some("horizon"),
                 AdapterType::Bigquery,
@@ -645,9 +648,9 @@ mod tests {
     }
 
     #[test]
-    fn alt_requires_catalogs_v2_and_catalog_name() {
+    fn lake_compute_requires_catalogs_v2_and_catalog_name() {
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::Table,
                 Some("horizon"),
                 AdapterType::Snowflake,
@@ -657,7 +660,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            validate_alt(
+            validate_lake_compute(
                 DbtMaterialization::Table,
                 None,
                 AdapterType::Snowflake,
@@ -669,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn alt_rejects_out_of_scope_materializations() {
+    fn lake_compute_rejects_out_of_scope_materializations() {
         for mat in [
             DbtMaterialization::Snapshot,
             DbtMaterialization::MaterializedView,
@@ -677,25 +680,26 @@ mod tests {
             DbtMaterialization::StreamingTable,
         ] {
             assert!(
-                validate_alt(mat, Some("horizon"), AdapterType::Snowflake, true, false).is_err()
+                validate_lake_compute(mat, Some("horizon"), AdapterType::Snowflake, true, false)
+                    .is_err()
             );
         }
     }
 
-    /// Rule 3 is what keeps `alt` off the node types it cannot materialize, so
+    /// Rule 3 is what keeps `lake_compute` off the node types it cannot materialize, so
     /// extending `+adapter` to them needed no new gate: a snapshot arrives with
     /// `Snapshot` and a function with `Function`, and both land in the reject arm.
     #[test]
-    fn alt_is_rejected_for_the_node_types_it_cannot_materialize() {
+    fn lake_compute_is_rejected_for_the_node_types_it_cannot_materialize() {
         for mat in [DbtMaterialization::Snapshot, DbtMaterialization::Function] {
-            let err = validate_alt(
+            let err = validate_lake_compute(
                 mat.clone(),
                 Some("horizon"),
                 AdapterType::Snowflake,
                 true,
                 false,
             )
-            .expect_err("alt does not materialize {mat} in v1");
+            .expect_err("lake compute does not materialize {mat} in v1");
             assert!(
                 err.to_string().contains("table, view, and incremental"),
                 "expected the materialization diagnostic for {mat}, got: {err}"
@@ -704,10 +708,10 @@ mod tests {
     }
 
     /// The same selection is accepted for every node type when the adapter is a
-    /// plain warehouse -- the `alt` preconditions are `alt`'s, not an allowlist of
+    /// plain warehouse -- the `lake_compute` preconditions are `lake_compute`'s, not an allowlist of
     /// which node types may select at all.
     #[test]
-    fn a_non_alt_selection_is_accepted_for_every_node_type() {
+    fn a_non_lake_compute_selection_is_accepted_for_every_node_type() {
         for mat in [
             DbtMaterialization::Table,
             DbtMaterialization::Snapshot,
@@ -731,7 +735,7 @@ mod tests {
         }
     }
 
-    /// Likewise for every node type. What no selection can rescue -- `alt`'s
+    /// Likewise for every node type. What no selection can rescue -- `lake_compute`'s
     /// preconditions -- is still checked at parse, which is the distinction the two
     /// severities turn on.
     #[test]
@@ -1189,7 +1193,9 @@ mod adapter_quoting_tests {
                 DbConfig::Snowflake(
                     Box::<dbt_schemas::schemas::profiles::SnowflakeDbConfig>::default(),
                 ),
-                DbConfig::Alt(Box::<dbt_schemas::schemas::profiles::AltConfig>::default()),
+                DbConfig::LakeCompute(
+                    Box::<dbt_schemas::schemas::profiles::LakeComputeConfig>::default(),
+                ),
             ]
             .map(|config| (config.adapter_type(), ProfileAdapter::single(config))),
         )
@@ -1204,13 +1210,13 @@ mod adapter_quoting_tests {
     }
 
     /// The rule the chain exists to express: the top-level `quoting:` block
-    /// configures the *default* adapter and nothing else. A node on `alt` gets
-    /// only `alt`'s own entry, so it is free to differ without every model
+    /// configures the *default* adapter and nothing else. A node on `lake_compute` gets
+    /// only `lake_compute`'s own entry, so it is free to differ without every model
     /// having to say so.
     #[test]
     fn top_level_quoting_reaches_only_the_default_adapter() {
         let top_level = Some(quoting(false, false, false));
-        let adapters = entry(AdapterType::Alt, Some(quoting(true, true, true)));
+        let adapters = entry(AdapterType::LakeCompute, Some(quoting(true, true, true)));
 
         let per_adapter = authored_quoting_per_adapter(
             Some(&adapters),
@@ -1225,7 +1231,7 @@ mod adapter_quoting_tests {
             "the default adapter takes the top-level block"
         );
         assert_eq!(
-            per_adapter[&AdapterType::Alt],
+            per_adapter[&AdapterType::LakeCompute],
             quoting(true, true, true),
             "a non-default adapter takes only its own entry"
         );
@@ -1241,7 +1247,10 @@ mod adapter_quoting_tests {
             authored_quoting_per_adapter(None, &adapters_fixture(), AdapterType::Snowflake, None);
 
         assert_eq!(per_adapter.len(), 2, "every declared adapter gets a key");
-        assert_eq!(per_adapter[&AdapterType::Alt], DbtQuoting::default());
+        assert_eq!(
+            per_adapter[&AdapterType::LakeCompute],
+            DbtQuoting::default()
+        );
         assert_eq!(per_adapter[&AdapterType::Snowflake], DbtQuoting::default());
     }
 
@@ -1279,7 +1288,7 @@ mod adapter_quoting_tests {
     #[test]
     fn snowflake_ignore_case_survives_layering() {
         let adapters = entry(
-            AdapterType::Alt,
+            AdapterType::LakeCompute,
             Some(DbtQuoting {
                 snowflake_ignore_case: Some(true),
                 ..Default::default()
@@ -1294,7 +1303,7 @@ mod adapter_quoting_tests {
         );
 
         assert_eq!(
-            per_adapter[&AdapterType::Alt].snowflake_ignore_case,
+            per_adapter[&AdapterType::LakeCompute].snowflake_ignore_case,
             Some(true)
         );
     }

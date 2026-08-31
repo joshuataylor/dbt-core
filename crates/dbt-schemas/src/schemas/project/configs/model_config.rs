@@ -1417,7 +1417,7 @@ impl ResolvableConfig<ModelConfig> for ModelConfig {
         // the node's effective adapter, which is only known once every config layer
         // has merged -- and `finalize` has already collapsed `materialized` to the
         // static `view` default by the time a caller could inspect it.
-        if self.adapter.or(default_adapter) == Some(AdapterType::Alt) {
+        if self.adapter.or(default_adapter) == Some(AdapterType::LakeCompute) {
             if self.materialized.is_none() {
                 self.materialized = Some(DbtMaterialization::Table);
             }
@@ -2903,7 +2903,7 @@ __additional_properties__: {}
         #[test]
         fn an_unconfigured_lake_compute_model_is_an_iceberg_table() {
             let config = ModelConfig {
-                adapter: Some(AdapterType::Alt),
+                adapter: Some(AdapterType::LakeCompute),
                 ..Default::default()
             };
             let (materialized, table_format) = resolved(config, Some(AdapterType::Snowflake));
@@ -2915,7 +2915,7 @@ __additional_properties__: {}
         #[test]
         fn an_authored_materialization_and_table_format_survive() {
             let config = ModelConfig {
-                adapter: Some(AdapterType::Alt),
+                adapter: Some(AdapterType::LakeCompute),
                 materialized: Some(DbtMaterialization::View),
                 table_format: Some("default".to_string()),
                 ..Default::default()
@@ -2930,7 +2930,7 @@ __additional_properties__: {}
         #[test]
         fn a_lake_compute_target_defaults_its_nodes_too() {
             let (materialized, table_format) =
-                resolved(ModelConfig::default(), Some(AdapterType::Alt));
+                resolved(ModelConfig::default(), Some(AdapterType::LakeCompute));
             assert_eq!(materialized, Some(DbtMaterialization::Table));
             assert_eq!(table_format.as_deref(), Some("iceberg"));
         }
@@ -2941,7 +2941,7 @@ __additional_properties__: {}
                 adapter: Some(AdapterType::Snowflake),
                 ..Default::default()
             };
-            let (materialized, table_format) = resolved(config, Some(AdapterType::Alt));
+            let (materialized, table_format) = resolved(config, Some(AdapterType::LakeCompute));
             assert_eq!(materialized, None, "left for the static `view` default");
             assert_eq!(table_format, None);
         }

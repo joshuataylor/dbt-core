@@ -491,8 +491,8 @@ impl MacroTestHarnessBuilder {
     /// Declare additional adapters this environment serves, as a target with an
     /// adapter list does.
     ///
-    /// Without this, a harness built with `for_adapter(AdapterType::Alt)` alone
-    /// measures alt-as-sole-adapter and proves nothing about a mixed graph.
+    /// Without this, a harness built with `for_adapter(AdapterType::LakeCompute)` alone
+    /// measures lake-compute-as-sole-adapter and proves nothing about a mixed graph.
     /// Combine with [`MacroTestHarness::render_for`] to render a node against
     /// one of the declared adapters.
     pub fn with_extra_adapters(

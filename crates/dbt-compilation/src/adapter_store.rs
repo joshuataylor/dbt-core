@@ -219,7 +219,7 @@ mod tests {
             vec![
                 AdapterType::Snowflake,
                 AdapterType::Bigquery,
-                AdapterType::Alt,
+                AdapterType::LakeCompute,
             ],
             AdapterType::Snowflake,
             build,
@@ -266,7 +266,7 @@ mod tests {
     fn declared_order_is_preserved() {
         let store = store(
             &[
-                AdapterType::Alt,
+                AdapterType::LakeCompute,
                 AdapterType::Snowflake,
                 AdapterType::Bigquery,
             ],
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(
             store.declared(),
             &[
-                AdapterType::Alt,
+                AdapterType::LakeCompute,
                 AdapterType::Snowflake,
                 AdapterType::Bigquery
             ]

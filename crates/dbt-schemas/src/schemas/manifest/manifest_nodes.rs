@@ -2285,15 +2285,15 @@ mod node_adapter_manifest_round_trip_tests {
     #[test]
     fn seed_config_adapter_round_trips_through_manifest_seed_config() {
         let seed_config = SeedConfig {
-            adapter: Some(AdapterType::Alt),
+            adapter: Some(AdapterType::LakeCompute),
             ..Default::default()
         };
 
         let manifest_config: ManifestSeedConfig = seed_config.into();
-        assert_eq!(manifest_config.adapter, Some(AdapterType::Alt));
+        assert_eq!(manifest_config.adapter, Some(AdapterType::LakeCompute));
 
         let round_tripped: SeedConfig = manifest_config.into();
-        assert_eq!(round_tripped.adapter, Some(AdapterType::Alt));
+        assert_eq!(round_tripped.adapter, Some(AdapterType::LakeCompute));
     }
 
     #[test]
@@ -2327,7 +2327,7 @@ mod node_adapter_manifest_round_trip_tests {
     #[test]
     fn manifest_seed_config_never_serializes_adapter() {
         let manifest_config = ManifestSeedConfig {
-            adapter: Some(AdapterType::Alt),
+            adapter: Some(AdapterType::LakeCompute),
             ..Default::default()
         };
 

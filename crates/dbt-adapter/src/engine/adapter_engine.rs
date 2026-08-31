@@ -371,7 +371,7 @@ pub(crate) fn adbc_execute_with_options(
             return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
         }
 
-        // Alt compute: every statement compute_platform.rs sends is DDL/DML
+        // Lake compute: every statement compute_platform.rs sends is DDL/DML
         // whose result is never read (it always passes fetch=false -- models
         // only ever create/drop/write, they don't read query results back).
         // `stmt.execute()` below calls `reader.schema()` unconditionally, which
@@ -379,11 +379,11 @@ pub(crate) fn adbc_execute_with_options(
         // + list_files, ~2-3s) even though nothing will ever consume that
         // export. `execute_update()` skips export setup server-side entirely
         // and never touches the schema. This is only safe because dbt-compute
-        // doesn't execute tests today (see AltCompute routing in
+        // doesn't execute tests today (see `selects_lake_compute` routing in
         // dbt-tasks-sa/src/task.rs, keyed off the models table) -- a test
-        // needs its result rows, so a future test-execution path over Alt must
+        // needs its result rows, so a future test-execution path over lake compute must
         // pass fetch=true and must not hit this branch.
-        if adapter_type == AdapterType::Alt && !fetch {
+        if adapter_type == AdapterType::LakeCompute && !fetch {
             let rows_affected = stmt.execute_update()?;
             token.check_cancellation()?;
             return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));

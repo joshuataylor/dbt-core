@@ -376,11 +376,11 @@ impl AdbcEngine {
         let Ok(view) = catalogs.view_v2() else {
             return Ok(Vec::new());
         };
-        // The compute engine (Alt) attaches via each catalog's `lake_compute`
+        // The compute engine attaches via each catalog's `lake_compute`
         // block when present; the base DuckDB adapter uses the `duckdb` block.
         // Both fall back to `duckdb`.
-        let platform = if self.adapter_type == AdapterType::Alt {
-            AdapterType::Alt.as_ref()
+        let platform = if self.adapter_type == AdapterType::LakeCompute {
+            AdapterType::LakeCompute.as_ref()
         } else {
             AdapterType::DuckDB.as_ref()
         };

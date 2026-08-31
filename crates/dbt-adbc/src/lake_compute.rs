@@ -1,14 +1,14 @@
-//! Option keys for the alt compute ADBC driver.
+//! Option keys for the lake compute ADBC driver.
 //!
 //! These mirror the keys understood by the `adbc_driver_dbt` driver crate (its
 //! `options` module). They are kept in sync by convention — the same way the
 //! other backend modules (e.g. [`crate::snowflake`]) mirror the keys expected by
-//! their respective drivers — so the `dbt-auth` `alt` module can configure a
+//! their respective drivers — so the `dbt-auth` `lake_compute` module can configure a
 //! [`crate::database::Builder`] without depending on the driver crate.
 
 // Names of Database options --------------------------------------------
 
-/// alt compute API base URL (required).
+/// Lake compute API base URL (required).
 pub const BASE_URL: &str = "adbc.dbt.base_url";
 /// Organization to scope requests to.
 pub const ORGANIZATION: &str = "adbc.dbt.organization";

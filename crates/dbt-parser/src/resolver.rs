@@ -1088,21 +1088,21 @@ pub async fn resolve_inner(
     ))
 }
 
-/// Whether `alt` can read a catalog of this type.
+/// Whether `lake_compute` can read a catalog of this type.
 ///
-/// A capability of `alt`, expressed here in code: it is a property of the storage,
-/// not of anything a project declares. Requiring a catalog to carry an `alt`
+/// A capability of `lake_compute`, expressed here in code: it is a property of the storage,
+/// not of anything a project declares. Requiring a catalog to carry an `lake_compute`
 /// connection block would reject readable data over a missing declaration.
 ///
 /// Matched exhaustively on purpose, so adding a `CatalogType` forces the
 /// question to be answered rather than defaulting either way.
-fn alt_can_read(catalog_type: CatalogType) -> bool {
+fn lake_compute_can_read(catalog_type: CatalogType) -> bool {
     match catalog_type {
-        // Open table formats `alt` can attach.
+        // Open table formats `lake_compute` can attach.
         CatalogType::Horizon | CatalogType::Glue | CatalogType::IcebergRest => true,
         // Snowflake-managed Iceberg under its older spelling; Horizon supersedes it.
         CatalogType::SnowflakeBuiltIn => true,
-        // Engine-owned catalogs `alt` does not support today.
+        // Engine-owned catalogs `lake_compute` does not support today.
         CatalogType::DuckLake
         | CatalogType::LocalFilesystem
         | CatalogType::BiglakeMetastore
@@ -1117,10 +1117,10 @@ fn alt_can_read(catalog_type: CatalogType) -> bool {
 }
 
 /// Returns `true` if `upstream` is readable as an input for a node running on
-/// `alt`.
+/// `lake_compute`.
 ///
 /// The question is about the *catalog*, never about which adapter wrote the
-/// upstream: a BigQuery model landing in an alt-readable catalog is a legal input,
+/// upstream: a BigQuery model landing in a lake-compute-readable catalog is a legal input,
 /// while a Snowflake model in warehouse-native storage is not.
 ///
 /// Where the catalog type is known, it decides. Where it cannot be resolved — no
@@ -1129,14 +1129,14 @@ fn alt_can_read(catalog_type: CatalogType) -> bool {
 fn upstream_is_catalog_reachable(upstream: &DbtModel, catalogs: Option<&DbtCatalogs>) -> bool {
     let attr = &upstream.__model_attr__;
 
-    // An upstream on `alt` itself writes somewhere `alt` can read, by definition.
-    if upstream.node_adapter() == AdapterType::Alt {
+    // An upstream on `lake_compute` itself writes somewhere `lake_compute` can read, by definition.
+    if upstream.node_adapter() == AdapterType::LakeCompute {
         return true;
     }
 
     match attr.catalog_name.as_deref() {
         Some(name) => match catalogs.and_then(|c| c.v2_catalog_type(name).ok().flatten()) {
-            Some(catalog_type) => alt_can_read(catalog_type),
+            Some(catalog_type) => lake_compute_can_read(catalog_type),
             None => true,
         },
         // Iceberg without a named catalog is still an open format.
@@ -1159,7 +1159,7 @@ pub fn check_compute_platform_upstreams(
     catalogs: Option<&DbtCatalogs>,
 ) -> FsResult<()> {
     for (unique_id, model) in nodes.models.iter() {
-        if model.node_adapter() != AdapterType::Alt {
+        if model.node_adapter() != AdapterType::LakeCompute {
             continue;
         }
         for upstream_id in &model.__base_attr__.depends_on.nodes {
@@ -1177,10 +1177,10 @@ pub fn check_compute_platform_upstreams(
                      reachable through a catalog. Materialize '{}' into a catalog (set \
                      'catalog_name') or place it on adapter: '{}'.",
                     unique_id,
-                    AdapterType::Alt.as_ref(),
+                    AdapterType::LakeCompute.as_ref(),
                     upstream_id,
                     upstream_id,
-                    AdapterType::Alt.as_ref()
+                    AdapterType::LakeCompute.as_ref()
                 );
             }
         }
@@ -1633,12 +1633,12 @@ mod tests {
         assert!(!has_event_time_input(&nodes, &model));
     }
 
-    /// `alt_can_read` is the whole of the capability question, and it is a property
+    /// `lake_compute_can_read` is the whole of the capability question, and it is a property
     /// of the catalog type rather than of anything a project declares. Pinned
     /// exhaustively so that adding a `CatalogType` has to answer it.
     #[test]
-    fn alt_reads_open_catalogs_and_not_engine_owned_ones() {
-        use super::alt_can_read;
+    fn lake_compute_reads_open_catalogs_and_not_engine_owned_ones() {
+        use super::lake_compute_can_read;
         use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 
         for readable in [
@@ -1646,7 +1646,10 @@ mod tests {
             CatalogType::Glue,
             CatalogType::IcebergRest,
         ] {
-            assert!(alt_can_read(readable), "alt should read {readable:?}");
+            assert!(
+                lake_compute_can_read(readable),
+                "lake compute should read {readable:?}"
+            );
         }
         for unreadable in [
             CatalogType::DuckLake,
@@ -1656,15 +1659,15 @@ mod tests {
             CatalogType::HiveMetastore,
         ] {
             assert!(
-                !alt_can_read(unreadable),
-                "alt does not support {unreadable:?} today"
+                !lake_compute_can_read(unreadable),
+                "lake compute does not support {unreadable:?} today"
             );
         }
     }
 
-    /// WS1 rule 5: an `adapter: alt` model requires each of its model upstreams to
+    /// WS1 rule 5: an `adapter: lake_compute` model requires each of its model upstreams to
     /// be reachable through a catalog; a plain warehouse-native upstream is
-    /// rejected, while catalog-backed / Iceberg / alt upstreams pass.
+    /// rejected, while catalog-backed / Iceberg / lake compute upstreams pass.
     #[test]
     fn test_check_compute_platform_upstreams() {
         use std::sync::Arc;
@@ -1705,7 +1708,7 @@ mod tests {
         let run = |upstream: DbtModel| {
             let consumer = make_model(
                 consumer_uid,
-                AdapterType::Alt,
+                AdapterType::LakeCompute,
                 Some("horizon"),
                 None,
                 &[upstream_uid],
@@ -1744,7 +1747,7 @@ mod tests {
         assert!(
             run(make_model(
                 upstream_uid,
-                AdapterType::Alt,
+                AdapterType::LakeCompute,
                 Some("horizon"),
                 None,
                 &[]
@@ -1786,7 +1789,7 @@ mod tests {
         // though it is not present in `nodes.models`.
         let consumer = make_model(
             consumer_uid,
-            AdapterType::Alt,
+            AdapterType::LakeCompute,
             Some("horizon"),
             None,
             &["source.test.raw"],

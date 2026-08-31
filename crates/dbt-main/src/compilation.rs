@@ -301,9 +301,10 @@ impl<'a> CompilationPhasesExecutor<'a> {
         // Handle 'debug' or 'init' commands to run debug.
         if let FsCommand::Debug | FsCommand::Init = self.arg.command {
             let mut debug_args = DebugArgs::from_eval_args(self.arg.as_ref());
-            debug_args.alt_propagation_checker = feature_stack.alt.propagation_checker.clone();
-            debug_args.alt_catalog_attach_checker =
-                feature_stack.alt.catalog_attach_checker.clone();
+            debug_args.lake_compute_propagation_checker =
+                feature_stack.lake_compute.propagation_checker.clone();
+            debug_args.lake_compute_catalog_attach_checker =
+                feature_stack.lake_compute.catalog_attach_checker.clone();
             compilation_pipeline::loaded_project::debug(&loaded_project, debug_args, &self.token)
                 .await?;
             self.token.check_cancellation()?;

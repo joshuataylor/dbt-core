@@ -607,9 +607,9 @@ pub async fn resolve_data_tests(
 
         // A test runs where its subject runs, so an unset `+adapter` is inherited
         // from `attached_node` -- the same lookup the `group` inheritance below
-        // does. `alt` is deliberately not inherited: the compute-platform path
+        // does. `lake_compute` is deliberately not inherited: the compute-platform path
         // materializes models and seeds only, so a test routed there would fail at
-        // run time. A test on an `alt` node therefore stays on the target default,
+        // run time. A test on an `lake_compute` node therefore stays on the target default,
         // which is what it did before `+adapter` existed.
         let inherited_adapter = attached_node
             .as_deref()
@@ -620,7 +620,7 @@ pub async fn resolve_data_tests(
                     .or_else(|| seeds.get(id).map(|s| s.node_adapter()))
                     .or_else(|| snapshots.get(id).map(|s| s.node_adapter()))
             })
-            .filter(|adapter| *adapter != AdapterType::Alt);
+            .filter(|adapter| *adapter != AdapterType::LakeCompute);
         // An explicit selection is validated like any other node's; `None` in gives
         // `None` out, and inheritance fills the gap. An inherited adapter needs no
         // validation -- it was already validated on the node that materializes.

@@ -64,7 +64,7 @@ use dbt_tasks_core::run_cache::run_cache_service::{
 pub enum RunExecutionPath {
     Remote,
     SideCar,
-    AltCompute,
+    LakeCompute,
 }
 
 pub struct RunTask {
@@ -535,12 +535,12 @@ impl Task for RunTask {
                 }
                 (None, RunExecutionPath::SideCar) => {
                     self.task_hooks
-                        .run_alt_compute_sidecar(ctx, Arc::clone(&self.node), task_result.clone())
+                        .run_lake_compute_sidecar(ctx, Arc::clone(&self.node), task_result.clone())
                         .await
                 }
-                (None, RunExecutionPath::AltCompute) => {
+                (None, RunExecutionPath::LakeCompute) => {
                     self.task_hooks
-                        .run_on_alt_compute(ctx, Arc::clone(&self.node), task_result.clone())
+                        .run_on_lake_compute(ctx, Arc::clone(&self.node), task_result.clone())
                         .await
                 }
             };
@@ -610,7 +610,7 @@ impl Task for RunTask {
                         self.execution_path,
                         RunExecutionPath::Remote
                             | RunExecutionPath::SideCar
-                            | RunExecutionPath::AltCompute
+                            | RunExecutionPath::LakeCompute
                     ) {
                         emit_error_log_from_fs_error(*e);
                     }
@@ -1092,7 +1092,9 @@ fn emit_run_usage_stats(
 ) {
     let (maybe_incremental_strategy, is_contract_enforced, has_group, table_format, catalog_name) =
         match execution_path {
-            RunExecutionPath::Remote | RunExecutionPath::SideCar | RunExecutionPath::AltCompute => {
+            RunExecutionPath::Remote
+            | RunExecutionPath::SideCar
+            | RunExecutionPath::LakeCompute => {
                 if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
                     (
                         model

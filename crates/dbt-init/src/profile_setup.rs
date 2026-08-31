@@ -393,7 +393,7 @@ impl ProfileSetup {
                     "DuckDB profile setup not yet implemented. DuckDB runs locally without credentials."
                 ));
             }
-            AdapterType::Alt => {
+            AdapterType::LakeCompute => {
                 // TODO: Create proper lake compute profile setup
                 return Err(fs_err!(
                     ErrorCode::Generic,

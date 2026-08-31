@@ -12,7 +12,7 @@ use dbt_adapter::{
 };
 use dbt_adapter_core::AdapterType;
 use dbt_agate::AgateTable;
-use dbt_common::constants::{DBT_FRESHNESS_JSON, DBT_SOURCES_JSON};
+use dbt_common::constants::{DBT_FRESHNESS_JSON, DBT_SOURCES_JSON, default_metadata_dir};
 use dbt_common::io_args::{IoArgs, ShowOptions};
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
 use dbt_common::tracing::event_info::store_event_attributes;
@@ -1238,7 +1238,9 @@ pub fn write_freshness_results_parquet(
 ) {
     use dbt_metadata_parquet::runtime_freshness::{FreshnessResultRow, write_freshness_results};
 
-    let freshness_dir = io.out_dir.join("metadata").join("run").join("freshness");
+    let freshness_dir = default_metadata_dir(&io.out_dir)
+        .join("run")
+        .join("freshness");
 
     // Microseconds, matching the column's Arrow type and every sibling producer.
     let ingested_at: i64 = Utc::now().timestamp_micros();

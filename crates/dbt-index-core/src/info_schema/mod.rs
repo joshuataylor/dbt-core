@@ -18,10 +18,15 @@
 //! carry-forward rules, and produces one file per source table. The second
 //! projects those files into the information schema shape — renaming, dropping
 //! and splitting columns per [`schema::INFO_SCHEMA`]. The staging directory is
-//! the flat index at `target/index` when one is already present, so an index
-//! built by `--write-index` (or a prior run) is reused via the delta path.
-//! When there is no index to reuse, the ingest runs into a private staging
-//! directory instead. The projection step runs unconditionally on every
+//! the flat index at `target/private/index` when one is already present: the
+//! metadata ingest that builds the index and the one that feeds this projection
+//! are the same code, so an index built by `--write-index` (or a prior run) is
+//! reused via the delta path instead of re-ingesting the epochs. When there is
+//! no index to reuse — `--no-write-index`, or a `parse` that never builds one —
+//! the ingest runs into a private staging directory instead, so requesting the
+//! information schema never materialises an index the caller opted out of.
+//! Reusing the ingest verbatim either way keeps a single implementation of the
+//! epoch and merge semantics. The projection step runs unconditionally on every
 //! invocation, so removing the output directory is enough to force a rebuild
 //! even when staging is up to date.
 //!
@@ -88,7 +93,7 @@ pub fn versioned_dir(info_schema_dir: &Path) -> std::path::PathBuf {
 
 /// Fallback staging directory name, used when there is no flat index to reuse as
 /// the intermediate. Also the tests' and benchmark's choice, which always build
-/// into a throwaway workdir rather than a project's `target/index`.
+/// into a throwaway workdir rather than a project's `target/private/index`.
 ///
 /// Deliberately outside the output directory: it holds files in the source shape,
 /// and a caller globbing the information schema must never pick them up.
@@ -128,9 +133,9 @@ impl Materializer {
 ///
 /// `staging_dir` holds the intermediate source-shaped tables (not the information
 /// schema shape). Used only by the Arrow path: the caller passes the flat index
-/// directory (`target/index`) when one already exists, so its ingest is reused
-/// via the delta path rather than re-run; otherwise it passes a private fallback
-/// directory. See
+/// directory (`target/private/index`) when one already exists, so its ingest is
+/// reused via the delta path rather than re-run; otherwise it passes a private
+/// fallback directory. See
 /// [`has_persisted_state`](crate::ingest::metadata_to_parquet::has_persisted_state).
 /// The COPY path ignores `staging_dir`.
 ///
@@ -184,7 +189,7 @@ fn write_via_arrow(
         views::write_views_sql(&out_dir)
     })?;
     // `epoch_views.sql` — the same schema as views straight over the epoch files —
-    // is deliberately not written here: it reads the private `target/metadata/`
+    // is deliberately not written here: it reads the private `target/private/metadata/`
     // layout and the `dbt_internal` epoch relations, which are not part of the
     // public contract, so it does not belong in the shipped info-schema directory.
     // The generator (`epoch_views::generate`) stays for the differential test and a

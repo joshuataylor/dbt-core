@@ -9,7 +9,7 @@
 //! compare them table by table.
 //!
 //! Driven by `FS_INFO_SCHEMA_DIFF_METADATA`, a path to a real
-//! `target/metadata/`. Unset, the test skips: the crate's own fixtures do not
+//! `target/private/metadata/`. Unset, the test skips: the crate's own fixtures do not
 //! cover enough of the schema for the comparison to mean anything, and a
 //! synthetic corpus would only test the generator against itself. Generate one
 //! with `dbt build --write-metadata --write-lineage` on a project — `parse`

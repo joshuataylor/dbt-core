@@ -3,7 +3,7 @@
 //!
 //! Replaces the Arrow ingest-and-project path when a DuckDB driver is
 //! available. The views already express the public contract over
-//! `target/metadata/**`; `COPY (SELECT * FROM <view>) TO '<file>'` is that
+//! `target/private/metadata/**`; `COPY (SELECT * FROM <view>) TO '<file>'` is that
 //! contract as a snapshot, with no staging directory and no per-row Rust.
 //!
 //! Tables whose epoch relation has no files on disk are not in the generated

@@ -930,10 +930,10 @@ fn bench_harness_reports_every_stage() {
 /// Benchmark a metadata corpus produced outside the test suite, named by
 /// `FS_INFO_SCHEMA_BENCH_METADATA`. This is how the large corpora (`scale_1k`,
 /// `scale_6k`) are measured without carrying thousands of models in the repo, and
-/// it needs no CLI — only a `target/metadata` directory:
+/// it needs no CLI — only a `target/private/metadata` directory:
 ///
 /// ```text
-/// FS_INFO_SCHEMA_BENCH_METADATA=/path/to/project/target/metadata \
+/// FS_INFO_SCHEMA_BENCH_METADATA=/path/to/project/target/private/metadata \
 ///   cargo nextest run -p dbt-index-core bench_external_corpus \
 ///     --run-ignored all --no-capture
 /// ```
@@ -956,14 +956,24 @@ fn bench_external_corpus_stage_attribution() {
     );
 
     let workdir = tempfile::tempdir().unwrap();
-    // The project directory two levels up from `<project>/target/metadata` is the
-    // most useful label; fall back to the path itself.
-    let label = metadata
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| corpus.clone());
+    // The project directory three levels up from `<project>/target/private/metadata`
+    // (or two levels up from a leftover `<project>/target/metadata`) is the most
+    // useful label; fall back to the path itself.
+    let label = {
+        let parent = metadata.parent();
+        let project = if parent
+            .and_then(|p| p.file_name())
+            .is_some_and(|n| n == "private")
+        {
+            parent.and_then(|p| p.parent()).and_then(|p| p.parent())
+        } else {
+            parent.and_then(|p| p.parent())
+        };
+        project
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| corpus.clone())
+    };
 
     let arrow_dir = workdir.path().join("arrow");
     let arrow = super::bench::run_with(

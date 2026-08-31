@@ -2950,7 +2950,7 @@ fn write_parse_artifacts(arg: &EvalArgs) {
 
     if arg.generate_info_schema {
         let info_schema_dir = arg.info_schema_dir();
-        // Reuse the flat index at `target/index` as the intermediate when one is
+        // Reuse the flat index at `target/private/index` as the intermediate when one is
         // already there (the same ingest builds both, so an index written earlier
         // in this run is picked up via the delta path rather than re-ingested).
         // With no index to reuse — e.g. `--no-write-index` — stage privately

@@ -19,7 +19,7 @@ use dbt_common::{
     artifact_io::write_artifact_to_file,
     constants::{
         DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, DBT_PROJECT_YML, ERROR,
-        INSTALLING, VALIDATING,
+        INSTALLING, VALIDATING, default_index_dir, default_metadata_dir,
     },
     create_root_info_span, fs_err,
     io_args::{DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
@@ -1965,7 +1965,7 @@ impl<'a> AllPhasesExecutor<'a> {
 
             // The information schema is written independently of the index:
             // either, neither, or both may be requested. Its intermediate is the
-            // flat index at `target/index` when one is present — the same ingest
+            // flat index at `target/private/index` when one is present — the same ingest
             // builds both, so an index written by the block just above (or by a
             // prior run) is reused via the delta path rather than re-ingested. With
             // no index to reuse — e.g. `--no-write-index` — it stages privately, so
@@ -2159,7 +2159,7 @@ async fn run_docs_generate(
     let index_dir = eval_arg
         .index_dir
         .clone()
-        .unwrap_or_else(|| target_dir.join("index"));
+        .unwrap_or_else(|| default_index_dir(&target_dir));
     let output_dir = generate_args
         .output_dir
         .clone()
@@ -2172,7 +2172,7 @@ async fn run_docs_generate(
     let metadata_dir = eval_arg
         .metadata_dir
         .clone()
-        .unwrap_or_else(|| target_dir.join("metadata"));
+        .unwrap_or_else(|| default_metadata_dir(&target_dir));
     ingest_metadata_into_index(&metadata_dir, &index_dir, "dbt docs generate");
 
     // Compile unless the user said not to, the way v1 does. `--no-compile` falls through
@@ -2432,7 +2432,7 @@ async fn run_docs_serve(
         .target_path
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("./target"));
-    let metadata_dir = target.join("metadata");
+    let metadata_dir = default_metadata_dir(&target);
 
     if !index_dir.exists() && !metadata_dir.exists() {
         emit_error_log_message(
@@ -2441,7 +2441,7 @@ async fn run_docs_serve(
                 "dbt docs serve: no data to serve\n\n\
                  Index directory not found: {}\n\
                  Run `dbt build` or `dbt docs generate` to generate parquet artifacts,\n\
-                 or pass `--target-path <DIR>` pointing at a directory whose `index/` subdirectory contains them.",
+                 or pass `--target-path <DIR>` pointing at a directory whose `private/index/` subdirectory contains them.",
                 index_dir.display(),
             ),
         );

@@ -1,4 +1,4 @@
-//! High-performance fusion ingest: reads target/metadata/ parquet with Arrow,
+//! High-performance fusion ingest: reads target/private/metadata/ parquet with Arrow,
 //! writes the index parquet directly with IndexWriter — no DuckDB involved.
 //!
 //! This is the CLI path for `dbt-index ingest --fusion`. The serve path

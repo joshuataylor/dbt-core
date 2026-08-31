@@ -78,7 +78,7 @@ use crate::partial_parse::PackageSnapshot;
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-pub const CACHE_DIR_NAME: &str = "metadata/parse";
+pub const CACHE_DIR_NAME: &str = "private/metadata/parse";
 
 const SCHEMA_VERSION: u32 = 1;
 

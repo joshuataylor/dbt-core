@@ -1653,7 +1653,7 @@ pub enum DocsSubcommand {
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
 pub struct DocsServeArgs {
-    /// Path to the dbt target directory containing the `index/` subdirectory of
+    /// Path to the dbt target directory containing the `private/index/` subdirectory of
     /// parquet artifacts. Defaults to the project's target directory, resolved from
     /// `--project-dir` and `--target-path` like any other project command.
     #[arg(long, value_name = "DIR", env = "DBT_DOCS_TARGET_PATH")]
@@ -1692,7 +1692,7 @@ impl Default for DocsServeArgs {
 /// exporter it used to be.
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DocsGenerateArgs {
-    /// Path to the dbt target directory containing the `index/` subdirectory of
+    /// Path to the dbt target directory containing the `private/index/` subdirectory of
     /// parquet artifacts. Defaults to `./target` in the current working directory.
     #[arg(long, value_name = "DIR", env = "DBT_DOCS_TARGET_PATH")]
     pub target_path: Option<PathBuf>,
@@ -1976,7 +1976,7 @@ pub struct CommonArgs {
     #[arg(global = true, long, default_value_t=false, action = ArgAction::SetTrue, env = "DBT_WRITE_METADATA", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_metadata: bool,
 
-    /// Internal engine index at target/index/. Not a user API — `build` / `run` /
+    /// Internal engine index at target/private/index/. Not a user API — `build` / `run` /
     /// `check` write it by default. Hidden; still accepted for programmatic callers.
     #[arg(global = true, long = "write-index", alias = "use-index", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_USE_INDEX", value_parser = BoolishValueParser::new(), hide = true)]
     pub write_index: bool,
@@ -1986,7 +1986,7 @@ pub struct CommonArgs {
     #[arg(global = true, long, action = ArgAction::SetTrue, default_value_t=false, value_parser = BoolishValueParser::new(), hide = true)]
     pub no_write_index: bool,
 
-    /// Directory for metadata parquet output (default: <target>/metadata/)
+    /// Directory for metadata parquet output (default: <target>/private/metadata/)
     #[arg(
         global = true,
         long,
@@ -1996,7 +1996,7 @@ pub struct CommonArgs {
     )]
     pub metadata_dir: Option<PathBuf>,
 
-    /// Directory for index parquet output (default: <target>/index/)
+    /// Directory for index parquet output (default: <target>/private/index/)
     #[arg(global = true, long, env = "DBT_INDEX_DIR", hide = true)]
     pub index_dir: Option<PathBuf>,
 
@@ -2104,7 +2104,7 @@ pub struct CommonArgs {
     pub otel_file_name: Option<String>,
 
     /// Set 'otel-parquet-file-name' for the current run, overriding 'DBT_OTEL_PARQUET_FILE_NAME'.
-    /// If set, OTEL telemetry will be written to `$target_path/metadata/otel-parquet-file-name` in Parquet format.
+    /// If set, OTEL telemetry will be written to `$target_path/private/metadata/otel-parquet-file-name` in Parquet format.
     #[arg(
         global = true,
         long = "otel-parquet-file-name",

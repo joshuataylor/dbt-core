@@ -5141,7 +5141,7 @@ pub struct DbtCheckAttr {
     /// render task to produce compiled SQL later. Keeping the rendered text on the node means the
     /// query executed is byte-identical to the one the phase was inferred from.
     ///
-    /// Serialized: the incremental parse cache (`target/metadata/parse`) reconstructs check nodes
+    /// Serialized: the incremental parse cache (`target/private/metadata/parse`) reconstructs check nodes
     /// from this representation and then *executes* them, so dropping the rendered text here makes
     /// every warm run report "no rendered SQL". (It does duplicate `raw_code` for checks that
     /// contain no Jinja, which is the accepted cost of the round-trip.)

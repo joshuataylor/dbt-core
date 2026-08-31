@@ -2,7 +2,7 @@
 //!
 //! [`super::schema::INFO_SCHEMA`] declares each output column as a *staging*
 //! column — the shape the Rust ingest produces in the staging directory (the
-//! flat index at `target/index/`, or a private fallback). A view layer over the
+//! flat index at `target/private/index/`, or a private fallback). A view layer over the
 //! epoch files has no staging directory, so every referenced staging column needs
 //! an expression
 //! over the epoch parquet instead. This module is that mapping, declared once in

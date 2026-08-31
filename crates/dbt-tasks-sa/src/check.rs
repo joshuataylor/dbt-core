@@ -105,9 +105,9 @@ pub fn selection_filter_for(
 /// Checks are **pure readers**: they never build or refresh the index. An earlier version had
 /// each check catch the index up itself, which went wrong three ways: concurrent checks rewrote
 /// the same parquet files while siblings had them open (a non-deterministic `IO error: No such
-/// file or directory`), `target/index/` appeared even when the invocation was never asked to
+/// file or directory`), `target/private/index/` appeared even when the invocation was never asked to
 /// write one, and what it left there lacked the `.fusion_state.json` / `.artifact_meta.json`
-/// bookkeeping of a published index — so anything reading `target/index` afterwards would treat
+/// bookkeeping of a published index — so anything reading `target/private/index` afterwards would treat
 /// a half-built directory as real.
 pub fn index_unavailable_reason(metadata_dir: &Path, index_dir: &Path) -> Option<String> {
     if index_is_current(metadata_dir, index_dir) {

@@ -1,4 +1,4 @@
-//! Generator for the information schema as views straight over `target/metadata/`,
+//! Generator for the information schema as views straight over `target/private/metadata/`,
 //! with no materialization step.
 //!
 //! The SQL it produces declares the same schema names, table names, column names
@@ -9,7 +9,7 @@
 //! substitution honest.
 //!
 //! It is *not* written into the shipped info-schema directory: it reads the
-//! private `target/metadata/` layout through the `dbt_internal` epoch relations,
+//! private `target/private/metadata/` layout through the `dbt_internal` epoch relations,
 //! which are not part of the public contract (see `write_info_schema`). The
 //! generator exists for that differential test and for a future serve path that
 //! queries metadata live; a caller runs [`generate`] and executes or writes the

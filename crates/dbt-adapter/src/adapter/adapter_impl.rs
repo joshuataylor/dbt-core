@@ -88,7 +88,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
@@ -623,7 +623,7 @@ fn seed_column_values(sql: &str) -> Option<Vec<(String, Vec<String>)>> {
             .iter()
             .position(|f| f.name().eq_ignore_ascii_case(&source))?;
 
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         let mut values = Vec::new();
         for batch in &result.batches {
             let array = batch
@@ -2286,7 +2286,7 @@ impl AdapterImpl {
                     .into_iter()
                     .map(|col| (col.name().to_string(), col))
                     .collect();
-                let target_cols_set: std::collections::HashSet<_> =
+                let target_cols_set: HashSet<_> =
                     target_cols.into_iter().map(|col| col.into_name()).collect();
 
                 Ok(source_cols_map
@@ -3244,6 +3244,9 @@ impl AdapterImpl {
         // comment (defaulting to "").
         //
         // This intentionally supports "clearing" comments: desired="" + existing="foo" => update.
+        //
+        // Model columns missing from the relation are already filtered out by the Jinja-side
+        // `validate_doc_columns` helper before this is called.
         let mut result = IndexMap::new();
 
         // Case-insensitive lookup for model columns (matches upstream behavior).
@@ -6804,6 +6807,61 @@ mod tests {
             v.is_undefined(),
             "Expected column NOT to be selected when existing comment is already empty, got: {selected:?}"
         );
+    }
+
+    #[test]
+    fn test_get_persist_doc_columns_skips_missing_column() {
+        let adapter = AdapterImpl::new_mock(
+            Databricks,
+            BTreeMap::new(),
+            DEFAULT_RESOLVED_QUOTING,
+            Arc::new(DefaultTypeOps::new(Databricks)),
+            Arc::new(DefaultStmtSplitter),
+        );
+
+        let mut model_columns: IndexMap<String, DbtColumnRef> = IndexMap::new();
+        model_columns.insert(
+            "col1".to_string(),
+            Arc::new(DbtColumn {
+                name: "col1".to_string(),
+                description: Some("new comment".to_string()),
+                ..Default::default()
+            }),
+        );
+        model_columns.insert(
+            "col2".to_string(),
+            Arc::new(DbtColumn {
+                name: "col2".to_string(),
+                description: Some("comment for missing column".to_string()),
+                ..Default::default()
+            }),
+        );
+
+        let existing_columns = vec![
+            Column::new(
+                Databricks,
+                "col1".to_string(),
+                "string".to_string(),
+                None,
+                None,
+                None,
+            )
+            .with_comment(Some("old comment".to_string())),
+        ];
+
+        let result = adapter
+            .do_get_persist_doc_columns(existing_columns, model_columns)
+            .expect("do_get_persist_doc_columns should succeed");
+
+        assert!(
+            result.contains_key("col1"),
+            "expected col1 to be persisted, got: {result:?}"
+        );
+        assert!(
+            !result.contains_key("col2"),
+            "expected missing col2 to be skipped, got: {result:?}"
+        );
+        assert_eq!(result.len(), 1);
     }
 
     #[test]

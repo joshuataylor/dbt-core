@@ -196,7 +196,7 @@ pub struct ProjectUnitTestConfig {
     #[serde(rename = "+catalog")]
     pub catalog: Option<String>,
     #[serde(rename = "+databricks_tags")]
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     #[serde(rename = "+compression")]
     pub compression: Option<String>,
     #[serde(rename = "+databricks_compute")]

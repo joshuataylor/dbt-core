@@ -161,7 +161,7 @@ pub struct WarehouseSpecificNodeConfig {
     pub clustered_by: Option<StringOrArrayOfStrings>,
     pub buckets: Option<i64>,
     pub catalog: Option<String>,
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     pub query_tags: Option<String>,
     pub compression: Option<String>,
     pub databricks_compute: Option<String>,

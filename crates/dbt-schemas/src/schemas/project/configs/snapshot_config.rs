@@ -276,7 +276,7 @@ pub struct ProjectSnapshotConfig {
     #[serde(rename = "+databricks_compute")]
     pub databricks_compute: Option<String>,
     #[serde(rename = "+databricks_tags")]
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     #[serde(rename = "+file_format")]
     pub file_format: Option<String>,
     #[serde(rename = "+catalog_name")]

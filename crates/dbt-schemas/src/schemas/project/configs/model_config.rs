@@ -157,7 +157,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+databricks_compute")]
     pub databricks_compute: Option<String>,
     #[serde(rename = "+databricks_tags")]
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     #[serde(rename = "+submission_method")]
     pub submission_method: Option<String>,
     #[serde(rename = "+job_cluster_config")]

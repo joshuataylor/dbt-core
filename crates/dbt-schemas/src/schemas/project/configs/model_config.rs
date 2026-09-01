@@ -2350,6 +2350,51 @@ __warehouse_specific_config__: {}
         assert_eq!(state.execute_hooks_on_any_reuse, Some(true));
     }
 
+    /// Regression for #16135: `state:` keys merge key by key, so a model that sets
+    /// only `require_fresh_data_from` still inherits the project-level `lag_tolerance`.
+    #[test]
+    fn test_model_config_state_merges_field_by_field() {
+        use crate::schemas::common::ModelFreshnessRules;
+        use crate::schemas::properties::ModelState;
+
+        let parent = ModelConfig {
+            state: Some(ModelState {
+                lag_tolerance: Some(ModelFreshnessRules {
+                    count: Some(1),
+                    period: Some(FreshnessPeriod::minute),
+                    updates_on: None,
+                }),
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: None,
+                pre_clone: Some(StatePreClone::Always),
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+            }),
+            ..Default::default()
+        };
+        let mut child = ModelConfig {
+            state: Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: Some(UpdatesOn::All),
+                evaluate_volatile_sql: None,
+                pre_clone: None,
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+            }),
+            ..Default::default()
+        };
+        child.default_to(&parent);
+
+        let state = child.state.expect("state should survive the merge");
+        let lag_tolerance = state
+            .lag_tolerance
+            .expect("project-level lag_tolerance should be inherited");
+        assert_eq!(lag_tolerance.count, Some(1));
+        assert_eq!(lag_tolerance.period, Some(FreshnessPeriod::minute));
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.pre_clone, Some(StatePreClone::Always));
+    }
+
     /// Regression for fs#13343: Core accepts a sequence-valued `column_types` entry
     /// (e.g. produced by a templated macro); Fusion must not reject it during YAML load.
     #[test]

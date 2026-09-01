@@ -1254,6 +1254,42 @@ __warehouse_specific_config__: {}
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
     }
 
+    /// Regression for #16135: a snapshot that sets one `state:` key keeps the keys
+    /// the project layer set.
+    #[test]
+    fn test_snapshot_config_state_merges_field_by_field() {
+        use crate::schemas::project::dbt_project::ResolvableConfig;
+
+        let parent = SnapshotConfig {
+            state: Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: Some(true),
+                pre_clone: Some(StatePreClone::IfMissing),
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+            }),
+            ..Default::default()
+        };
+        let mut child = SnapshotConfig {
+            state: Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: Some(UpdatesOn::All),
+                evaluate_volatile_sql: None,
+                pre_clone: None,
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+            }),
+            ..Default::default()
+        };
+        child.default_to(&parent);
+
+        let state = child.state.expect("state should survive the merge");
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.evaluate_volatile_sql, Some(true));
+        assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
+    }
+
     /// `+adapter` names an adapter *type*, so the value is typed rather than a
     /// free string -- anything that is not a supported adapter fails here, at
     /// deserialization. Mirrors the seed and model cases.

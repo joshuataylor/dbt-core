@@ -171,7 +171,7 @@ impl ConfigProcessor {
         Ok(config)
     }
 
-    fn should_show_field<T: InteractiveSetup>(
+    pub fn should_show_field<T: InteractiveSetup>(
         field: &ConfigField,
         collected_values: &HashMap<String, FieldValue>,
         config: &T,

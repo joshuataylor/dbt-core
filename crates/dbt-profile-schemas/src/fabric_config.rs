@@ -1,4 +1,4 @@
-use crate::adapter_config::common::{ConfigField, ConfigProcessor, FieldValue, InteractiveSetup};
+use crate::common::{ConfigField, ConfigProcessor, FieldValue, InteractiveSetup};
 
 use dbt_common::FsResult;
 use dbt_schemas::schemas::profiles::FabricDbConfig;
@@ -211,7 +211,7 @@ fn auth_label_options() -> Vec<&'static str> {
     AUTH_METHODS.iter().map(|(_, label)| *label).collect()
 }
 
-fn default_fabric_config() -> FabricDbConfig {
+pub fn default_fabric_config() -> FabricDbConfig {
     FabricDbConfig {
         driver: None,
         host: None,

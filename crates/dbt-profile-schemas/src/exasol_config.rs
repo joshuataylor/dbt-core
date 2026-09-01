@@ -1,5 +1,5 @@
 use super::common::*;
-use crate::{ErrorCode, FsResult, fs_err};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::ExasolDbConfig;
 use dbt_schemas::schemas::serde::StringOrInteger;
 

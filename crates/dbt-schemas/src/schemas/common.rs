@@ -1437,6 +1437,12 @@ where
     normalized.serialize(serializer)
 }
 
+// `skip_serializing_none` only rewrites fields whose declared outer type is
+// `Option`, so it cannot elide a field through a `Verbatim` wrapper.
+pub fn verbatim_option_is_none<T>(value: &Verbatim<Option<T>>) -> bool {
+    value.is_none()
+}
+
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
 pub struct HookConfig {

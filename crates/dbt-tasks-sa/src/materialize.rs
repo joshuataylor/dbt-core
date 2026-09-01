@@ -1176,7 +1176,11 @@ pub fn materialize_unit_test(
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
 ) -> FsResult<bool> {
-    let adapter_type = resolver_state.adapter_type;
+    // The unit test's own adapter, not the target default: `resolve_unit_tests`
+    // gives it the tested model's (`adapter: model_adapter.unwrap_or(default)`),
+    // already excluding lake compute, since a unit test never takes the
+    // compute-platform path.
+    let adapter_type = unit_test.node_adapter();
     let (mut context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,

@@ -106,7 +106,8 @@ impl Task for RunTask {
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
             let unique_id = self.node.unique_id();
-            let adapter_type = ctx.adapter_type();
+            // The node's own adapter drives its execution; see `+adapter`.
+            let adapter_type = self.node.node_adapter();
             let max_threads = ctx.dbt_profile().threads;
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
@@ -436,7 +437,7 @@ impl Task for RunTask {
                                         f: Box::new(move || {
                                             let relations_map = materialize_latest_version_pointer(
                                                 &model_clone,
-                                                ctx_clone.adapter_type(),
+                                                model_clone.node_adapter(),
                                                 ctx_clone.runtime_config(),
                                                 &ctx_clone.inner.materialization_resolver,
                                                 ctx_clone.env.clone(),
@@ -738,7 +739,7 @@ async fn execute_hooks_for_run_cache_skip_reuse(
             hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
             hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
         }),
-        adapter_type: ctx.adapter_type(),
+        adapter_type: node.node_adapter(),
         max_threads: ctx.dbt_profile().threads,
     }
     .run()
@@ -827,20 +828,20 @@ fn execute_hook_node_blocking(
         RunCacheReuseHookNode::Model(model) => execute_node_hooks(
             model.as_ref(),
             &model.deprecated_config,
-            ctx.adapter_type(),
+            model.node_adapter(),
             ctx.runtime_config(),
             ctx.env.clone(),
             base_context,
             &ctx.inner.arg.io,
             sql,
-            model_hook_style(ctx.adapter_type(), &model.__base_attr__.materialized),
+            model_hook_style(model.node_adapter(), &model.__base_attr__.materialized),
             NodePathKind::Compiled,
             phase,
         ),
         RunCacheReuseHookNode::Snapshot(snapshot) => execute_node_hooks(
             snapshot.as_ref(),
             &snapshot.deprecated_config,
-            ctx.adapter_type(),
+            snapshot.node_adapter(),
             ctx.runtime_config(),
             ctx.env.clone(),
             base_context,
@@ -853,7 +854,7 @@ fn execute_hook_node_blocking(
         RunCacheReuseHookNode::Seed(seed) => execute_node_hooks(
             seed.as_ref(),
             &seed.deprecated_config,
-            ctx.adapter_type(),
+            seed.node_adapter(),
             ctx.runtime_config(),
             ctx.env.clone(),
             base_context,
@@ -1239,11 +1240,11 @@ async fn execute_remote_node_no_result(
 }
 
 /// Determine whether to prefer SQL over LP for local execution of a node.
-pub fn prefer_sql_for_node(node: &dyn InternalDbtNodeAttributes, ctx: &TaskRunnerCtx) -> bool {
+pub fn prefer_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> bool {
     if node.as_any().is::<DbtSnapshot>() {
         true
     } else if node.as_any().is::<DbtModel>() {
-        ctx.adapter_type() == AdapterType::DuckDB
+        node.node_adapter() == AdapterType::DuckDB
     } else {
         false
     }

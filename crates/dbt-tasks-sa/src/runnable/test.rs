@@ -619,7 +619,7 @@ fn execute_test_remote_inner(
         &sql_instruction.sql,
         test,
         ctx.generic_test_relationships(),
-        ctx.adapter_type(),
+        test.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),

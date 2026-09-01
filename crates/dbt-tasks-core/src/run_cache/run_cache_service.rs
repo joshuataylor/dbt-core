@@ -552,7 +552,7 @@ pub fn insert_compiled_view_definition(
         return;
     }
 
-    let adapter_type = ctx.adapter_type();
+    let adapter_type = node.node_adapter();
     let Ok(relation) = create_relation_from_node(adapter_type, node, None) else {
         return;
     };
@@ -636,7 +636,7 @@ impl HeuristicClock {
     /// Sample the warehouse clock and return a bootstrapped clock, or `None`
     /// if the adapter is not opted in or the query fails.
     pub async fn bootstrap(ctx: &TaskRunnerCtx) -> Option<Self> {
-        if !heuristic_clock_enabled_for_adapter(ctx.adapter_type()) {
+        if !heuristic_clock_enabled_for_adapter(ctx.default_adapter_type()) {
             return None;
         }
         let start_instant = Instant::now();
@@ -655,7 +655,7 @@ impl HeuristicClock {
 /// Query the warehouse for its current epoch-millisecond timestamp.
 /// Returns `None` when the adapter is unsupported or the query fails.
 async fn warehouse_now_ms(ctx: &TaskRunnerCtx) -> Option<i64> {
-    let sql: &'static str = match ctx.adapter_type() {
+    let sql: &'static str = match ctx.default_adapter_type() {
         AdapterType::Snowflake => "SELECT DATE_PART('epoch_millisecond', SYSDATE())",
         AdapterType::Redshift => "SELECT (EXTRACT(EPOCH FROM GETDATE()) * 1000)::BIGINT",
         AdapterType::Databricks => "SELECT unix_millis(current_timestamp())",
@@ -828,7 +828,7 @@ fn render_freshness_override(
 /// it and lets the per-node paths fall back to their own freshness lookups.
 async fn prefetch_global_last_modified_epochs(ctx: &TaskRunnerCtx) -> FsResult<()> {
     let (relations, overrides) = collect_global_prefetch_relations(
-        ctx.adapter_type(),
+        ctx.default_adapter_type(),
         &ctx.inner.runnable_set,
         &ctx.inner.runtime_deps,
         ctx.nodes(),
@@ -882,7 +882,7 @@ fn should_warn_slow_metadata_prefetch(
 /// in INFORMATION_SCHEMA without one configured.
 fn maybe_warn_slow_metadata_prefetch(ctx: &TaskRunnerCtx, elapsed: std::time::Duration) {
     let metadata_options = run_cache_metadata_query_options(ctx);
-    if !should_warn_slow_metadata_prefetch(ctx.adapter_type(), &metadata_options, elapsed) {
+    if !should_warn_slow_metadata_prefetch(ctx.default_adapter_type(), &metadata_options, elapsed) {
         return;
     }
     emit_warn_log_message(
@@ -1584,7 +1584,7 @@ fn state_explain_node_info(
     node: &dyn InternalDbtNodeAttributes,
 ) -> StateExplainNodeInfo {
     let mut node_info =
-        state_explain_node_info_for_parts(ctx.adapter_type(), ctx.inner.arg.full_refresh, node);
+        state_explain_node_info_for_parts(node.node_adapter(), ctx.inner.arg.full_refresh, node);
     node_info.dev_clone = ctx
         .inner
         .run_cache_ctx
@@ -1609,9 +1609,10 @@ fn state_explain_deferrals(
         .iter()
         .filter_map(|dependency_id| {
             let deferred_node = defer_nodes.get_node(dependency_id)?;
-            let deferred_fqn = create_relation_from_node(ctx.adapter_type(), deferred_node, None)
-                .ok()?
-                .semantic_fqn();
+            let deferred_fqn =
+                create_relation_from_node(deferred_node.node_adapter(), deferred_node, None)
+                    .ok()?
+                    .semantic_fqn();
             if !ctx
                 .inner
                 .run_cache_ctx
@@ -1622,7 +1623,7 @@ fn state_explain_deferrals(
             }
 
             let local_node = ctx.nodes().get_node(dependency_id)?;
-            let local_fqn = create_relation_from_node(ctx.adapter_type(), local_node, None)
+            let local_fqn = create_relation_from_node(ctx.default_adapter_type(), local_node, None)
                 .ok()?
                 .semantic_fqn();
             Some((local_fqn, deferred_fqn))
@@ -1737,7 +1738,7 @@ pub async fn confirm_run_cache_service_execution(
         return;
     };
     let request = match confirmation
-        .into_confirm_execution_request(ctx, node, final_last_modified_epoch, execution_runtime_ms)
+        .into_confirm_execution_request(node, final_last_modified_epoch, execution_runtime_ms)
         .await
     {
         Ok(Some(request)) => request,
@@ -1909,7 +1910,7 @@ pub async fn execute_run_cache_service_clone(
     .map_err(RunCacheCloneError::Recoverable)?;
     clone_result?;
 
-    let target_relation = create_relation_from_node(ctx.adapter_type(), node, None)
+    let target_relation = create_relation_from_node(node.node_adapter(), node, None)
         .map_err(RunCacheCloneError::Fatal)?;
     let target_relation: Arc<dyn BaseRelation> = target_relation.into();
     ctx.inner
@@ -1986,7 +1987,6 @@ impl RunCacheSubmitResult {
 impl RunCacheExecutionConfirmation {
     async fn into_confirm_execution_request(
         self,
-        ctx: &TaskRunnerCtx,
         node: &dyn InternalDbtNodeAttributes,
         last_modified_epoch: Option<i64>,
         execution_runtime_ms: Option<i64>,
@@ -2013,7 +2013,7 @@ impl RunCacheExecutionConfirmation {
             request_id: self.request_id,
             last_modified_epoch,
             failed_to_clone: self.failed_to_clone,
-            table_type: table_type_for_node(ctx, node).await?,
+            table_type: table_type_for_node(node).await?,
             execution_results: self.execution_results,
             execution_runtime_ms: self.execution_runtime_ms.or(execution_runtime_ms),
             labels: node_identity(node).labels(),
@@ -2077,7 +2077,7 @@ impl RunCachePendingExecutionRecord {
 
         let outcome = ExecutionOutcomeInput {
             last_modified_epoch: Some(last_modified_epoch),
-            table_type: table_type_for_node(ctx, node).await?,
+            table_type: table_type_for_node(node).await?,
             execution_runtime_ms,
         };
         let record = match input {
@@ -2128,7 +2128,7 @@ async fn finalize_speculative_sql_request(
     // resolve (e.g. parser-discovered raw references outside the DAG).
     let mut relations: BTreeMap<String, Arc<dyn BaseRelation>> = BTreeMap::new();
     for table in &request.tables {
-        if let Ok(relation) = relation_from_rendered_name(ctx, node, &table.name) {
+        if let Ok(relation) = relation_from_rendered_name(node, &table.name) {
             relations.insert(table.name.clone(), relation);
         }
     }
@@ -2176,7 +2176,7 @@ fn collect_source_freshness_overrides(
         let Some(source) = dep_node.as_any().downcast_ref::<DbtSource>() else {
             continue;
         };
-        let Ok((name, _)) = relation_for_node(ctx, dep_node) else {
+        let Ok((name, _)) = relation_for_node(dep_node) else {
             continue;
         };
         if let Some(kind) = source_freshness_override(source) {
@@ -2234,7 +2234,7 @@ async fn verify_clone_source_freshness(
         ));
     }
 
-    let source_relation = relation_from_rendered_name(ctx, node, &clone.clone_source)?;
+    let source_relation = relation_from_rendered_name(node, &clone.clone_source)?;
     let actual_epoch =
         refresh_last_modified_epoch_for_relation(ctx, &clone.clone_source, source_relation).await?;
     match actual_epoch {
@@ -2256,15 +2256,14 @@ async fn verify_clone_source_freshness(
 }
 
 fn relation_from_rendered_name(
-    ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
     rendered_name: &str,
 ) -> FsResult<Arc<dyn BaseRelation>> {
-    let Some(dialect) = dialect_of(ctx.adapter_type()) else {
+    let Some(dialect) = dialect_of(node.node_adapter()) else {
         return Err(fs_err!(
             ErrorCode::Generic,
             "dbt State service clone source parsing is unsupported for adapter {:?}",
-            ctx.adapter_type()
+            node.node_adapter()
         ));
     };
     let fqn = FullyQualifiedName::parse(rendered_name, dialect).map_err(|err| {
@@ -2276,7 +2275,7 @@ fn relation_from_rendered_name(
         )
     })?;
     Ok(create_relation(
-        ctx.adapter_type(),
+        node.node_adapter(),
         fqn.catalog().to_value(),
         fqn.schema().to_value(),
         Some(fqn.table().to_value()),
@@ -2313,7 +2312,7 @@ fn cache_cloned_relation(
     node: &dyn InternalDbtNodeAttributes,
 ) -> FsResult<()> {
     if let Some(base_adapter) = ctx.env.get_base_adapter() {
-        let relation = create_relation_from_node(ctx.adapter_type(), node, None)?;
+        let relation = create_relation_from_node(ctx.default_adapter_type(), node, None)?;
         let _ = base_adapter.cache_added(&ctx.env.empty_state(), relation.into());
     }
     Ok(())
@@ -2770,7 +2769,7 @@ async fn prepare_write_only_execution_record(
         let request = build_seed_values_request(
             seed,
             SeedRunCacheRequestContext {
-                adapter_type: ctx.adapter_type(),
+                adapter_type: seed.node_adapter(),
                 dialect: run_cache_dialect(ctx),
                 last_modified_epoch: None,
                 clone_time_travel_limit: None,
@@ -2850,7 +2849,7 @@ async fn submit_seed(
     let request = build_seed_values_request(
         seed,
         SeedRunCacheRequestContext {
-            adapter_type: ctx.adapter_type(),
+            adapter_type: seed.node_adapter(),
             dialect: run_cache_dialect(ctx),
             last_modified_epoch,
             clone_time_travel_limit,
@@ -2989,14 +2988,14 @@ async fn build_sql_context(
     let active_profile = ctx.dbt_profile();
     let is_targeting_prod = config.is_defer_to_target(active_profile);
     let clone_chain_depth_limit = clone_chain_depth_limit_for_adapter(
-        ctx.adapter_type(),
+        node.node_adapter(),
         is_targeting_prod,
         active_profile.allow_clones,
     );
 
     Ok(BuiltSqlRunCacheContext {
         request: SqlRunCacheRequestContext {
-            adapter_type: ctx.adapter_type(),
+            adapter_type: node.node_adapter(),
             dialect: run_cache_dialect(ctx),
             sql,
             tables: tables.tables,
@@ -3415,7 +3414,7 @@ async fn collect_table_modified_infos(
     let mut relations = BTreeMap::new();
     let mut metadata_complete = true;
 
-    let (target_name, target_relation) = relation_for_node(ctx, node)?;
+    let (target_name, target_relation) = relation_for_node(node)?;
     relations.insert(target_name.clone(), target_relation);
 
     let mut freshness_overrides: BTreeMap<String, FreshnessOverride> = BTreeMap::new();
@@ -3430,7 +3429,7 @@ async fn collect_table_modified_infos(
                 || dep_node.as_any().is::<DbtSeed>()
                 || dep_id.starts_with("source.")
             {
-                if let Ok((name, relation)) = relation_for_node(ctx, dep_node) {
+                if let Ok((name, relation)) = relation_for_node(dep_node) {
                     // For sources with `loaded_at_query` or `loaded_at_field` set,
                     // build an override entry keyed by the relation's semantic_fqn —
                     // that's what MetadataAdapter::freshness_with_overrides expects.
@@ -3560,7 +3559,7 @@ async fn last_modified_epoch_for_node(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
 ) -> FsResult<Option<i64>> {
-    let (name, relation) = relation_for_node(ctx, node)?;
+    let (name, relation) = relation_for_node(node)?;
     last_modified_epoch_for_relation(ctx, &name, relation).await
 }
 
@@ -3568,7 +3567,7 @@ pub async fn refresh_final_last_modified_epoch_for_node(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
 ) -> FsResult<Option<i64>> {
-    let (name, relation) = relation_for_node(ctx, node)?;
+    let (name, relation) = relation_for_node(node)?;
     ctx.inner
         .run_cache_ctx
         .run_cache_metadata
@@ -3580,7 +3579,7 @@ pub fn clear_stale_missing_last_modified_epoch_for_node(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
 ) {
-    if let Ok((name, _)) = relation_for_node(ctx, node) {
+    if let Ok((name, _)) = relation_for_node(node) {
         // Only clear a known-stale placeholder (`Some(None)`), cached when the
         // submit-time probe found no target table yet. A real cached epoch
         // (`Some(Some(_))`) is still valid and may be relied on by sibling nodes
@@ -3609,7 +3608,7 @@ pub fn evict_node_metadata_for_untracked_rebuild(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
 ) {
-    if let Ok((name, _)) = relation_for_node(ctx, node) {
+    if let Ok((name, _)) = relation_for_node(node) {
         ctx.inner
             .run_cache_ctx
             .run_cache_metadata
@@ -3626,7 +3625,7 @@ fn stamp_final_last_modified_epoch_for_node_heuristic(
     // Mirror the plugin's `clear_cache` + `cache_last_modified_epoch(table, H)`:
     // replace the stale prefetch value (often None for newly-created tables) with H
     // so downstream submissions in the same run have metadata_complete=true.
-    let Ok((name, _)) = relation_for_node(ctx, node) else {
+    let Ok((name, _)) = relation_for_node(node) else {
         return None;
     };
     ctx.inner
@@ -3679,12 +3678,12 @@ async fn refresh_last_modified_epoch_for_relation(
     relation: Arc<dyn BaseRelation>,
 ) -> FsResult<Option<i64>> {
     let mut relations = BTreeMap::new();
+    let adapter_type = relation.adapter_type();
     relations.insert(name.to_string(), relation);
     // Per-relation refreshes aren't used for sources (sources are populated
     // upfront via the bulk prefetch), so no overrides apply here. Still route
     // through the adapter-specific planner so BigQuery can use schema prefetch.
-    refresh_planned_last_modified_misses(ctx, &relations, &BTreeMap::new(), ctx.adapter_type())
-        .await?;
+    refresh_planned_last_modified_misses(ctx, &relations, &BTreeMap::new(), adapter_type).await?;
     Ok(ctx
         .inner
         .run_cache_ctx
@@ -3722,7 +3721,8 @@ async fn prefetch_last_modified_epochs(
         misses.keys().cloned().collect::<Vec<_>>().join(", ")
     ));
     let refresh_result =
-        refresh_planned_last_modified_misses(ctx, &misses, overrides, ctx.adapter_type()).await;
+        refresh_planned_last_modified_misses(ctx, &misses, overrides, ctx.default_adapter_type())
+            .await;
     if let Err(err) = refresh_result {
         emit_trace_log_message(|| format!("dbt State metadata prefetch failed: {err}"));
     }
@@ -3980,18 +3980,14 @@ fn config_derived_table_type(
     }
 }
 
-async fn table_type_for_node(
-    ctx: &TaskRunnerCtx,
-    node: &dyn InternalDbtNodeAttributes,
-) -> FsResult<Option<String>> {
-    Ok(config_derived_table_type(node, ctx.adapter_type()))
+async fn table_type_for_node(node: &dyn InternalDbtNodeAttributes) -> FsResult<Option<String>> {
+    Ok(config_derived_table_type(node, node.node_adapter()))
 }
 
 fn relation_for_node(
-    ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
 ) -> FsResult<(String, Arc<dyn BaseRelation>)> {
-    let relation = create_relation_from_node(ctx.adapter_type(), node, None)?;
+    let relation = create_relation_from_node(node.node_adapter(), node, None)?;
     // Canonical (`semantic_fqn`) key so lenient-dependency matching, the
     // metadata cache, and the wire payload all agree regardless of how the
     // relation's database/schema/identifier were originally cased.
@@ -4107,7 +4103,7 @@ async fn query_dependencies_for_parse_error(
 
     let unique_id = node.unique_id();
     let upstreams = match extract_standalone_expression_upstreams_for_run_cache(
-        ctx.adapter_type(),
+        node.node_adapter(),
         sql,
         &node.database(),
         &node.schema(),
@@ -4131,7 +4127,7 @@ async fn query_dependencies_for_parse_error(
             return Ok(CollectedViewQueryDependencies::incomplete());
         };
         relations_from_upstreams(
-            ctx.adapter_type(),
+            node.node_adapter(),
             upstreams,
             adapter.engine().type_ops().as_ref(),
         )?
@@ -4175,7 +4171,7 @@ fn cacheable_manifest_dependency_relations(
         if !is_cacheable_resource_type(dep_node.resource_type()) {
             continue;
         }
-        let Ok((name, relation)) = relation_for_node(ctx, dep_node) else {
+        let Ok((name, relation)) = relation_for_node(dep_node) else {
             continue;
         };
         relations.insert(name, relation);
@@ -4217,7 +4213,7 @@ fn parse_sql_relations_for_run_cache(
     let type_ops = adapter.engine().type_ops().as_ref();
     let sources_extractor = ctx.inner.sources_extractor.as_ref();
     parse_sql_relations_for_adapter(
-        ctx.adapter_type(),
+        ctx.default_adapter_type(),
         sql,
         default_catalog,
         default_schema,
@@ -4327,7 +4323,7 @@ fn quoting_for_upstream(
 }
 
 fn run_cache_dialect(ctx: &TaskRunnerCtx) -> String {
-    ctx.adapter_type().to_string()
+    ctx.default_adapter_type().to_string()
 }
 
 fn should_honor_service_skip(ctx: &TaskRunnerCtx) -> bool {

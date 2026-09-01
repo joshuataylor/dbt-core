@@ -390,10 +390,17 @@ impl TaskRunnerCtx {
         &self.inner.root_project_name
     }
 
-    /// The adapter unannotated nodes run on. Read off the store rather than
-    /// stored alongside it, so there is one answer to "what is the default" and
-    /// it cannot drift from the adapter the store hands out for it.
-    pub fn adapter_type(&self) -> AdapterType {
+    /// The adapter unannotated nodes run on.
+    ///
+    /// Named for what it returns. It used to be `adapter_type()`, which read as
+    /// "the adapter" and was taken as such by callers that meant the node's --
+    /// the bug fixed on the render and materialize paths. Every remaining caller
+    /// is now asserting it wants the *target default*, which is reviewable.
+    ///
+    /// Read off the store rather than stored alongside it, so there is one answer
+    /// to "what is the default" and it cannot drift from the adapter the store
+    /// hands out for it.
+    pub fn default_adapter_type(&self) -> AdapterType {
         self.inner.adapter_store.default_adapter_type()
     }
 
@@ -445,7 +452,7 @@ impl TaskRunnerCtx {
 
     pub fn try_get_relation_from_node(&self, unique_id: &str) -> Option<Arc<dyn BaseRelation>> {
         self.resolver_state.nodes.get_node(unique_id).map(|node| {
-            create_relation_from_node(self.adapter_type(), node, None)
+            create_relation_from_node(node.node_adapter(), node, None)
                 .expect("Failed to create relation from node")
                 .into()
         })
@@ -500,7 +507,7 @@ impl TaskRunnerCtx {
         // Only when the node differs from the default: an unannotated node then
         // resolves the identical global it always did, and a single-adapter
         // target never asks the store for a second adapter.
-        if node_adapter != self.adapter_type() {
+        if node_adapter != self.default_adapter_type() {
             let adapter = self.adapter_store().get(node_adapter)?;
             ctx.insert("api".to_string(), adapter_api_value(&adapter));
             ctx.insert("adapter".to_string(), adapter.as_value());

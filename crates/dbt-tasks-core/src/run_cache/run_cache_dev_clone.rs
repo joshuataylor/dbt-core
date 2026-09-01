@@ -41,7 +41,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
             ctx,
             node.as_ref(),
             &clone,
-            ctx.adapter_type(),
+            node.node_adapter(),
             ctx.dbt_profile().threads,
             None,
             false,
@@ -125,7 +125,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
         ctx,
         node.as_ref(),
         &clone,
-        ctx.adapter_type(),
+        node.node_adapter(),
         ctx.dbt_profile().threads,
         None,
         false,
@@ -389,7 +389,8 @@ async fn prepare_dev_clone_request(
     candidate: &DevCloneCandidate,
     policy: CloneIncrementalInDev,
 ) -> FsResult<Option<PreparedDevClone>> {
-    let target_relation = create_relation_from_node(ctx.adapter_type(), candidate.local(), None)?;
+    let target_relation =
+        create_relation_from_node(ctx.default_adapter_type(), candidate.local(), None)?;
     let target_relation: Arc<dyn BaseRelation> = target_relation.into();
     let target_table = target_relation.semantic_fqn();
 
@@ -420,7 +421,7 @@ async fn prepare_dev_clone_request(
     }
 
     let source_relation =
-        create_relation_from_node(ctx.adapter_type(), candidate.deferred(), None)?;
+        create_relation_from_node(ctx.default_adapter_type(), candidate.deferred(), None)?;
     let source_relation: Arc<dyn BaseRelation> = source_relation.into();
     let clone_source_table = source_relation.semantic_fqn();
     if target_table == clone_source_table {
@@ -453,16 +454,16 @@ async fn prepare_dev_clone_request(
 
     let request = CloneRequestInput {
         target_table: target_table.clone(),
-        dialect: ctx.adapter_type().to_string(),
+        dialect: ctx.default_adapter_type().to_string(),
         default_catalog: candidate.local().database(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
         clone_source_last_modified_epoch: source_last_modified_epoch,
         labels: node_identity(candidate.local()).labels(),
-        clone_source_table_type: candidate.clone_source_table_type(ctx.adapter_type()),
+        clone_source_table_type: candidate.clone_source_table_type(ctx.default_adapter_type()),
         table_properties: candidate.table_properties(),
         clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(
-            ctx.adapter_type(),
+            ctx.default_adapter_type(),
             false,
             ctx.dbt_profile().allow_clones,
         ),

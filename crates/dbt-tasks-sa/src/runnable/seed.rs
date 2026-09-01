@@ -183,7 +183,7 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
 
     add_task_context(&mut base_context, seed.common(), &ctx.thread_id);
 
-    let relation = create_relation_from_node(ctx.adapter_type(), seed, None)?;
+    let relation = create_relation_from_node(seed.node_adapter(), seed, None)?;
     let canonical_fqn = relation.get_canonical_fqn()?;
 
     // Read seed parquet file synchronously via Arrow reader (no DataFusion needed).

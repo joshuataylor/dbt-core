@@ -220,7 +220,7 @@ fn try_get_schema_from_cache(
             || node_unique_id.starts_with("snapshot.")
             || node_unique_id.starts_with("source.")
         {
-            let node_relation = create_relation_from_node(ctx.adapter_type(), node, None)?;
+            let node_relation = create_relation_from_node(node.node_adapter(), node, None)?;
             let node_canonical_fqn = node_relation.get_canonical_fqn().ok();
 
             // If we have a hit
@@ -416,7 +416,7 @@ fn populate_schema_from_empty_relation(
     let (mut run_context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
-        ctx.adapter_type(),
+        unit_test.node_adapter(),
         None,
         &ctx.inner.base_context,
         &ctx.inner.arg.io,
@@ -451,7 +451,12 @@ fn populate_schema_from_empty_relation(
     // where temp tables are session-scoped. Sidecar/service adapter calls route
     // DDL through an Execute task, which cannot handle Snowflake-qualified temp
     // tables, so sidecar inference uses the query-schema path as well.
-    let materialization = if ctx.adapter_type() == AdapterType::DuckDB || infer_with_query_schema {
+    // The unit test's own adapter throughout: it carries the tested model's
+    // (`resolve_unit_tests`), so a test on a non-default model must not be
+    // rendered for the default's dialect.
+    let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
+        || infer_with_query_schema
+    {
         r#"
   {% macro get_expected_columns(sql, select_sql_header) -%}
       {%- if select_sql_header is not none -%}
@@ -495,7 +500,7 @@ fn populate_schema_from_empty_relation(
 
     let type_ops = adapter.engine().type_ops();
     let schema_sql = replace_subquery_refs_with_cte_names(
-        ctx.adapter_type(),
+        unit_test.node_adapter(),
         type_ops.as_ref(),
         compiled_model_sql.to_string(),
         &rewrite_targets,
@@ -504,7 +509,8 @@ fn populate_schema_from_empty_relation(
     let ctes = rewrite_targets
         .iter()
         .filter_map(|(id, q)| {
-            let cte_name = create_cte_name_from_fqn(ctx.adapter_type(), type_ops.as_ref(), id);
+            let cte_name =
+                create_cte_name_from_fqn(unit_test.node_adapter(), type_ops.as_ref(), id);
             if schema_sql.contains(&cte_name) {
                 Some(format!("{cte_name} as ({q})"))
             } else {
@@ -566,8 +572,8 @@ fn populate_schema_from_empty_relation(
         )
     })?;
 
-    let columns =
-        Column::vec_from_jinja_value(ctx.adapter_type(), columns_as_value).map_err(|e| {
+    let columns = Column::vec_from_jinja_value(unit_test.node_adapter(), columns_as_value)
+        .map_err(|e| {
             fs_err!(
                 ErrorCode::Generic,
                 "Internal error while extracting columns from inferred schema for unit test {}: {}",
@@ -798,7 +804,9 @@ fn extract_expect_values<'a>(
         .env
         .get_base_adapter()
         .map(|a| a.engine().type_ops().clone())
-        .unwrap_or_else(|| Arc::new(DefaultTypeOps::new(ctx.adapter_type())) as Arc<dyn TypeOps>);
+        .unwrap_or_else(|| {
+            Arc::new(DefaultTypeOps::new(unit_test.node_adapter())) as Arc<dyn TypeOps>
+        });
     let type_ops = type_ops_arc.as_ref();
     let column_names = Vec::from_iter(
         expect_schema
@@ -817,7 +825,7 @@ fn extract_expect_values<'a>(
             create_values(
                 expect_schema,
                 rows,
-                ctx.adapter_type(),
+                unit_test.node_adapter(),
                 type_ops,
                 None,
                 &unit_test.__unit_test_attr__.model,
@@ -845,7 +853,7 @@ fn extract_expect_values<'a>(
                 create_values(
                     expect_schema,
                     &rows,
-                    ctx.adapter_type(),
+                    unit_test.node_adapter(),
                     type_ops,
                     None,
                     &unit_test.__unit_test_attr__.model,
@@ -879,7 +887,7 @@ fn extract_expect_values<'a>(
                 create_values(
                     expect_schema,
                     &rows,
-                    ctx.adapter_type(),
+                    unit_test.node_adapter(),
                     type_ops,
                     None,
                     &unit_test.__unit_test_attr__.model,
@@ -1028,7 +1036,9 @@ fn check_defer_relation(
 ) -> Option<Arc<dyn BaseRelation>> {
     ctx.defer_nodes()
         .and_then(|nodes| nodes.get_node(model_unique_id))
-        .and_then(|defer_node| create_relation_from_node(ctx.adapter_type(), defer_node, None).ok())
+        .and_then(|defer_node| {
+            create_relation_from_node(defer_node.node_adapter(), defer_node, None).ok()
+        })
         .map(|r| Arc::from(r) as Arc<dyn BaseRelation>)
 }
 
@@ -1060,7 +1070,7 @@ fn render_unit_test(
         .map(Path::to_path_buf)
         .unwrap_or_else(|_| absolute_path_unit_test.clone());
 
-    let adapter_type = ctx.adapter_type();
+    let adapter_type = node.node_adapter();
     let type_ops_arc = ctx
         .env
         .get_base_adapter()
@@ -1154,7 +1164,7 @@ fn render_unit_test(
                     create_values(
                         &given_schema,
                         rows,
-                        ctx.adapter_type(),
+                        node.node_adapter(),
                         type_ops,
                         None,
                         given.input.as_str(),
@@ -1190,7 +1200,7 @@ fn render_unit_test(
                     create_values(
                         &given_schema,
                         &rows,
-                        ctx.adapter_type(),
+                        node.node_adapter(),
                         type_ops,
                         None,
                         given.input.as_str(),
@@ -1201,7 +1211,7 @@ fn render_unit_test(
                     create_values(
                         &given_schema,
                         &rows,
-                        ctx.adapter_type(),
+                        node.node_adapter(),
                         type_ops,
                         None,
                         given.input.as_str(),
@@ -1411,7 +1421,7 @@ fn render_unit_test(
             let col_lower = col.to_ascii_lowercase();
             let data_type = column_names_to_data_types.get(&col_lower)?;
             let col_name = column_names_to_field_names.get(&col_lower)?;
-            if is_orderable_type(ctx.adapter_type(), data_type) {
+            if is_orderable_type(node.node_adapter(), data_type) {
                 Some(type_ops.format_ident(col_name))
             } else {
                 None

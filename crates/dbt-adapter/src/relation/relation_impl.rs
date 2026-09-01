@@ -998,7 +998,12 @@ impl BaseRelation for Relation {
     }
 
     fn normalize_component(&self, component: &str) -> String {
-        crate::format_ident::default_identifier_case(component, self.adapter_type)
+        use AdapterType::*;
+        match self.adapter_type {
+            Salesforce | Bigquery | ClickHouse => component.to_string(),
+            Snowflake => component.to_uppercase(),
+            _ => component.to_lowercase(),
+        }
     }
 
     fn render_self_as_str(&self) -> String {

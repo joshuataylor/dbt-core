@@ -1933,7 +1933,6 @@ impl DbtProjectCompilation {
             token,
             sidecar_client.clone(),
             execute_mode,
-            arg.infer_schemas,
         )?;
         let adapter = if let Some(adapter_override) = arg
             .adapter_override
@@ -2651,7 +2650,6 @@ async fn write_catalog(
         token,
         None,
         execute,
-        arg.infer_schemas,
     )?;
     let mut jinja_env = Arc::unwrap_or_clone(jinja_env.clone());
     configure_compile_and_run_jinja_environment(&mut jinja_env, adapter.clone());

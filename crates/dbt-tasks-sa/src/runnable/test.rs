@@ -367,7 +367,7 @@ impl AggregatedTestRunRemoteTask {
         let base_context = self.build_base_context(ctx);
         let sql_instruction = self.receive_sql_instruction().await?;
 
-        let adapter_type = ctx.adapter_type();
+        let adapter_type = self.group.aggregated_test.node_adapter();
         let max_threads = ctx.dbt_profile().threads;
         let test = self.group.aggregated_test.clone();
         let ctx_inner = ctx.clone();

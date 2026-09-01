@@ -1,4 +1,5 @@
 use crate::schemas::common::ClusterConfig;
+use crate::schemas::serde::AdapterTypeOrArray;
 use crate::schemas::serde::OmissibleGrantConfig;
 use crate::schemas::serde::QueryTag;
 use dbt_adapter_core::AdapterType;
@@ -284,6 +285,9 @@ pub struct ProjectSnapshotConfig {
     #[serde(rename = "+adapter")]
     #[schemars(with = "Option<String>")]
     pub adapter: Option<AdapterType>,
+    #[serde(rename = "+propagate")]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     #[serde(
         default,
         rename = "+include_full_name_in_path",
@@ -466,6 +470,7 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.file_format.is_some()
             || self.catalog_name.is_some()
             || self.adapter.is_some()
+            || self.propagate.is_some()
             || self.include_full_name_in_path.is_some()
             || self.liquid_clustered_by.is_some()
             || self.location_root.is_some()
@@ -522,6 +527,10 @@ pub struct SnapshotConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub adapter: Option<AdapterType>,
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     // General Configuration
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
@@ -692,6 +701,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             target_schema: config.target_schema,
             compute: config.compute,
             adapter: config.adapter,
+            propagate: config.propagate,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: Tags(config.tags),
@@ -868,6 +878,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             target_schema: config.target_schema,
             compute: config.compute,
             adapter: config.adapter,
+            propagate: config.propagate,
             enabled: config.enabled,
             full_refresh: config.full_refresh,
             tags: config.tags.into_inner(),

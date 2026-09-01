@@ -704,6 +704,14 @@ pub async fn resolve_models(
         // downstream sees the same fully-resolved value -- notably
         // `deprecated_config`, which reaches the manifest and the run-cache hash.
         // Leaving unset fields as `None` there would change both.
+        // `propagate` comes straight off the node's own config. Unlike
+        // `adapter` there is no target default to fall back to and nothing to
+        // inherit: an unset `+propagate` means "publish nowhere".
+        let selected_propagate: Vec<AdapterType> = model_config
+            .propagate
+            .clone()
+            .map(Into::into)
+            .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
@@ -749,6 +757,7 @@ pub async fn resolve_models(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
+                propagate: selected_propagate,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below

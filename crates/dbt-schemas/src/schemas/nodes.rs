@@ -604,6 +604,14 @@ pub trait InternalDbtNodeAttributes: InternalDbtNode {
         self.base().adapter
     }
 
+    /// The compute platforms this node is published to after it materializes.
+    /// Reads [`NodeBaseAttributes::propagate`], so every node type answers
+    /// without the caller reaching into its own attr struct. Empty for a node
+    /// that made no `+propagate` selection.
+    fn node_propagate(&self) -> &[AdapterType] {
+        &self.base().propagate
+    }
+
     // Required Fields
     fn skip_generate_database_name_macro(&self) -> bool {
         false
@@ -4958,6 +4966,21 @@ pub struct NodeBaseAttributes {
     /// it is serialized only into the partial-parse cache, which a `dbt_version`
     /// change invalidates.
     pub adapter: AdapterType,
+    /// The compute platforms this node's output is pushed to after it
+    /// materializes, from `+propagate`. Empty unless the node asked for it.
+    ///
+    /// Distinct from [`Self::adapter`], which says where the node *runs*: a node
+    /// runs in exactly one place but can be published to several. Carried here
+    /// for the same reason `adapter` is -- the run layer has no profile and no
+    /// config, and reads placement off the node.
+    ///
+    /// Skipped when empty, unlike `adapter`. `adapter` always carries a value
+    /// worth recording; `propagate` is empty for almost every node in almost
+    /// every project, so serializing `[]` unconditionally would add a field to
+    /// every node in the partial-parse cache and in every dev-trace payload
+    /// that serializes a node, to say nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub propagate: Vec<AdapterType>,
     pub static_analysis: Spanned<StaticAnalysisKind>,
     #[serde(skip_deserializing, default)]
     pub static_analysis_off_reason: Option<StaticAnalysisOffReason>,
@@ -5020,6 +5043,7 @@ impl Default for NodeBaseAttributes {
             quoting_ignore_case: false,
             materialized: DbtMaterialization::default(),
             adapter: AdapterType::Snowflake,
+            propagate: Vec::new(),
             static_analysis: Spanned::default(),
             static_analysis_off_reason: None,
             compute: None,

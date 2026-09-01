@@ -215,7 +215,7 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
 
     let (relations_map, main_response) = match materialize_seed(
         seed,
-        ctx.adapter_type(),
+        seed.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),

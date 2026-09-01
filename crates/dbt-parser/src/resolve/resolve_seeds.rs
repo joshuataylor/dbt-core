@@ -330,6 +330,14 @@ pub async fn resolve_seeds(
         // See `resolve_models`: both remaining layers depend on the node's
         // `+adapter`, which the config merge cannot know. Written back so
         // `deprecated_config` carries the resolved value too.
+        // `propagate` comes straight off the node's own config. Unlike
+        // `adapter` there is no target default to fall back to and nothing to
+        // inherit: an unset `+propagate` means "publish nowhere".
+        let selected_propagate: Vec<AdapterType> = properties_config
+            .propagate
+            .clone()
+            .map(Into::into)
+            .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         properties_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
@@ -372,6 +380,7 @@ pub async fn resolve_seeds(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
+                propagate: selected_propagate,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below

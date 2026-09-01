@@ -319,6 +319,10 @@ impl ReplaceIfNone for dbt_common::io_args::ComputeArg {}
 impl ReplaceIfNone for crate::schemas::common::Access {}
 impl ReplaceIfNone for crate::schemas::common::ClusterConfig {}
 impl ReplaceIfNone for dbt_adapter_core::AdapterType {}
+// `propagate` states a node's complete set of propagation targets, so a child's
+// list replaces the parent's rather than unioning with it -- matching `adapter`,
+// its single-valued sibling, not `Tags`.
+impl ReplaceIfNone for crate::schemas::serde::AdapterTypeOrArray {}
 impl ReplaceIfNone for crate::schemas::common::DbtBatchSize {}
 impl ReplaceIfNone for crate::schemas::common::DbtContract {}
 impl ReplaceIfNone for crate::schemas::common::DbtIncrementalStrategy {}

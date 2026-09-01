@@ -1,4 +1,5 @@
 use crate::schemas::common::ClusterConfig;
+use crate::schemas::serde::AdapterTypeOrArray;
 use crate::schemas::serde::OmissibleGrantConfig;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::QueryTag;
@@ -118,6 +119,9 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+adapter")]
     #[schemars(with = "Option<String>")]
     pub adapter: Option<AdapterType>,
+    #[serde(rename = "+propagate")]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     #[serde(rename = "+cluster_by")]
     pub cluster_by: Option<ClusterConfig>,
     #[serde(rename = "+clustered_by")]
@@ -675,6 +679,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.catalog.is_some()
             || self.catalog_name.is_some()
             || self.adapter.is_some()
+            || self.propagate.is_some()
             || self.cluster_by.is_some()
             || self.clustered_by.is_some()
             || self.column_types.is_some()
@@ -836,6 +841,10 @@ pub struct ModelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<String>")]
     pub adapter: Option<AdapterType>,
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<StringOrArrayOfStrings>")]
+    pub propagate: Option<AdapterTypeOrArray>,
     // need default to ensure None if field is not set
     // serialize_with ensures meta is always present (as {} when None) for Jinja macros
     // that access node.config.meta.get(...)
@@ -962,6 +971,7 @@ impl From<ProjectModelConfig> for ModelConfig {
             environment_dependencies: config.environment_dependencies.clone(),
             catalog_name: config.catalog_name.clone(),
             adapter: config.adapter,
+            propagate: config.propagate,
             column_types: config.column_types,
             compute: config.compute,
             concurrent_batches: config.concurrent_batches,
@@ -1162,6 +1172,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             bind: config.__warehouse_specific_config__.bind,
             catalog_name: config.catalog_name,
             adapter: config.adapter,
+            propagate: config.propagate,
             column_types: config.column_types,
             compute: config.compute,
             concurrent_batches: config.concurrent_batches,
@@ -1482,6 +1493,7 @@ impl ModelConfig {
         let enabled_eq = self.enabled == other.enabled;
         let catalog_name_eq = self.catalog_name == other.catalog_name;
         let adapter_eq = self.adapter == other.adapter;
+        let propagate_eq = self.propagate == other.propagate;
         let meta_eq_result = meta_eq(&self.meta, &other.meta); // Custom comparison for meta
         let materialized_eq_result = materialized_eq(&self.materialized, &other.materialized);
         let incremental_strategy_eq = self.incremental_strategy == other.incremental_strategy;
@@ -1542,6 +1554,7 @@ impl ModelConfig {
         let result = enabled_eq
             && catalog_name_eq
             && adapter_eq
+            && propagate_eq
             && meta_eq_result
             && materialized_eq_result
             && incremental_strategy_eq
@@ -1604,6 +1617,14 @@ impl ModelConfig {
                         Some((
                             format!("{:?}", &self.adapter),
                             format!("{:?}", &other.adapter),
+                        )),
+                    ),
+                    (
+                        "propagate",
+                        propagate_eq,
+                        Some((
+                            format!("{:?}", &self.propagate),
+                            format!("{:?}", &other.propagate),
                         )),
                     ),
                     (
@@ -2018,7 +2039,44 @@ mod tests {
     use crate::schemas::project::configs::model_config::ProjectModelConfig;
     use crate::schemas::project::dbt_project::ResolvableConfig;
     use crate::schemas::properties::StatePreClone;
-    use crate::schemas::serde::StringOrArrayOfStrings;
+    use crate::schemas::serde::{AdapterTypeOrArray, StringOrArrayOfStrings};
+    use dbt_adapter_core::AdapterType;
+
+    /// `+propagate` rides the same project -> node -> project path `+adapter`
+    /// does, in both its single-value and list forms.
+    #[test]
+    fn test_project_model_config_propagate_parses_and_round_trips() {
+        let single: ProjectModelConfig = dbt_yaml::from_str(
+            r#"
++propagate: snowflake
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            single.propagate,
+            Some(AdapterTypeOrArray::One(AdapterType::Snowflake))
+        );
+
+        let model_config: ModelConfig = single.into();
+        let round_tripped: ProjectModelConfig = model_config.into();
+        assert_eq!(
+            round_tripped.propagate,
+            Some(AdapterTypeOrArray::One(AdapterType::Snowflake))
+        );
+
+        let list: ProjectModelConfig = dbt_yaml::from_str(
+            r#"
++propagate: [snowflake]
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            list.propagate,
+            Some(AdapterTypeOrArray::Many(vec![AdapterType::Snowflake]))
+        );
+    }
 
     #[test]
     fn test_model_clustered_by_accepts_ordered_list() {

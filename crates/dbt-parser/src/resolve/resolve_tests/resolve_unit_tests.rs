@@ -319,6 +319,8 @@ pub fn resolve_unit_tests(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: model_adapter.unwrap_or(adapter_type),
+                // This node type has no `+propagate` config; nothing is published.
+                propagate: Vec::new(),
                 database: database.to_owned(),
                 schema: schema.to_owned(),
                 // match dbt-core semantics for unit test alias

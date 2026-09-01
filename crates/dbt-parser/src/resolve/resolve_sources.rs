@@ -511,6 +511,8 @@ pub async fn resolve_sources(
             },
             __base_attr__: NodeBaseAttributes {
                 adapter: adapter_type,
+                // This node type has no `+propagate` config; nothing is published.
+                propagate: Vec::new(),
                 database: database.to_owned(),
                 schema: schema.to_owned(),
                 alias: identifier.to_owned(),

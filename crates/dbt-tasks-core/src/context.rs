@@ -22,7 +22,7 @@ use dbt_common::path::DbtPath;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::sources_extractor::SourcesExtractor;
-use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
@@ -176,12 +176,11 @@ pub struct TaskRunnerCtxInner {
     pub adhoc_runner: Arc<dyn crate::AdhocRunner>,
     pub materialization_resolver: Arc<MaterializationResolver>,
     pub root_project_name: String,
-    pub adapter_type: AdapterType,
     /// Every adapter the active target declares, built on first use.
     ///
     /// A task that knows its node's adapter type asks this for the adapter that
-    /// executes it, rather than re-deriving one from the profile. `adapter_type`
-    /// above is the *default*, which is what an unannotated node runs on.
+    /// executes it, rather than re-deriving one from the profile. Its
+    /// `default_adapter_type()` is what an unannotated node runs on.
     pub adapter_store: Arc<AdapterStore>,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
@@ -263,7 +262,6 @@ impl TaskRunnerCtxInner {
             adhoc_runner,
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
-            adapter_type: resolver_state.adapter_type,
             adapter_store,
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
@@ -392,8 +390,11 @@ impl TaskRunnerCtx {
         &self.inner.root_project_name
     }
 
+    /// The adapter unannotated nodes run on. Read off the store rather than
+    /// stored alongside it, so there is one answer to "what is the default" and
+    /// it cannot drift from the adapter the store hands out for it.
     pub fn adapter_type(&self) -> AdapterType {
-        self.inner.adapter_type
+        self.inner.adapter_store.default_adapter_type()
     }
 
     /// Every adapter the active target declares. Ask it for the adapter that
@@ -474,15 +475,38 @@ impl TaskRunnerCtx {
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {
-        build_compile_node_context_inner(
+        // The node's own adapter, not the target's default: `+adapter` already
+        // drives macro dispatch (`DIALECT`, inserted by the callee), and the same
+        // choice has to reach relation rendering and introspection or the node
+        // dispatches to one adapter's macros while talking to another's
+        // connection.
+        let node_adapter = model.node_adapter();
+        let (mut ctx, config_map) = build_compile_node_context_inner(
             model,
-            self.adapter_type(),
+            node_adapter,
             base_context,
             self.root_project_name(),
             self.resolver_state.node_resolver.clone(),
             self.inner.runtime_config.clone(),
             ref_validation_config,
-        )
+        )?;
+
+        // `adapter` and `api` are environment globals bound to a single adapter,
+        // and the environment is shared by every render. Shadow them in this
+        // node's own context -- the same context-then-globals lookup `DIALECT`
+        // relies on -- so `adapter.get_relation`, `adapter.execute` and friends
+        // reach the connection the node actually runs on.
+        //
+        // Only when the node differs from the default: an unannotated node then
+        // resolves the identical global it always did, and a single-adapter
+        // target never asks the store for a second adapter.
+        if node_adapter != self.adapter_type() {
+            let adapter = self.adapter_store().get(node_adapter)?;
+            ctx.insert("api".to_string(), adapter_api_value(&adapter));
+            ctx.insert("adapter".to_string(), adapter.as_value());
+        }
+
+        Ok((ctx, config_map))
     }
 
     pub fn on_test_failure(

@@ -17,7 +17,9 @@ const meta: Meta<typeof FilterDropdown> = {
   component: FilterDropdown,
   args: {
     name: 'Modeling layer',
+    // @ts-expect-error
     options: LAYER_OPTIONS,
+    // @ts-expect-error
     defaultOption: LAYER_OPTIONS[0] as DropdownOption,
     onChange: () => {},
   },
@@ -48,6 +50,7 @@ export const Default: Story = {
 /** A selection already applied. In the app this is what a `?modeling_layer=Marts`
  *  deep link produces on first paint. */
 export const WithSelection: Story = {
+  // @ts-expect-error
   args: { defaultOption: LAYER_OPTIONS[3] as DropdownOption },
 };
 
@@ -85,7 +88,9 @@ export const FilterBar: Story = {
     <div className="flex flex-wrap gap-3">
       <FilterDropdown
         name="Modeling layer"
+        // @ts-expect-error
         options={LAYER_OPTIONS}
+        // @ts-expect-error
         defaultOption={LAYER_OPTIONS[0] as DropdownOption}
         onChange={() => {}}
       />

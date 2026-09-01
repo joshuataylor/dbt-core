@@ -26,9 +26,7 @@ const sourdoughPackageDir = path.dirname(
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: [
-    path.join(sourdoughPackageDir, '{src,dist}/**/*.{js,jsx,ts,tsx,mdx}'),
-  ],
+  content: [path.join(sourdoughPackageDir, '{src,dist}/**/*.{js,jsx,ts,tsx,mdx}')],
   darkMode: 'class', // or 'media' or 'class'
   theme: {
     screens: {

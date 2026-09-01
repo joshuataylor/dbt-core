@@ -321,6 +321,7 @@ pub async fn resolve_seeds(
 
         let resolved_node_adapter = validate_node_adapter(
             properties_config.adapter,
+            arg.adapter_override,
             &DbtMaterialization::Table,
             properties_config.catalog_name.as_deref(),
             default_adapter,

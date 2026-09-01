@@ -580,6 +580,7 @@ pub async fn resolve_models(
         // to reach the run layer, which has no profile.
         let resolved_node_adapter = validate_node_adapter(
             model_config.adapter,
+            arg.adapter_override,
             &materialized,
             model_config.catalog_name.as_deref(),
             default_adapter,

@@ -346,6 +346,7 @@ pub(crate) fn validate_compute(compute: Option<ComputeArg>, path: &Path) -> FsRe
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_node_adapter(
     adapter: Option<AdapterType>,
+    adapter_override: Option<AdapterType>,
     materialized: &DbtMaterialization,
     catalog_name: Option<&str>,
     default_adapter: AdapterType,
@@ -361,7 +362,10 @@ pub(crate) fn validate_node_adapter(
         )
     };
 
-    let Some(selected_type) = adapter else {
+    // `--adapter` selects the same field an authored `+adapter` does, so every
+    // rule below applies to it identically. An explicit CLI argument wins over
+    // the config, as flags do.
+    let Some(selected_type) = adapter_override.or(adapter) else {
         return Ok(None);
     };
 
@@ -397,15 +401,31 @@ pub(crate) fn validate_node_adapter(
         )));
     }
 
+    // Rules 1 and 3 are preconditions for *writing*: they ask where the
+    // materialized relation lands and whether the compute platform can produce
+    // it. A node that materializes nothing has neither question to answer -- the
+    // run path already returns `NoOp` for these (see
+    // `execute_model_on_compute_platform`) -- so a selection on one is complete
+    // here. Without this, `lake_compute` could not be selected for an inline or
+    // ephemeral node at all, which is exactly what `dbt show --inline` needs.
+    if matches!(
+        materialized,
+        DbtMaterialization::Inline | DbtMaterialization::Ephemeral
+    ) {
+        return Ok(Some(selected_type));
+    }
+
     // Rule 1: catalogs v2 + a resolvable catalog_name.
     if !use_catalogs_v2 {
         return Err(err(format!(
-            "adapter: '{name}' requires catalogs v2              (set the 'use_catalogs_v2' flag)"
+            "adapter: '{name}' requires catalogs v2 \
+             (set the 'use_catalogs_v2' flag)"
         )));
     }
     if catalog_name.is_none() {
         return Err(err(format!(
-            "adapter: '{name}' requires a 'catalog_name' that resolves              to an attachable catalog"
+            "adapter: '{name}' requires a 'catalog_name' that resolves \
+             to an attachable catalog"
         )));
     }
 
@@ -418,7 +438,8 @@ pub(crate) fn validate_node_adapter(
         | DbtMaterialization::Unknown(_) => {}
         other => {
             return Err(err(format!(
-                "adapter: '{name}' supports table, view, and incremental                  materializations in v1; got '{other}'"
+                "adapter: '{name}' supports table, view, and incremental \
+                 materializations in v1; got '{other}'"
             )));
         }
     }
@@ -454,6 +475,7 @@ mod tests {
     ) -> FsResult<Option<AdapterType>> {
         validate_node_adapter(
             Some(AdapterType::LakeCompute),
+            None,
             &materialized,
             catalog_name,
             default_adapter,
@@ -466,6 +488,7 @@ mod tests {
     fn validate_selection(selected: Option<AdapterType>) -> FsResult<Option<AdapterType>> {
         validate_node_adapter(
             selected,
+            None,
             &DbtMaterialization::Table,
             Some("horizon"),
             AdapterType::Snowflake,
@@ -480,6 +503,7 @@ mod tests {
         // An absent selection ignores every other precondition.
         assert_eq!(
             validate_node_adapter(
+                None,
                 None,
                 &DbtMaterialization::MaterializedView,
                 None,
@@ -686,6 +710,70 @@ mod tests {
         }
     }
 
+    /// `--adapter` selects the same field `+adapter` does, so it is subject to the
+    /// same rules, and an explicit flag beats the config.
+    #[test]
+    fn the_adapter_override_wins_over_the_authored_selection() {
+        let resolved = validate_node_adapter(
+            Some(AdapterType::Bigquery),
+            Some(AdapterType::DuckDB),
+            &DbtMaterialization::Table,
+            None,
+            AdapterType::Snowflake,
+            true,
+            false,
+            Path::new("models/m.sql"),
+        )
+        .expect("a duckdb selection has no preconditions")
+        .expect("an explicit selection resolves to itself");
+        assert_eq!(resolved, AdapterType::DuckDB);
+    }
+
+    /// The override is not a default: it applies even where nothing was authored,
+    /// and it is validated, not waved through.
+    #[test]
+    fn the_adapter_override_is_validated_like_an_authored_selection() {
+        let err = validate_node_adapter(
+            None,
+            Some(AdapterType::LakeCompute),
+            &DbtMaterialization::Snapshot,
+            // A catalog is declared, so rule 1 passes and rule 3 is the one under test.
+            Some("horizon"),
+            AdapterType::Snowflake,
+            true,
+            false,
+            Path::new("snapshots/s.sql"),
+        )
+        .expect_err("lake compute does not materialize snapshots");
+        assert!(
+            err.to_string().contains("materializations in v1"),
+            "expected the rule 3 message, got: {err}"
+        );
+    }
+
+    /// Rules 1 and 3 gate *writing*, so they must not gate a node that writes
+    /// nothing. `dbt show --inline` resolves an `Inline` model with no
+    /// `catalog_name`; before this, selecting `lake_compute` for it failed rule 1
+    /// and then rule 3, which made the selection unusable for the one command
+    /// that needs it. `Ephemeral` is the same shape.
+    #[test]
+    fn lake_compute_is_selectable_for_materializations_that_write_nothing() {
+        for materialized in [DbtMaterialization::Inline, DbtMaterialization::Ephemeral] {
+            let resolved = validate_lake_compute(
+                materialized.clone(),
+                // No catalog and no catalogs-v2: rule 1 would reject both.
+                None,
+                AdapterType::Snowflake,
+                false,
+                false,
+            )
+            .unwrap_or_else(|e| panic!("`{materialized}` must be selectable: {e}"))
+            .expect("an explicit selection resolves to itself");
+
+            assert_eq!(resolved, AdapterType::LakeCompute);
+        }
+    }
+
     /// Rule 3 is what keeps `lake_compute` off the node types it cannot materialize, so
     /// extending `+adapter` to them needed no new gate: a snapshot arrives with
     /// `Snapshot` and a function with `Function`, and both land in the reject arm.
@@ -721,6 +809,7 @@ mod tests {
             assert_eq!(
                 validate_node_adapter(
                     Some(AdapterType::DuckDB),
+                    None,
                     &mat,
                     None,
                     AdapterType::Snowflake,
@@ -747,6 +836,7 @@ mod tests {
         ] {
             let resolved = validate_node_adapter(
                 Some(AdapterType::Redshift),
+                None,
                 &mat,
                 None,
                 AdapterType::Snowflake,

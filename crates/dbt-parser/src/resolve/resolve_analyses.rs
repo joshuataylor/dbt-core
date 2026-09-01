@@ -161,6 +161,7 @@ pub async fn resolve_analyses(
         // choice. Resolved the same way every other node type resolves it.
         let selected_adapter = validate_node_adapter(
             analysis_config.adapter,
+            arg.adapter_override,
             &DbtMaterialization::Analysis,
             None,
             default_adapter,

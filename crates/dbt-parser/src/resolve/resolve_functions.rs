@@ -296,6 +296,7 @@ pub async fn resolve_functions(
         // function selects explicitly; it has no attached node to inherit from.
         let resolved_node_adapter = validate_node_adapter(
             model_config.adapter,
+            arg.adapter_override,
             &DbtMaterialization::Function,
             None,
             default_adapter,

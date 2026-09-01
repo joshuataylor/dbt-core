@@ -626,6 +626,7 @@ pub async fn resolve_data_tests(
         // validation -- it was already validated on the node that materializes.
         let resolved_node_adapter = validate_node_adapter(
             test_config.adapter,
+            arg.adapter_override,
             &DbtMaterialization::Test,
             None,
             default_adapter,

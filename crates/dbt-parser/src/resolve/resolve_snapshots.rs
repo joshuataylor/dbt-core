@@ -442,6 +442,7 @@ pub async fn resolve_snapshots(
             // `lake_compute` does not materialize snapshots in v1.
             let resolved_node_adapter = validate_node_adapter(
                 snapshot_config.adapter,
+                arg.adapter_override,
                 &DbtMaterialization::Snapshot,
                 snapshot_config
                     .__warehouse_specific_config__

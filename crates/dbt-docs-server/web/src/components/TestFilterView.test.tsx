@@ -37,11 +37,6 @@ vi.mock('../shared', async (importOriginal) => {
     ),
   };
 });
-vi.mock('@dbt-labs/sourdough', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@dbt-labs/sourdough')>();
-  return { ...mod, Icon: () => null };
-});
-
 const TESTS_RESPONSE = {
   data: [
     {

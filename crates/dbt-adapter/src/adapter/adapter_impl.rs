@@ -20,6 +20,7 @@ use crate::metadata::bigquery::{
 use crate::metadata::clickhouse::ClickHouseMetadataAdapter;
 use crate::metadata::databricks::DatabricksMetadataAdapter;
 use crate::metadata::databricks::dbr_capabilities;
+use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
 use crate::metadata::databricks::version::EngineVersion;
 use crate::metadata::duckdb::DuckDBMetadataAdapter;
 use crate::metadata::duckdb::{classify_attach_entry, duckdb_table_format_for_database};
@@ -2146,11 +2147,17 @@ impl AdapterImpl {
         let Ok(capability) = dbr_capabilities::DbrCapability::from_str(capability_name) else {
             return false;
         };
-        let Some(is_cluster) = Self::is_cluster_http_path(config) else {
-            return false;
-        };
-
-        dbr_capabilities::has_capability(capability, EngineVersion::Unset, !is_cluster)
+        match Self::is_cluster_http_path(config) {
+            // No http_path to classify, so we can't tell cluster from warehouse.
+            None => false,
+            Some(true) => dbr_capabilities::has_capability(
+                capability,
+                DbrComputeContext::Cluster(EngineVersion::Unset),
+            ),
+            Some(false) => {
+                dbr_capabilities::has_capability(capability, DbrComputeContext::SqlWarehouse)
+            }
+        }
     }
 
     /// Determine if the current Databricks connection points to a classic
@@ -4530,18 +4537,17 @@ impl AdapterImpl {
         let capability = dbr_capabilities::DbrCapability::from_str(capability_name)
             .map_err(|e| AdapterError::new(AdapterErrorKind::Configuration, e))?;
 
-        let is_cluster = self.is_cluster()?;
-        let is_sql_warehouse = !is_cluster;
-
         let query_ctx = query_ctx_from_state(state)?.with_desc("has_dbr_capability adapter call");
         let dbr_version =
             DatabricksMetadataAdapter::get_engine_version(self, &query_ctx, conn, token)?;
 
-        Ok(dbr_capabilities::has_capability(
-            capability,
-            dbr_version,
-            is_sql_warehouse,
-        ))
+        let context = if self.is_cluster()? {
+            DbrComputeContext::Cluster(dbr_version)
+        } else {
+            DbrComputeContext::SqlWarehouse
+        };
+
+        Ok(dbr_capabilities::has_capability(capability, context))
     }
 
     /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L349
@@ -5598,11 +5604,23 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
                 None,
             );
 
+            // https://github.com/databricks/dbt-databricks/blob/3caad339bb3e60b7c795684374c3c8a1d9042279/dbt/adapters/databricks/impl.py#L160
+            let use_describe_as_json_for_relation_metadata = BehaviorFlag::new(
+                "use_describe_as_json_for_relation_metadata",
+                false,
+                Some(
+                    "Use DESCRIBE TABLE EXTENDED AS JSON when supported to fetch relation metadata like constraints, column masks, row filters, view definition, etc. When disabled, falls back to information_schema queries.",
+                ),
+                None,
+                None,
+            );
+
             vec![
                 use_user_folder_for_python,
                 use_materialization_v2,
                 use_replace_on_for_insert_overwrite,
                 use_managed_iceberg,
+                use_describe_as_json_for_relation_metadata,
             ]
         }
         Bigquery => {
@@ -6342,6 +6360,22 @@ mod tests {
     use dbt_yaml::Mapping;
 
     use minijinja::{Environment, State, Value};
+
+    #[test]
+    fn test_databricks_describe_as_json_behavior_flag_registered_and_off_by_default() {
+        let flags = adapter_specific_behavior_flags(Databricks);
+        let flag = flags
+            .iter()
+            .find(|f| f.name == "use_describe_as_json_for_relation_metadata")
+            .expect(
+                "use_describe_as_json_for_relation_metadata should be registered for Databricks",
+            );
+
+        assert!(
+            !Arc::new(flag.clone()).is_true(),
+            "use_describe_as_json_for_relation_metadata should default to off"
+        );
+    }
 
     fn engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {
         let config = match adapter_type {

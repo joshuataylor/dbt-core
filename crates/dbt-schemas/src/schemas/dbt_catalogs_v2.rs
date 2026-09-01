@@ -689,6 +689,33 @@ impl CatalogType {
         }
     }
 
+    /// Whether `lake_compute` can read a catalog of this type.
+    ///
+    /// A capability of `lake_compute`, expressed here in code: it is a property of the
+    /// storage, not of anything a project declares. Requiring a catalog to carry an
+    /// `lake_compute` connection block would reject readable data over a missing
+    /// declaration.
+    ///
+    /// Matched exhaustively on purpose, so adding a `CatalogType` forces the
+    /// question to be answered rather than defaulting either way.
+    pub fn lake_compute_can_read(&self) -> bool {
+        match self {
+            // Open table formats `lake_compute` can attach.
+            Self::Horizon | Self::Glue | Self::IcebergRest => true,
+            // Snowflake-managed Iceberg under its older spelling; Horizon supersedes it.
+            Self::SnowflakeBuiltIn => true,
+            // Engine-owned catalogs `lake_compute` does not support today.
+            Self::DuckLake
+            | Self::LocalFilesystem
+            | Self::BiglakeMetastore
+            | Self::Unity
+            | Self::HiveMetastore => false,
+            // Native platform storage is not readable by an external engine at all --
+            // this is the warehouse-native case the check exists to catch.
+            Self::SnowflakeNative | Self::BigqueryNative | Self::DuckdbNative => false,
+        }
+    }
+
     pub fn parse_from_str(raw: &str, adapter_type: dbt_adapter_core::AdapterType) -> Self {
         match raw {
             "horizon" => Self::Horizon,

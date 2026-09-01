@@ -34,7 +34,6 @@ use dbt_schemas::schemas::properties::{
 use dbt_schemas::schemas::{DbtModel, InternalDbtNode, Nodes};
 
 use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
@@ -1094,34 +1093,6 @@ pub async fn resolve_inner(
     ))
 }
 
-/// Whether `lake_compute` can read a catalog of this type.
-///
-/// A capability of `lake_compute`, expressed here in code: it is a property of the storage,
-/// not of anything a project declares. Requiring a catalog to carry an `lake_compute`
-/// connection block would reject readable data over a missing declaration.
-///
-/// Matched exhaustively on purpose, so adding a `CatalogType` forces the
-/// question to be answered rather than defaulting either way.
-fn lake_compute_can_read(catalog_type: CatalogType) -> bool {
-    match catalog_type {
-        // Open table formats `lake_compute` can attach.
-        CatalogType::Horizon | CatalogType::Glue | CatalogType::IcebergRest => true,
-        // Snowflake-managed Iceberg under its older spelling; Horizon supersedes it.
-        CatalogType::SnowflakeBuiltIn => true,
-        // Engine-owned catalogs `lake_compute` does not support today.
-        CatalogType::DuckLake
-        | CatalogType::LocalFilesystem
-        | CatalogType::BiglakeMetastore
-        | CatalogType::Unity
-        | CatalogType::HiveMetastore => false,
-        // Native platform storage is not readable by an external engine at all --
-        // this is the warehouse-native case the check exists to catch.
-        CatalogType::SnowflakeNative | CatalogType::BigqueryNative | CatalogType::DuckdbNative => {
-            false
-        }
-    }
-}
-
 /// Returns `true` if `upstream` is readable as an input for a node running on
 /// `lake_compute`.
 ///
@@ -1142,7 +1113,7 @@ fn upstream_is_catalog_reachable(upstream: &DbtModel, catalogs: Option<&DbtCatal
 
     match attr.catalog_name.as_deref() {
         Some(name) => match catalogs.and_then(|c| c.v2_catalog_type(name).ok().flatten()) {
-            Some(catalog_type) => lake_compute_can_read(catalog_type),
+            Some(catalog_type) => catalog_type.lake_compute_can_read(),
             None => true,
         },
         // Iceberg without a named catalog is still an open format.
@@ -1180,8 +1151,9 @@ pub fn check_compute_platform_upstreams(
                 return err!(
                     ErrorCode::InvalidConfig,
                     "Model '{}' runs on adapter: '{}' but its upstream '{}' is not \
-                     reachable through a catalog. Materialize '{}' into a catalog (set \
-                     'catalog_name') or place it on adapter: '{}'.",
+                     reachable through a catalog. Materialize '{}' into an open table \
+                     format (set 'catalog_name', or set 'table_format: iceberg' to land \
+                     it in Iceberg without a named catalog) or place it on adapter: '{}'.",
                     unique_id,
                     AdapterType::LakeCompute.as_ref(),
                     upstream_id,
@@ -1646,7 +1618,6 @@ mod tests {
     /// exhaustively so that adding a `CatalogType` has to answer it.
     #[test]
     fn lake_compute_reads_open_catalogs_and_not_engine_owned_ones() {
-        use super::lake_compute_can_read;
         use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 
         for readable in [
@@ -1655,7 +1626,7 @@ mod tests {
             CatalogType::IcebergRest,
         ] {
             assert!(
-                lake_compute_can_read(readable),
+                readable.lake_compute_can_read(),
                 "lake compute should read {readable:?}"
             );
         }
@@ -1667,7 +1638,7 @@ mod tests {
             CatalogType::HiveMetastore,
         ] {
             assert!(
-                !lake_compute_can_read(unreadable),
+                !unreadable.lake_compute_can_read(),
                 "lake compute does not support {unreadable:?} today"
             );
         }

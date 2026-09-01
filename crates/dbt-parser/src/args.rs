@@ -51,11 +51,12 @@ pub struct ResolveArgs {
     /// Maximum size (MiB) for seed files whose contents are hashed
     /// 1 MiB default); `0` means "no limit".
     pub maximum_seed_size_mib: u64,
-    /// `--adapter <type>`, resolved once.
+    /// `--adapter <type>`, parsed once.
     ///
     /// Overrides every node's `+adapter` when set, so the flag reaches the run
-    /// through the same field an authored selection does -- and is validated by
-    /// the same rules -- rather than swapping the run's adapter afterwards.
+    /// through the same field an authored selection does -- and is treated
+    /// identically from there on -- rather than swapping the run's adapter
+    /// afterwards.
     pub adapter_override: Option<AdapterType>,
 }
 

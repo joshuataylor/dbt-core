@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::resolve::resolve_utils::{err_resource_name_has_spaces, validate_node_adapter};
+use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
@@ -159,17 +159,10 @@ pub async fn resolve_analyses(
         // An analysis is compiled rather than materialized, but it still renders
         // refs and dispatches macros, so which adapter it renders *as* is a real
         // choice. Resolved the same way every other node type resolves it.
-        let selected_adapter = validate_node_adapter(
-            analysis_config.adapter,
-            arg.adapter_override,
-            &DbtMaterialization::Analysis,
-            None,
-            default_adapter,
-            dbt_adapter::load_catalogs::fetch_use_catalogs_v2(),
-            dbt_asset.is_python(),
-            &dbt_asset.path,
-        )?
-        .unwrap_or(default_adapter);
+        let selected_adapter = arg
+            .adapter_override
+            .or(analysis_config.adapter)
+            .unwrap_or(default_adapter);
         // unique_id.push_str(&format!(".{statement_index}"));
 
         let fqn = get_node_fqn(

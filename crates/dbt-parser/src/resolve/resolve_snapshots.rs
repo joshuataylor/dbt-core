@@ -14,7 +14,6 @@ use crate::resolve::resolve_tests::persist_generic_data_tests::{
 };
 use crate::resolve::resolve_utils::{
     build_unrendered_config, err_resource_name_has_spaces, extract_config_map, validate_compute,
-    validate_node_adapter,
 };
 use crate::resolve::yaml_field_utils;
 use crate::sql_file_info::SqlFileInfo;
@@ -38,7 +37,7 @@ use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{
-    DbtChecksum, DbtMaterialization, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
+    DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
     conform_normalized_snapshot_raw_code_to_mantle_format, normalize_sql,
 };
 use dbt_schemas::schemas::dbt_column::process_columns;
@@ -435,24 +434,10 @@ pub async fn resolve_snapshots(
                 dependency_package_name,
             );
             validate_compute(snapshot_config.compute, error_path)?;
-            // Resolved here rather than in the config merge, for the reason given in
-            // `resolve_models`: the merge cannot see the target's adapter list. A
-            // snapshot selects explicitly -- it has no attached node to inherit from --
-            // and an `lake_compute` selection is rejected by the materialization rule, since
-            // `lake_compute` does not materialize snapshots in v1.
-            let resolved_node_adapter = validate_node_adapter(
-                snapshot_config.adapter,
-                arg.adapter_override,
-                &DbtMaterialization::Snapshot,
-                snapshot_config
-                    .__warehouse_specific_config__
-                    .catalog_name
-                    .as_deref(),
-                default_adapter,
-                dbt_adapter::load_catalogs::fetch_use_catalogs_v2(),
-                false,
-                error_path,
-            )?;
+            // See `resolve_models`: the flag overrides the config, and nothing is
+            // validated at parse. A snapshot selects explicitly -- it has no
+            // attached node to inherit from.
+            let resolved_node_adapter = arg.adapter_override.or(snapshot_config.adapter);
 
             // See `resolve_models`: both remaining quoting layers depend on which
             // adapter the node runs on, which is only known after the config merge.

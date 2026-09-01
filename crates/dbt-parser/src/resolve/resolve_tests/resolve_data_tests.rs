@@ -11,7 +11,7 @@ use crate::renderer::render_unresolved_sql_files;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, validate_compute, validate_node_adapter,
+    build_unrendered_config, err_resource_name_has_spaces, validate_compute,
 };
 use crate::utils::RelationComponents;
 use crate::utils::extract_resource_config_from_raw_project;
@@ -621,20 +621,12 @@ pub async fn resolve_data_tests(
                     .or_else(|| snapshots.get(id).map(|s| s.node_adapter()))
             })
             .filter(|adapter| *adapter != AdapterType::LakeCompute);
-        // An explicit selection is validated like any other node's; `None` in gives
-        // `None` out, and inheritance fills the gap. An inherited adapter needs no
-        // validation -- it was already validated on the node that materializes.
-        let resolved_node_adapter = validate_node_adapter(
-            test_config.adapter,
-            arg.adapter_override,
-            &DbtMaterialization::Test,
-            None,
-            default_adapter,
-            dbt_adapter::load_catalogs::fetch_use_catalogs_v2(),
-            false,
-            &dbt_asset.path,
-        )?
-        .or(inherited_adapter);
+        // See `resolve_models`: the flag overrides the config, and nothing is
+        // validated at parse. `None` from both leaves inheritance to fill the gap.
+        let resolved_node_adapter = arg
+            .adapter_override
+            .or(test_config.adapter)
+            .or(inherited_adapter);
 
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.

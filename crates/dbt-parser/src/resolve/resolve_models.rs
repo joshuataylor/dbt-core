@@ -97,7 +97,7 @@ use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
-use super::resolve_utils::{validate_compute, validate_node_adapter};
+use super::resolve_utils::validate_compute;
 use super::validate_models::validate_model;
 
 /// Parses `ref('name')`, `ref('pkg', 'name')`, `ref('name', version=N)`, or
@@ -575,19 +575,11 @@ pub async fn resolve_models(
 
         validate_merge_update_columns_xor(&model_config, &dbt_asset.path)?;
         validate_compute(model_config.compute, &dbt_asset.path)?;
-        // Resolved here rather than in the config merge: the merge has no access
-        // to the target's adapter list, and the node needs the adapter's *type*
-        // to reach the run layer, which has no profile.
-        let resolved_node_adapter = validate_node_adapter(
-            model_config.adapter,
-            arg.adapter_override,
-            &materialized,
-            model_config.catalog_name.as_deref(),
-            default_adapter,
-            dbt_adapter::load_catalogs::fetch_use_catalogs_v2(),
-            dbt_asset.is_python(),
-            &dbt_asset.path,
-        )?;
+        // `--adapter` overrides the authored `+adapter`, as a flag should. Nothing
+        // is validated here: parse resolves every node in the project while only
+        // selected nodes run, so a precondition checked here would reject nodes
+        // the invocation never touches. See `resolve_compute_write_target`.
+        let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
 
         apply_model_freshness_loaded_at_override(
             model_config.freshness.as_mut(),

@@ -29,6 +29,39 @@ export const RESOURCE_TYPE_ORDER = [
   'analysis',
 ] as const;
 
+/** Every real dbt resource type -- mirrors `@dbt-labs/dbt-dag`'s `ResourceType`
+ *  union so callers moving off that package aren't narrowing what they can
+ *  represent. */
+export type ResourceType =
+  | 'analysis'
+  | 'exposure'
+  | 'macro'
+  | 'metric'
+  | 'model'
+  | 'seed'
+  | 'snapshot'
+  | 'source'
+  | 'test'
+  | 'unit_test'
+  | 'semantic_model'
+  | 'group'
+  | 'saved_query'
+  | 'function';
+
+/** `ResourceType` plus the two pseudo-types the file/asset explorer tree
+ *  also has to represent: the project root itself, and a column node.
+ *  Mirrors dbt-dag's `ResourceTypeExplorer`. */
+export type ResourceTypeExplorer = ResourceType | 'project' | 'column';
+
+/** Resource types whose detail page has a Columns tab. Mirrors dbt-dag's
+ *  `resourceTypesWithColumns`. */
+export const RESOURCE_TYPES_WITH_COLUMNS: readonly ResourceType[] = [
+  'model',
+  'source',
+  'seed',
+  'snapshot',
+];
+
 export const RESOURCE_TYPE_LABEL: Record<string, string> = {
   model: 'Models',
   source: 'Sources',
@@ -58,6 +91,8 @@ export const RESOURCE_TYPE_SINGULAR: Record<string, string> = {
   snapshot: 'Snapshot',
   saved_query: 'Saved query',
   analysis: 'Analysis',
+  unit_test: 'Unit test',
+  function: 'Function',
 };
 
 export const RESOURCE_TYPE_ICON: Record<string, LucideIcon> = {

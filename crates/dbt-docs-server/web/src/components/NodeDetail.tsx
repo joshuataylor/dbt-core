@@ -16,15 +16,14 @@ import {
   Waypoints,
 } from 'lucide-react';
 
-import {
-  resourceNameMap,
-  type ResourceTypeExplorer,
-  resourceTypesWithColumns,
-} from '@dbt-labs/dbt-dag';
-
 import { getColumns, toRelationshipItem } from '../lib/assetView';
 import { filterConfig } from '../lib/configView';
 import { decorateOutboundHref } from '../lib/outboundReferrer';
+import {
+  RESOURCE_TYPE_SINGULAR,
+  RESOURCE_TYPES_WITH_COLUMNS,
+  type ResourceTypeExplorer,
+} from '../lib/resourceType';
 import { handleUpsellEvent } from '../lib/upsellAnalytics';
 import {
   ArgumentsView,
@@ -169,7 +168,7 @@ function getResourceTabsForAsset(asset: Asset): TabInfo[] {
       ];
     }
     default: {
-      const showColumns = (resourceTypesWithColumns as readonly string[]).includes(
+      const showColumns = (RESOURCE_TYPES_WITH_COLUMNS as readonly string[]).includes(
         asset.resourceType,
       );
       return [
@@ -212,7 +211,7 @@ export function NodeDetail({ asset, onSelect, hasColumnLineage, userState }: Pro
       icon: createElement(RESOURCE_TYPE_ICON[resourceType] ?? FileText, {
         className: 'size-3 align-middle',
       }),
-      text: resourceNameMap[resourceType] ?? asset.resourceType,
+      text: RESOURCE_TYPE_SINGULAR[resourceType] ?? asset.resourceType,
     },
   ];
   if (materialization) {

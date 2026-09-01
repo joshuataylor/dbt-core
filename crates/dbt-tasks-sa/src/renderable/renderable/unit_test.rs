@@ -2099,11 +2099,28 @@ fn create_select_with_union_all(
                         ty
                     };
 
+                    let safe_cast_literal = match adapter_type {
+                        AdapterType::Snowflake => match value.as_bool() {
+                            Some(value) => SqlLiteralFormatter::new(adapter_type)
+                                .format_str(if value { "True" } else { "False" }),
+                            None if value.is_number() => {
+                                SqlLiteralFormatter::new(adapter_type).format_str(&sql_literal)
+                            }
+                            None => sql_literal.clone(),
+                        },
+                        _ => sql_literal.clone(),
+                    };
+
                     match adapter_type {
                         AdapterType::Snowflake if SnowflakeTyping::is_geography(df_type) =>
                             Ok(format!("TO_GEOGRAPHY({sql_literal}) AS {formatted_name}")),
                         AdapterType::Snowflake if SnowflakeTyping::is_geometry(df_type) =>
                             Ok(format!("TO_GEOMETRY({sql_literal}) AS {formatted_name}")),
+                        AdapterType::Snowflake
+                            if !SnowflakeTyping::is_variant(df_type)
+                                && !SnowflakeTyping::is_object(df_type)
+                                && !SnowflakeTyping::is_semi_structured_array(df_type) =>
+                            Ok(format!("TRY_CAST({safe_cast_literal} AS {ty}) AS {formatted_name}")),
                         _ => Ok(format!("CAST({sql_literal} AS {ty}) AS {formatted_name}"))
                     }
                 })
@@ -3038,6 +3055,87 @@ mod tests {
             "CAST([4, 'abcdef', PARSE_JSON('{\"foo\":\"bar\"}')] AS ARRAY) AS \"array_col\"",
             "array_col should be a heterogeneous array literal"
         );
+    }
+
+    #[test]
+    fn test_create_select_with_union_all_snowflake_safe_scalar_casts() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("invalid_number", DataType::Decimal128(19, 0), true),
+            Field::new("valid_number", DataType::Decimal128(19, 0), true),
+            Field::new("numeric_yaml", DataType::Decimal128(19, 0), true),
+            Field::new("boolean_yaml", DataType::Boolean, true),
+            Field::new("boolean_string", DataType::Utf8, true),
+            Field::new("invalid_binary", DataType::Binary, true),
+            Field::new("valid_binary", DataType::Binary, true),
+            Field::new("time_value", DataType::Time64(TimeUnit::Microsecond), true),
+            Field::new(
+                "timestamp_value",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new("null_value", DataType::Utf8, true),
+            Field::new("string_value", DataType::Utf8, true),
+        ]));
+        let formatted_types = [
+            "NUMBER(19,0)",
+            "NUMBER(19,0)",
+            "NUMBER(19,0)",
+            "BOOLEAN",
+            "VARCHAR",
+            "BINARY",
+            "BINARY",
+            "TIME(6)",
+            "TIMESTAMP_NTZ(6)",
+            "VARCHAR",
+            "VARCHAR",
+        ];
+        let columns = schema
+            .fields()
+            .iter()
+            .zip(formatted_types)
+            .map(|(field, formatted_type)| {
+                (field.name(), field.data_type(), formatted_type.to_string())
+            })
+            .collect();
+        let rows = vec![vec![
+            YmlValue::string("invalid-number".to_string()),
+            YmlValue::string("42".to_string()),
+            YmlValue::number(7.into()),
+            YmlValue::bool(true),
+            YmlValue::bool(false),
+            YmlValue::string("not-hex".to_string()),
+            YmlValue::string("4142".to_string()),
+            YmlValue::string("12:34:56".to_string()),
+            YmlValue::string("2024-01-02 03:04:05".to_string()),
+            YmlValue::null(),
+            YmlValue::string("ordinary".to_string()),
+        ]];
+
+        let result = create_select_with_union_all(
+            AdapterType::Snowflake,
+            &DefaultTypeOps::new(AdapterType::Snowflake),
+            rows,
+            &schema,
+            &columns,
+            "",
+        )
+        .unwrap();
+
+        for expected in [
+            "TRY_CAST('invalid-number' AS NUMBER) AS \"invalid_number\"",
+            "TRY_CAST('42' AS NUMBER) AS \"valid_number\"",
+            "TRY_CAST('7' AS NUMBER) AS \"numeric_yaml\"",
+            "TRY_CAST('True' AS BOOLEAN) AS \"boolean_yaml\"",
+            "TRY_CAST('False' AS VARCHAR) AS \"boolean_string\"",
+            "TRY_CAST('not-hex' AS BINARY) AS \"invalid_binary\"",
+            "TRY_CAST('4142' AS BINARY) AS \"valid_binary\"",
+            "TRY_CAST('12:34:56' AS TIME(6)) AS \"time_value\"",
+            "TRY_CAST('2024-01-02 03:04:05' AS TIMESTAMP_NTZ(6)) AS \"timestamp_value\"",
+            "TRY_CAST(NULL AS VARCHAR) AS \"null_value\"",
+            "TRY_CAST('ordinary' AS VARCHAR) AS \"string_value\"",
+        ] {
+            assert_contains!(result, expected);
+        }
     }
 
     #[test]

@@ -1475,7 +1475,7 @@ pub async fn run_cache_service_before_execution(
                 should_honor_service_skip(ctx),
             );
             // A node that completed a dev clone earlier in this invocation should
-            // surface as "Cloned from cached relation" when the service decides
+            // surface as "Cloned from other environment" when the service decides
             // Skip, matching the dbt-core plugin's `_dev_cloned_nodes` mapping.
             let is_dev_cloned = ctx
                 .inner
@@ -1954,7 +1954,7 @@ impl std::fmt::Display for RunCacheCloneError {
 struct RunCacheSubmitOutcome {
     response: SubmitSqlResponse,
     /// Freshness tolerance window (seconds) that Fusion sent with the request.
-    /// Used to format the "Did not meet lag_tolerance of …" message when the
+    /// Used to format the "within lag tolerance of …" message when the
     /// service admits a candidate despite a stale upstream. Echoing the local
     /// value avoids a proto round-trip — the service already evaluates against
     /// the same number.
@@ -4509,7 +4509,7 @@ fn skip_node_status_from_response(
 
     let tolerance_secs = freshness_tolerance_seconds.max(0) as u64;
     let message = format!(
-        "New changes detected. Did not meet lag_tolerance of {}",
+        "New changes detected within lag tolerance of {}",
         humantime::format_duration(std::time::Duration::from_secs(tolerance_secs)),
     );
     NodeStatus::ReusedStillFresh(message, tolerance_secs, 0)
@@ -4890,7 +4890,7 @@ mod tests {
     fn relabel_skip_for_dev_cloned_node_rewrites_still_fresh_to_clone_still_fresh() {
         let original = RunCacheServiceDecision::Skip {
             status: NodeStatus::ReusedStillFresh(
-                "New changes detected. Did not meet lag_tolerance of 1h".to_string(),
+                "New changes detected within lag tolerance of 1h".to_string(),
                 3600,
                 42,
             ),

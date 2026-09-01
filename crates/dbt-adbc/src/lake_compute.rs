@@ -30,6 +30,22 @@ pub const AUTH_TOKEN: &str = "adbc.dbt.auth.token";
 
 pub const CATALOG_BUNDLE: &str = "adbc.dbt.catalog_bundle";
 
+/// Statement option. Read-only. Non-fatal warnings emitted by the backend for
+/// the most recently executed statement (e.g. an export-limit truncation
+/// notice), newline-joined. Mirrors `adbc_driver_dbt::options::LAST_WARNINGS`.
+pub const LAST_WARNINGS: &str = "adbc.dbt.last_warnings";
+
+/// Schema metadata keys used to convey per-statement, backend-reported
+/// information that isn't part of the Arrow schema proper.
+pub mod schema_metadata {
+    /// Non-fatal warnings from the most recently executed statement (e.g. an
+    /// export-limit truncation notice), newline-joined. Set by
+    /// `adbc_execute_with_options` (from [`super::LAST_WARNINGS`]) so it can
+    /// survive the trip through `adbc_execute_with_options`'s `RecordBatch`
+    /// return value; read back by `AdapterResponse::from_record_batch`.
+    pub const WARNINGS: &str = "ALT_WARNINGS";
+}
+
 /// Okta authorization endpoint.
 pub const OKTA_AUTH_URL: &str = "adbc.dbt.auth.okta.auth_url";
 /// Okta token endpoint.

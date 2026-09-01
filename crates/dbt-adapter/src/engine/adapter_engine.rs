@@ -386,7 +386,28 @@ pub(crate) fn adbc_execute_with_options(
         if adapter_type == AdapterType::LakeCompute && !fetch {
             let rows_affected = stmt.execute_update()?;
             token.check_cancellation()?;
-            return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
+            // Surface non-fatal backend warnings (e.g. an export-limit
+            // truncation notice) via schema metadata, since this function's
+            // return type has no other slot for statement-level side
+            // channels. `AdapterResponse::from_record_batch` reads it back.
+            let warnings = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
+                ))
+                .unwrap_or_default();
+            let schema = if warnings.is_empty() {
+                Arc::new(Schema::empty())
+            } else {
+                let metadata = std::collections::HashMap::from([(
+                    dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
+                    warnings,
+                )]);
+                Arc::new(Schema::new_with_metadata(
+                    Vec::<arrow_schema::Field>::new(),
+                    metadata,
+                ))
+            };
+            return Ok((schema, Vec::new(), rows_affected));
         }
 
         // Redshift-only: other adapters need execute()'s schema metadata
@@ -408,10 +429,39 @@ pub(crate) fn adbc_execute_with_options(
         log_step_duration("reader.schema()", t_schema.elapsed());
         let mut batches = Vec::with_capacity(1);
 
+        // Surface non-fatal backend warnings (e.g. an export-limit truncation
+        // notice) the same way the `!fetch` lake compute branch above does: via schema
+        // metadata, since this closure's return type has no other slot for
+        // statement-level side channels. `stmt.execute()` (quack's
+        // `ComputeStatement::do_execute`) already stashed them internally, so
+        // this is a local option read, not a second round trip -- but it must
+        // happen after `reader` (which holds `stmt` borrowed) is dropped.
+        let attach_alt_warnings = |stmt: &TrackedStatement, schema: Arc<Schema>| {
+            if adapter_type != AdapterType::LakeCompute {
+                return schema;
+            }
+            let warnings = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
+                ))
+                .unwrap_or_default();
+            if warnings.is_empty() {
+                return schema;
+            }
+            let mut metadata = schema.metadata().clone();
+            metadata.insert(
+                dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
+                warnings,
+            );
+            Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
+        };
+
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch
         // to compute rows_affected correctly, so we must drain even when fetch=false.
         if !fetch && !schema.has_dml_columns(engine.adapter_type()) {
+            drop(reader);
+            let schema = attach_alt_warnings(&stmt, schema);
             return Ok((schema, batches, None));
         }
 
@@ -426,6 +476,7 @@ pub(crate) fn adbc_execute_with_options(
             token.check_cancellation()?;
         }
         log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
+        let schema = attach_alt_warnings(&stmt, schema);
         Ok((schema, batches, None))
     };
     let _span = span!("SqlEngine::execute");

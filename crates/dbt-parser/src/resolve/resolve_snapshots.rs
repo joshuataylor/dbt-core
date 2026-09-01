@@ -80,6 +80,7 @@ pub async fn resolve_snapshots(
     node_resolver: &mut NodeResolver,
     collected_generic_tests: &mut Vec<GenericTestAsset>,
     test_name_truncations: &mut HashMap<String, String>,
+    seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSnapshot>>,
@@ -674,6 +675,7 @@ pub async fn resolve_snapshots(
                             &root_package.dbt_project.name,
                             collected_generic_tests,
                             test_name_truncations,
+                            seen_generic_test_paths,
                             default_adapter,
                             &arg.io,
                             patch_path.as_ref().unwrap_or(&dbt_asset.path),
@@ -698,6 +700,7 @@ pub async fn resolve_snapshots(
                                 &root_package.dbt_project.name,
                                 collected_generic_tests,
                                 test_name_truncations,
+                                seen_generic_test_paths,
                                 default_adapter,
                                 &arg.io,
                                 patch_path.as_ref().unwrap_or(&dbt_asset.path),

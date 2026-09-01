@@ -54,6 +54,7 @@ use dbt_schemas::state::{DbtRuntimeConfig, Operations};
 use dbt_schemas::state::{DbtState, ResolverState};
 use minijinja::constants::CURRENT_PATH;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::resolve::resolve_analyses::resolve_analyses;
@@ -674,6 +675,7 @@ pub async fn resolve_inner(
     mut node_resolver: NodeResolver,
     runtime_config: Arc<DbtRuntimeConfig>,
     test_name_truncations: &mut HashMap<String, String>,
+    seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
 ) -> FsResult<(
@@ -781,6 +783,7 @@ pub async fn resolve_inner(
         &jinja_env,
         &mut collected_generic_tests,
         test_name_truncations,
+        seen_generic_test_paths,
         &mut node_resolver,
     )
     .await?;
@@ -803,6 +806,7 @@ pub async fn resolve_inner(
         &base_ctx,
         &mut collected_generic_tests,
         test_name_truncations,
+        seen_generic_test_paths,
         &mut node_resolver,
     )
     .await?;
@@ -831,6 +835,7 @@ pub async fn resolve_inner(
         &mut node_resolver,
         &mut collected_generic_tests,
         test_name_truncations,
+        seen_generic_test_paths,
         token,
     )
     .await?;
@@ -869,6 +874,7 @@ pub async fn resolve_inner(
         runtime_config.clone(),
         &mut collected_generic_tests,
         test_name_truncations,
+        seen_generic_test_paths,
         &mut node_resolver,
         token,
         jinja_type_checking_event_listener_factory.clone(),
@@ -1272,6 +1278,7 @@ async fn resolve_package(
     ));
 
     let mut test_name_truncations: HashMap<String, String> = HashMap::new();
+    let mut seen_generic_test_paths: HashMap<PathBuf, String> = HashMap::new();
     let (
         new_nodes,
         new_disabled_nodes,
@@ -1291,6 +1298,7 @@ async fn resolve_package(
         node_resolver,
         runtime_config.clone(),
         &mut test_name_truncations,
+        &mut seen_generic_test_paths,
         token,
         jinja_type_checking_event_listener_factory.clone(),
     )

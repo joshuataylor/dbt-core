@@ -31,6 +31,7 @@ use minijinja::Value as MinijinjaValue;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::resolve_properties::MinimalPropertiesEntry;
@@ -212,6 +213,7 @@ pub async fn resolve_sources(
     jinja_env: &JinjaEnv,
     collected_generic_tests: &mut Vec<GenericTestAsset>,
     test_name_truncations: &mut HashMap<String, String>,
+    seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     node_resolver: &mut NodeResolver,
 ) -> FsResult<(
     HashMap<String, Arc<DbtSource>>,
@@ -585,6 +587,7 @@ pub async fn resolve_sources(
                         root_package_name,
                         collected_generic_tests,
                         test_name_truncations,
+                        seen_generic_test_paths,
                         adapter_type,
                         io_args,
                         &mpe.relative_path,

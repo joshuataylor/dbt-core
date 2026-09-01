@@ -8,7 +8,7 @@ use chrono::Utc;
 use dbt_adapter_core::{AdapterType, MICROBATCH_SUPPORTED_ADAPTERS};
 use dbt_common::constants::{DBT_COMPILED_DIR_NAME, DBT_RUN_DIR_NAME};
 use dbt_common::io_args::{ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason};
-use dbt_common::path::{DbtPath, get_snapshot_compiled_path, get_target_write_path};
+use dbt_common::path::{DbtPath, get_snapshot_write_path, get_target_write_path};
 use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult, err};
 use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeProcessed, NodeType};
@@ -390,8 +390,8 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
         match path_kind {
             NodePathKind::Compiled => {
                 if self.resource_type() == NodeType::Snapshot {
-                    // Snapshots always use the many-to-one nested path — see get_snapshot_compiled_path.
-                    return get_snapshot_compiled_path(
+                    // Snapshots always use the many-to-one nested path — see get_snapshot_write_path.
+                    return get_snapshot_write_path(
                         &out_dir.join(DBT_COMPILED_DIR_NAME),
                         &common.package_name,
                         &common.original_file_path,
@@ -411,14 +411,28 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
                 }
                 abs
             }
-            NodePathKind::Executable => get_target_write_path(
-                in_dir,
-                &out_dir.join(DBT_RUN_DIR_NAME),
-                &common.package_name,
-                &common.path,
-                &common.original_file_path,
-            )
-            .with_file_name(format!("{}.sql", executable_filename())),
+            NodePathKind::Executable => {
+                if self.resource_type() == NodeType::Snapshot {
+                    // Same nested layout as the compiled path — see get_snapshot_write_path.
+                    // Keeping target/run in step with target/compiled is what dbt-core does, and
+                    // it is what lets Fusion reuse a target/ directory left by dbt-core v1
+                    // instead of failing with EISDIR (dbt-core#15692).
+                    return get_snapshot_write_path(
+                        &out_dir.join(DBT_RUN_DIR_NAME),
+                        &common.package_name,
+                        &common.original_file_path,
+                        &common.name,
+                    );
+                }
+                get_target_write_path(
+                    in_dir,
+                    &out_dir.join(DBT_RUN_DIR_NAME),
+                    &common.package_name,
+                    &common.path,
+                    &common.original_file_path,
+                )
+                .with_file_name(format!("{}.sql", executable_filename()))
+            }
             NodePathKind::Definition => self.get_node_definition_path(in_dir, out_dir).into_owned(),
         }
     }
@@ -6481,7 +6495,7 @@ mod tests {
             snapshot
                 .get_node_path(NodePathKind::Executable, in_dir, out_dir)
                 .as_ref(),
-            Path::new("target/run/pkg/snapshots/snapshots.yml/snapshots/daily_orders.sql")
+            Path::new("target/run/pkg/snapshots/snapshots.yml/daily_orders.sql")
         );
     }
 
@@ -6919,7 +6933,59 @@ mod tests {
             snapshot
                 .get_node_path(NodePathKind::Executable, in_dir, out_dir)
                 .as_ref(),
-            Path::new("target/run/pkg/snapshots/snap_collide.sql/snapshots/snap_non_matching.sql")
+            Path::new("target/run/pkg/snapshots/snap_collide.sql/snap_non_matching.sql")
+        );
+    }
+
+    /// Two `{% snapshot %}` blocks in one file: the one whose name matches the filename would
+    /// take the one-to-one branch of `get_target_write_path` and land on a flat file, while its
+    /// sibling needs that same path to be a directory. Both compiled and run paths must nest.
+    ///
+    /// The same nesting is what dbt-core v1 writes, so a `target/` directory left behind by v1
+    /// is reusable by Fusion instead of blowing up with EISDIR (dbt-core#15692).
+    #[test]
+    fn colliding_snapshots_in_one_file_both_nest_under_the_source_file() {
+        let in_dir = Path::new("/workspace");
+        let out_dir = Path::new("/workspace/target");
+
+        // Name matches the source filename — the case that used to produce a flat file.
+        let matching = snapshot_with_paths("snaps", "snapshots/snaps.sql", "snapshots/snaps.sql");
+        // Sibling block in the same file — always took the nested branch.
+        let sibling = snapshot_with_paths("other", "snapshots/other.sql", "snapshots/snaps.sql");
+
+        for (snapshot, name) in [(&matching, "snaps"), (&sibling, "other")] {
+            assert_eq!(
+                snapshot.get_node_path_abs(NodePathKind::Compiled, in_dir, out_dir),
+                PathBuf::from(format!(
+                    "/workspace/target/compiled/pkg/snapshots/snaps.sql/{name}.sql"
+                )),
+            );
+            assert_eq!(
+                snapshot
+                    .get_node_path(NodePathKind::Executable, in_dir, out_dir)
+                    .as_ref(),
+                Path::new(&format!("target/run/pkg/snapshots/snaps.sql/{name}.sql")),
+            );
+        }
+    }
+
+    /// An `alias` config must not move the run artifact: dbt-core derives snapshot write paths
+    /// from `name`, never the alias, and `target/run` has to mirror `target/compiled`.
+    #[test]
+    fn snapshot_run_path_ignores_alias() {
+        let mut snapshot =
+            snapshot_with_paths("my_snap", "snapshots/my_snap.sql", "snapshots/my_snap.sql");
+        snapshot.__base_attr__.alias = "aliased_elsewhere".to_string();
+
+        assert_eq!(
+            snapshot
+                .get_node_path(
+                    NodePathKind::Executable,
+                    Path::new("/workspace"),
+                    Path::new("/workspace/target")
+                )
+                .as_ref(),
+            Path::new("target/run/pkg/snapshots/my_snap.sql/my_snap.sql")
         );
     }
 
@@ -6939,7 +7005,7 @@ mod tests {
             out_dir,
             "snapshots/snapshots.yml",
             "target/compiled/pkg/snapshots/snapshots.yml/daily_orders.sql",
-            "target/run/pkg/snapshots/snapshots.yml/snapshots/daily_orders.sql",
+            "target/run/pkg/snapshots/snapshots.yml/daily_orders.sql",
         );
 
         let legacy_sql_snapshot = snapshot_with_paths(
@@ -6953,7 +7019,7 @@ mod tests {
             out_dir,
             "snapshots/snap_collide.sql",
             "target/compiled/pkg/snapshots/snap_collide.sql/snap_non_matching.sql",
-            "target/run/pkg/snapshots/snap_collide.sql/snapshots/snap_non_matching.sql",
+            "target/run/pkg/snapshots/snap_collide.sql/snap_non_matching.sql",
         );
     }
 

@@ -6113,6 +6113,11 @@ pub trait Replayer: fmt::Debug + Send + Sync {
         Ok(false)
     }
 
+    /// Non-consuming peek: return true if the next per-node replay record is an execute record.
+    fn replay_peek_execute_next(&self, _state: &State) -> AdapterResult<bool> {
+        Ok(false)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn replay_execute(
         &self,

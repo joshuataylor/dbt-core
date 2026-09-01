@@ -43,7 +43,7 @@ use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_telemetry::{ExecutionPhase as TelemetryExecutionPhase, NodeType};
 
-use crate::renderable::unit_test_typing::{BigqueryTyping, SnowflakeTyping};
+use crate::renderable::unit_test_typing::{BigqueryTyping, DatabricksTyping, SnowflakeTyping};
 use dbt_tasks_core::task::TaskResult;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -1583,6 +1583,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
                     || BigqueryTyping::is_json(ref_type)
                     || BigqueryTyping::is_geography(ref_type)
             }
+            AdapterType::Databricks => DatabricksTyping::is_timestamp_ntz(ref_type),
             AdapterType::DuckDB => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
                 matches!(ref_type, DataType::FixedSizeList(_, 1))

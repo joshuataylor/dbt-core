@@ -196,6 +196,7 @@ impl DbConfig {
                 "retry_all",
                 "insecure_mode",
                 "reuse_connections",
+                "application_name",
             ],
             AdapterType::Postgres => &[
                 "host",
@@ -766,6 +767,8 @@ pub struct SnowflakeDbConfig {
     pub protocol: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub driver_log_level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application_name: Option<String>,
     /// Removed field — kept only so that profiles containing it still parse.
     /// The value is ignored; a deprecation warning is emitted at startup.
     #[serde(default, skip_serializing)]

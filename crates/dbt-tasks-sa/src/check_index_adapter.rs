@@ -25,8 +25,7 @@ use dbt_adapter::adapter::adapter_factory::{AdapterFactory, DefaultAdapterFactor
 use dbt_adapter::sql_types::DefaultTypeOpsFactory;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
-use dbt_index_core::db::{COLUMNS_VIEW_DDL, GRAPH_NODES_VIEWS_DDL, split_ddl_statements};
-use dbt_jinja_utils::info_schema::PARSE_SAFE_VIEWS;
+use dbt_index_core::info_schema::parse_safe::{self, BASE_SCHEMA};
 use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
 
 /// Build a DuckDB adapter over an in-memory database.
@@ -63,75 +62,64 @@ pub fn in_memory_duckdb_adapter(token: CancellationToken) -> Result<Arc<Adapter>
         .map_err(|e| format!("could not open an in-memory duckdb adapter: {e}"))
 }
 
-/// Base tables the parse-safe views in [`PARSE_SAFE_VIEWS_DDL`] are defined in terms of.
-/// Registered from parquet like any other view, but deliberately not in [`PARSE_SAFE_VIEWS`]:
-/// they mix parse-safe columns with compile-filled or never-populated ones, which is exactly what
-/// the derived views project away. A check can only reach them through `dbt.graph_nodes` /
-/// `dbt.columns`, never directly.
-const PARSE_SAFE_VIEW_BASE_TABLES: &[&str] = &["nodes", "node_columns"];
-
-/// Register every `dbt.*.parquet` / `dbt_rt.*.parquet` in `index_dir` as a view.
+/// Register the index as the views a parse-time check reads.
 ///
-/// Paths are made **absolute** here rather than executing the index's own `views.sql`, which emits
-/// relative paths and would therefore depend on the process working directory.
+/// Two layers, both from `index_dir`'s parquet. The index's own tables go into
+/// `dbt_internal`, and the parse-safe views over them into `dbt` — so `info_schema('models')`
+/// resolves, and `dbt.nodes` does not exist to be read by accident. See
+/// `dbt_index_core::info_schema::parse_safe` for why the split is a correctness boundary and
+/// not tidiness.
 ///
-/// Per-file failures are tolerated: a stale parquet whose schema no longer matches should not make
-/// every check in the project unrunnable. A check that needed that table fails on its own when it
-/// queries a view that isn't there, which is the more useful error.
+/// Paths are made **absolute** here rather than executing the index's own `views.sql`, which
+/// emits relative paths and would therefore depend on the process working directory.
 fn register_index_views(adapter: &Adapter, index_dir: &Path) -> Result<(), String> {
-    adapter
-        .execute_without_state(None, "create schema if not exists dbt", false, None)
-        .map_err(|e| format!("could not create schema dbt: {e}"))?;
+    for schema in [parse_safe::VIEW_SCHEMA, BASE_SCHEMA] {
+        adapter
+            .execute_without_state(
+                None,
+                &format!("create schema if not exists {schema}"),
+                false,
+                None,
+            )
+            .map_err(|e| format!("could not create schema {schema}: {e}"))?;
+    }
 
-    // Only the views a parse-time check may read, plus the base tables the derived ones among them
-    // are defined over. Registering the whole index directory would expose tables that are empty at
-    // parse — and an empty table does not error, it returns zero rows, which a check reports as a
-    // pass. The allowlist is therefore a correctness boundary, not tidiness.
+    // Only the tables the parse-safe views are built from. Registering the whole index
+    // directory would expose tables that are empty at parse — and an empty table does not
+    // error, it returns zero rows, which a check reports as a pass.
     //
-    // Tracks which base tables actually registered: `node_columns.parquet` in particular does not
-    // exist until something has run static analysis, so a project that never has does not get one,
-    // and the derived view built on it (`dbt.columns`) must be skipped rather than fail the whole
-    // batch — a check that never reads `dbt.columns` should not go down because of it.
+    // Tracks which ones actually registered: `node_columns.parquet` in particular does not
+    // exist until something has written columns, so a project without them still gets every
+    // other view.
     let mut registered = std::collections::HashSet::new();
-    for view in PARSE_SAFE_VIEWS.iter().chain(PARSE_SAFE_VIEW_BASE_TABLES) {
-        let path = index_dir.join(format!("dbt.{view}.parquet"));
+    for table in parse_safe::base_tables() {
+        let path = index_dir.join(format!("dbt.{table}.parquet"));
         if !path.exists() {
-            // A missing view is left unregistered on purpose: a check that needs it then fails with
-            // "table does not exist", which is loud. Creating an empty stand-in would make the same
-            // check pass while having read nothing. If the view is a base table for one of the
-            // derived views below, that view's own `CREATE VIEW` is skipped rather than attempted,
-            // for the same reason: attempting it would fail loudly for every check, not just the one
-            // that reads it.
+            // Left unregistered on purpose: a check that needs it then fails with "table does
+            // not exist", which is loud. An empty stand-in would make the same check pass
+            // having read nothing.
             continue;
         }
-        // Absolute path, not the index's own `views.sql`, which emits relative paths and so would
-        // depend on the process working directory.
         let quoted = path.to_string_lossy().replace('\'', "''");
-        let sql =
-            format!("create or replace view dbt.{view} as select * from read_parquet('{quoted}')");
+        let sql = format!(
+            "create or replace view {BASE_SCHEMA}.{table} as select * from read_parquet('{quoted}')"
+        );
         adapter
             .execute_without_state(None, &sql, false, None)
-            .map_err(|e| format!("could not register view dbt.{view}: {e}"))?;
-        registered.insert(*view);
+            .map_err(|e| format!("could not register {BASE_SCHEMA}.{table}: {e}"))?;
+        registered.insert(table);
     }
 
-    // The parse-safe views themselves (`dbt.graph_nodes`, `dbt.models`, …) are defined as SQL over
-    // the base tables just registered, not as their own parquet files, so they are created here
-    // rather than picked up by the loop above. Each half only runs if its base table registered;
-    // `dbt.columns`'s absence must not take down `dbt.graph_nodes` and vice versa.
-    if registered.contains("nodes") {
-        for stmt in split_ddl_statements(GRAPH_NODES_VIEWS_DDL) {
-            adapter
-                .execute_without_state(None, &stmt, false, None)
-                .map_err(|e| format!("could not register parse-safe view ({e}): {stmt}"))?;
+    // A view whose tables are all present is created; one missing a table is skipped rather
+    // than attempted, so `dbt.node_columns`'s absence cannot take down `dbt.models`.
+    for view in parse_safe::VIEWS {
+        if !view.base_tables().iter().all(|t| registered.contains(t)) {
+            continue;
         }
-    }
-    if registered.contains("node_columns") {
-        for stmt in split_ddl_statements(COLUMNS_VIEW_DDL) {
-            adapter
-                .execute_without_state(None, &stmt, false, None)
-                .map_err(|e| format!("could not register parse-safe view ({e}): {stmt}"))?;
-        }
+        let sql = view.create_view_sql().map_err(|e| e.to_string())?;
+        adapter
+            .execute_without_state(None, &sql, false, None)
+            .map_err(|e| format!("could not register parse-safe view ({e}): {sql}"))?;
     }
     Ok(())
 }
@@ -203,6 +191,24 @@ mod tests {
                 None,
             )
             .expect("in-memory duckdb adapter should construct without credentials")
+    }
+
+    /// The render-time allowlist and the views actually registered are two lists in two
+    /// crates: `dbt-jinja-utils` cannot depend on the index, so it names the views rather
+    /// than deriving them. Nothing but this makes them agree — an allowlisted name with no
+    /// view expands to a missing relation, and a registered view nobody allowlists is
+    /// unreachable.
+    #[test]
+    fn the_render_allowlist_names_exactly_the_registered_views() {
+        let registered: Vec<&str> = dbt_index_core::info_schema::parse_safe::VIEWS
+            .iter()
+            .map(|v| v.name)
+            .collect();
+        let mut allowed = dbt_jinja_utils::info_schema::PARSE_SAFE_VIEWS.to_vec();
+        let mut expected = registered.clone();
+        allowed.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(allowed, expected);
     }
 
     #[test]

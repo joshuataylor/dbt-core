@@ -44,6 +44,7 @@ pub mod bench;
 mod copy;
 pub mod epoch;
 pub mod epoch_views;
+pub mod parse_safe;
 pub mod project;
 pub mod schema;
 pub mod spec;
@@ -623,3 +624,5 @@ mod tests;
 mod tests_copy;
 #[cfg(test)]
 mod tests_epoch;
+#[cfg(test)]
+mod tests_parse_safe;

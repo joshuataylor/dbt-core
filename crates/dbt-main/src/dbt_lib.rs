@@ -1347,6 +1347,13 @@ impl<'a> AllPhasesExecutor<'a> {
                                 // check without also catching every unrelated `Generic` warning.
                                 // Error-severity violations are errors; warn-severity stays a
                                 // warning so it can still be promoted.
+                                //
+                                // A check that could not be evaluated at all is an error whatever
+                                // its severity, and the level here is what makes that stick: the
+                                // exit code comes off the error counter, so emitting this as a
+                                // warning exited 0 — the same as a check that ran and found
+                                // nothing. A check that has quietly stopped working is exactly the
+                                // one CI must not wave through.
                                 match r.status {
                                     "fail" => emit_error_log_message(
                                         ErrorCode::CheckFailed,
@@ -1356,7 +1363,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         ErrorCode::CheckWarned,
                                         format!("check '{}' found{count}{detail}", r.name),
                                     ),
-                                    _ => emit_warn_log_message(
+                                    _ => emit_error_log_message(
                                         ErrorCode::CheckEvaluationFailed,
                                         format!(
                                             "check '{}' could not be evaluated:{count}{detail}",

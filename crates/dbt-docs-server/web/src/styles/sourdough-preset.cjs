@@ -2,7 +2,7 @@
 
 const colors = require('tailwindcss/colors');
 const defaultTheme = require('tailwindcss/defaultTheme');
-const { tokens: bigaTokens } = require('@dbt-labs/biga');
+const { tokens: bigaTokens } = require('./tokens.js');
 
 const DBT_ORANGE = 'var(--logoBit)';
 

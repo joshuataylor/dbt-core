@@ -245,15 +245,19 @@ export function NodeDetail({ asset, onSelect, hasColumnLineage, userState }: Pro
 
   return (
     <article className="flex flex-col gap-6 px-8 pb-20 pt-6 text-fgMain">
-      <AssetHeader
-        name={asset.name}
-        resourceType={resourceType}
-        packageName={asset.packageName || null}
-        headerIcons={headerIcons}
-        actions={actions}
-      />
-
-      <DetailTabs tabs={tabs} show={true}>
+      <DetailTabs
+        tabs={tabs}
+        show={true}
+        stickyHeader={
+          <AssetHeader
+            name={asset.name}
+            resourceType={resourceType}
+            packageName={asset.packageName || null}
+            headerIcons={headerIcons}
+            actions={actions}
+          />
+        }
+      >
         {(tabType) => {
           switch (tabType) {
             case 'general': {

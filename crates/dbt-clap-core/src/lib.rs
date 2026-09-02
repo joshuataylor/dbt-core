@@ -891,6 +891,12 @@ pub struct ShowArgs {
     #[arg(long, allow_hyphen_values = true)]
     pub inline: Option<String>,
 
+    /// Query a dbt information schema view (e.g. `models`, `dag_nodes`) instead of
+    /// the warehouse. Equivalent to `--inline "select * from {{ info_schema('<view>') }}"`.
+    /// Requires a prior `dbt parse|compile|run|build --generate-info-schema`.
+    #[arg(long, value_name = "VIEW", conflicts_with_all = ["inline", "adapter"])]
+    pub info: Option<String>,
+
     /// Select nodes of a specific type;
     #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["resource-types"], env = "DBT_RESOURCE_TYPES")]
     pub resource_type: Option<Vec<ClapResourceType>>,
@@ -3237,6 +3243,23 @@ mod tests {
         assert!(
             CommonArgs::try_parse_from(["dbt", "--lineage"]).is_err(),
             "--lineage is not a clap flag"
+        );
+    }
+
+    #[test]
+    fn show_info_parses_and_conflicts_with_inline() {
+        let parsed = ShowArgs::try_parse_from(["show", "--info", "models"])
+            .expect("--info must parse on show");
+        assert_eq!(parsed.info.as_deref(), Some("models"));
+
+        assert!(
+            ShowArgs::try_parse_from(["show", "--info", "models", "--inline", "select 1"]).is_err(),
+            "--info must conflict with --inline"
+        );
+        assert!(
+            ShowArgs::try_parse_from(["show", "--info", "models", "--adapter", "lake_compute"])
+                .is_err(),
+            "--info must conflict with --adapter"
         );
     }
 

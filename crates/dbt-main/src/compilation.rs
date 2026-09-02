@@ -152,6 +152,18 @@ struct CompilationPhasesExecutor<'a> {
     token: CancellationToken,
 }
 
+/// Whether this `dbt show` reads `target/info_schema/` instead of the warehouse.
+///
+/// Thin wrapper so the three call sites read as one decision: the predicate itself
+/// lives in `dbt-tasks-sa` because it needs the Jinja parser, and that crate cannot
+/// take a `ShowArgs` without depending on `dbt-clap-core`.
+pub(crate) fn show_queries_info_schema(show_args: &ShowArgs) -> bool {
+    dbt_tasks_sa::show_info::queries_info_schema(
+        show_args.info.as_deref(),
+        show_args.inline.as_deref(),
+    )
+}
+
 impl<'a> CompilationPhasesExecutor<'a> {
     pub fn new(arg: Cow<'a, EvalArgs>, cli: Cow<'a, Cli>, token: CancellationToken) -> Self {
         Self {
@@ -183,10 +195,14 @@ impl<'a> CompilationPhasesExecutor<'a> {
         let inline_sql = match &self.cli.command {
             Command::Core(Compile(CompileArgs {
                 inline: Some(sql), ..
-            }))
-            | Command::Core(Show(ShowArgs {
-                inline: Some(sql), ..
             })) => Some(sql.clone()),
+            // Info-schema show queries DuckDB over `target/info_schema/`; injecting
+            // the SQL as a warehouse model would bind `dbt.<view>` on the project adapter.
+            Command::Core(Show(show_args))
+                if show_args.inline.is_some() && !show_queries_info_schema(show_args) =>
+            {
+                show_args.inline.clone()
+            }
             _ => None,
         };
         let has_inline = inline_sql.is_some();
@@ -1094,16 +1110,15 @@ impl DbtProjectCompilation {
         // partial-load fast path (also fires for state:dirty): if no file mtimes changed,
         // skip WalkDir entirely and return prev as-is. Skip when --inline is set since the
         // inline SQL node must be injected during load().
-        let has_inline = matches!(
-            &cli.command,
+        let has_inline = match &cli.command {
             Command::Core(CoreCommand::Compile(CompileArgs {
-                inline: Some(_),
-                ..
-            })) | Command::Core(CoreCommand::Show(ShowArgs {
-                inline: Some(_),
-                ..
-            }))
-        );
+                inline: Some(_), ..
+            })) => true,
+            Command::Core(CoreCommand::Show(show_args)) => {
+                show_args.inline.is_some() && !show_queries_info_schema(show_args)
+            }
+            _ => false,
+        };
         if use_lazy_filter && !has_inline {
             // Skip the fast path when the --static-analysis level has changed since the
             // previous compilation. The fast path reuses nodes whose `base().static_analysis`

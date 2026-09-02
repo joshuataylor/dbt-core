@@ -72,6 +72,12 @@ pub fn in_memory_duckdb_adapter(token: CancellationToken) -> Result<Arc<Adapter>
 ///
 /// Paths are made **absolute** here rather than executing the index's own `views.sql`, which
 /// emits relative paths and would therefore depend on the process working directory.
+///
+/// A *missing* parquet is tolerated — it is skipped, and a check that needed that table then
+/// fails on its own with "table does not exist", which is the more useful error. One that is
+/// present but fails to register still aborts the batch. That is the opposite of
+/// `register_info_schema_views`, which serves a single user-named view and so has no stake in
+/// whether the rest of the directory reads.
 fn register_index_views(adapter: &Adapter, index_dir: &Path) -> Result<(), String> {
     for schema in [parse_safe::VIEW_SCHEMA, BASE_SCHEMA] {
         adapter
@@ -131,6 +137,82 @@ pub fn open_index_adapter(
 ) -> Result<Arc<Adapter>, String> {
     let adapter = in_memory_duckdb_adapter(token)?;
     register_index_views(&adapter, index_dir)?;
+    Ok(adapter)
+}
+
+/// Register every `dbt*.*.parquet` in `dir` as a view.
+///
+/// Used for `target/info_schema/v<n>/`, whose files are already the public
+/// shape (`dbt.models.parquet`, `dbt_rt.run_results.parquet`, …). Do not layer
+/// the index's parse-safe SQL views on top: those project `dbt.nodes`, which
+/// the information schema does not write.
+///
+/// `dbt_internal` is deliberately left unregistered. `show_info` already filters `Ns::DbtInternal`
+/// out of `--info` and out of the `info_schema()` Jinja function, but that only constrains what the
+/// function *returns* — the SQL it renders into still executes here, so any `dbt_internal.*` view
+/// this registered would stay reachable by naming it directly. Not registering it is what actually
+/// makes it unreachable, and keeps the gate and the registered surface in agreement.
+fn register_info_schema_views(adapter: &Adapter, dir: &Path) -> Result<(), String> {
+    for schema in ["dbt", "dbt_rt"] {
+        adapter
+            .execute_without_state(
+                None,
+                &format!("create schema if not exists {schema}"),
+                false,
+                None,
+            )
+            .map_err(|e| format!("could not create schema {schema}: {e}"))?;
+    }
+
+    let entries = std::fs::read_dir(dir).map_err(|e| {
+        format!(
+            "could not read information schema at {}: {e}",
+            dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("could not read information schema entry: {e}"))?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some((schema, table)) = parse_index_parquet_name(&name) else {
+            continue;
+        };
+        let path = entry.path();
+        let quoted = path.to_string_lossy().replace('\'', "''");
+        let sql = format!(
+            "create or replace view {schema}.{table} as select * from read_parquet('{quoted}')"
+        );
+        if let Err(e) = adapter.execute_without_state(None, &sql, false, None) {
+            // Tolerated on purpose: one unreadable or schema-mismatched file — a truncated
+            // `dbt_rt.run_results.parquet` left by an interrupted run, say — must not fail
+            // `dbt show --info models`, which never reads it. The view is simply left unregistered,
+            // so a query that does want it fails with "table does not exist", naming the problem.
+            tracing::warn!("could not register information schema view {schema}.{table}: {e}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_index_parquet_name(name: &str) -> Option<(&str, &str)> {
+    let stem = name.strip_suffix(".parquet")?;
+    let (schema, table) = stem.split_once('.')?;
+    // `dbt_internal` is absent on purpose; see `register_info_schema_views`.
+    if schema != "dbt" && schema != "dbt_rt" {
+        return None;
+    }
+    if table.is_empty() || !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((schema, table))
+}
+
+/// Open `target/info_schema/v<n>/` through a DuckDB adapter.
+pub fn open_info_schema_adapter(
+    info_schema_dir: &Path,
+    token: CancellationToken,
+) -> Result<Arc<Adapter>, String> {
+    let adapter = in_memory_duckdb_adapter(token)?;
+    register_info_schema_views(&adapter, info_schema_dir)?;
     Ok(adapter)
 }
 
@@ -292,6 +374,73 @@ mod tests {
             table.num_rows(),
             1,
             "expected the single row back from the view"
+        );
+    }
+
+    /// Write `select 1 as n` to `<dir>/<name>` as parquet, via a throwaway adapter.
+    fn write_parquet(dir: &std::path::Path, name: &str) {
+        let path = dir.join(name);
+        index_adapter()
+            .execute_without_state(
+                None,
+                &format!(
+                    "copy (select 1 as n) to '{}' (format parquet)",
+                    path.display()
+                ),
+                false,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("should write {name}: {e}"));
+    }
+
+    /// `show_info` filters `Ns::DbtInternal` out of `--info` and out of the `info_schema()`
+    /// Jinja function, but that only governs what the function *returns*; the SQL it renders
+    /// into runs against this adapter. So `dbt_internal` has to be absent from the adapter
+    /// itself, or `--inline "... from dbt_internal.<t> ..."` walks straight past the gate.
+    #[test]
+    fn dbt_internal_is_not_reachable_from_the_information_schema_adapter() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_parquet(tmp.path(), "dbt.models.parquet");
+        write_parquet(tmp.path(), "dbt_internal.secrets.parquet");
+
+        let adapter = super::open_info_schema_adapter(tmp.path(), never_cancels())
+            .expect("the information schema adapter should open");
+
+        adapter
+            .execute_without_state(None, "select n from dbt.models", true, None)
+            .expect("a public view should be queryable");
+        assert!(
+            adapter
+                .execute_without_state(None, "select n from dbt_internal.secrets", true, None)
+                .is_err(),
+            "dbt_internal must not be reachable, gate or no gate"
+        );
+    }
+
+    /// One unreadable file must not take down the view the user actually asked for: an
+    /// interrupted run can leave a truncated `dbt_rt.run_results.parquet` behind, and
+    /// `dbt show --info models` does not read it.
+    #[test]
+    fn an_unreadable_parquet_does_not_take_down_the_other_views() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        write_parquet(tmp.path(), "dbt.models.parquet");
+        std::fs::write(
+            tmp.path().join("dbt_rt.run_results.parquet"),
+            b"not parquet",
+        )
+        .unwrap();
+
+        let adapter = super::open_info_schema_adapter(tmp.path(), never_cancels())
+            .expect("one bad file should not fail the whole registration");
+
+        adapter
+            .execute_without_state(None, "select n from dbt.models", true, None)
+            .expect("the readable view should still be queryable");
+        assert!(
+            adapter
+                .execute_without_state(None, "select * from dbt_rt.run_results", true, None)
+                .is_err(),
+            "the unreadable file should be left unregistered, not stubbed out empty"
         );
     }
 }

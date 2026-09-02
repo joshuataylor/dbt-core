@@ -105,7 +105,7 @@ use vortex_events::{build_result_string, invocation_end_event};
 use crate::{
     compilation::{
         DbtCustomScheduleDescription, DbtProjectCompilation, DbtProjectCompilationCacheChanges,
-        DbtRunTasksResult, DbtScheduleDescription, update_manifest,
+        DbtRunTasksResult, DbtScheduleDescription, show_queries_info_schema, update_manifest,
     },
     retry::{RETRIABLE_COMMANDS, RetryState},
     utils::{InvocationContext, write_catalog_stats_parquet, write_runtime_results_parquet},
@@ -1102,6 +1102,24 @@ impl<'a> AllPhasesExecutor<'a> {
     #[allow(clippy::cognitive_complexity)]
     pub async fn execute_all_phases(&mut self, token: &CancellationToken) -> FsResult<()> {
         use CoreCommand::*;
+
+        // `dbt show --info` / `--inline` with `{{ info_schema() }}` only reads
+        // `target/info_schema/`. Do not parse, compile, or write artifacts.
+        if let Command::Core(Show(show_args)) = &self.cli.command
+            && show_queries_info_schema(show_args)
+        {
+            use dbt_index_core::info_schema::versioned_dir;
+            let info_schema_dir = versioned_dir(&self.arg.info_schema_dir());
+            dbt_tasks_sa::show_info::run_show_info_schema(
+                show_args.info.as_deref(),
+                show_args.inline.as_deref(),
+                &info_schema_dir,
+                self.arg.format,
+                self.arg.limit,
+                token.clone(),
+            )?;
+            return Ok(());
+        }
 
         let type_ops_factory = Arc::clone(&self.feature_stack.adapter.type_ops_factory);
 

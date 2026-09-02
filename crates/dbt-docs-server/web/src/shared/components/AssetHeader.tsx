@@ -77,7 +77,7 @@ export function AssetHeader({
             <PageHeading
               className="flex w-min items-center gap-2"
               additional={{
-                left: <DataPlatformChip platform="dbt" size="lg" bordered={false} />,
+                left: <DataPlatformChip platform="dbt" bordered={false} />,
                 right: rightAdornment ?? null,
               }}
             >

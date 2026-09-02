@@ -48,7 +48,7 @@ export const Source: Story = {
 /** `chip` replaces the default `ResourceChip` — used when the panel wants to say
  *  something other than the resource type. */
 export const CustomChip: Story = {
-  args: { chip: <DataPlatformChip platform="snowflake" showText /> },
+  args: { chip: <DataPlatformChip platform="snowflake" /> },
 };
 
 /** No actions still keeps the bar and its bottom border, so the panel below does not

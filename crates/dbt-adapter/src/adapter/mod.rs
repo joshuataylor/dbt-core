@@ -3079,14 +3079,21 @@ impl Adapter {
                 let iter = ArgsIter::new("describe_relation", &["relation"], args);
                 let relation_val = iter.next_arg::<&Value>()?;
                 let relation = downcast_value_to_dyn_base_relation(relation_val)?;
+                let include_transient = iter
+                    .next_kwarg::<Option<bool>>("include_transient")?
+                    .unwrap_or(false);
                 iter.finish()?;
 
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-                Ok(adapter
-                    .describe_relation(conn.as_mut(), &relation, Some(state))?
-                    .map(Value::from_object)
-                    .unwrap_or_else(none_value))
+
+                adapter.describe_relation(
+                    state,
+                    conn.as_mut(),
+                    &relation,
+                    include_transient,
+                    self.cancellation_token.clone(),
+                )
             }
             Parse(_) => Ok(none_value()),
         }
@@ -3777,48 +3784,6 @@ impl Adapter {
         }
     }
 
-    /// Get all relevant metadata about a dynamic table to return as a dict to Agate Table row
-    ///
-    /// https://github.com/dbt-labs/dbt-adapters/blob/703180a871f2960cd0c91765ffc4b1dc111d615b/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L510
-    ///
-    /// ```python
-    /// def describe_dynamic_table(self, relation: SnowflakeRelation) -> Dict[str, Any]
-    /// ```
-    #[tracing::instrument(skip(self, state), level = "trace")]
-    pub fn describe_dynamic_table(
-        &self,
-        state: &State,
-        args: &[Value],
-    ) -> Result<Value, minijinja::Error> {
-        match &self.inner {
-            Typed { adapter, .. } => {
-                let iter = ArgsIter::new("describe_dynamic_table", &["relation"], args);
-                let relation_val = iter.next_arg::<&Value>()?;
-                let relation = downcast_value_to_dyn_base_relation(relation_val)?;
-                let include_transient = iter
-                    .next_kwarg::<Option<bool>>("include_transient")?
-                    .unwrap_or(false);
-                iter.finish()?;
-
-                let mut conn =
-                    adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-                adapter.describe_dynamic_table(
-                    state,
-                    conn.as_mut(),
-                    &relation,
-                    include_transient,
-                    self.cancellation_token.clone(),
-                )
-            }
-            Parse(_) => {
-                let map = [("dynamic_table", none_value())]
-                    .into_iter()
-                    .collect::<HashMap<_, _>>();
-                Ok(Value::from_serialize(map))
-            }
-        }
-    }
-
     /// https://github.com/dbt-labs/dbt-adapters/blob/c16cc7047e8678f8bb88ae294f43da2c68e9f5cc/dbt-adapters/src/dbt/adapters/base/impl.py#L334
     ///
     /// ```python
@@ -3978,8 +3943,6 @@ impl Adapter {
 
                 self.build_catalog_relation(model)
             }
-            // relation: BaseRelation, include_transient: bool = False
-            "describe_dynamic_table" => self.describe_dynamic_table(state, args),
             "get_catalog_integration" => self.get_catalog_integration(state, args),
             "type" => Ok(Value::from(self.effective_adapter_type(state).to_string())),
             // config: dict
@@ -4106,8 +4069,11 @@ impl Adapter {
             "upload_file" => self.upload_file(state, args),
             // relation: BaseRelation
             "get_bq_table" => self.get_bq_table(state, args),
-            // relation: BaseRelation
+            // relation: BaseRelation, include_transient: Optional[bool] = False
             "describe_relation" => self.describe_relation(state, args),
+            // Backwards-compatible alias: "describe_dynamic_table" was shipped Jinja surface
+            // (changelogged in 2.0.0-preview.71) before it was consolidated into describe_relation.
+            "describe_dynamic_table" => self.describe_relation(state, args),
             // entity: BaseRelation, entity_type: str, role: Optional[str], grant_target_dict: GrantAccessToTarget
             "grant_access_to" => self.grant_access_to(state, args),
             // relation: BaseRelation

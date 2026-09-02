@@ -3904,8 +3904,8 @@ fn group_relations_by_database_and_schema(
 }
 
 /// Derives the SQL table-type keyword for a node (e.g. `"TRANSIENT TABLE"` /
-/// `"TABLE"` / `"DYNAMIC TABLE"` on Snowflake) that downstream callers send
-/// to the dbt State service for clone-SQL composition.
+/// `"TABLE"` / `"DYNAMIC TABLE"` / `"INTERACTIVE TABLE"` on Snowflake) that
+/// downstream callers send to the dbt State service for clone-SQL composition.
 ///
 /// We derive this from the dbt node config, not from warehouse
 /// introspection, mirroring the dbt-core plugin's
@@ -3976,6 +3976,8 @@ fn config_derived_table_type(
             }
             .to_string(),
         ),
+        // `TRANSIENT INTERACTIVE TABLE` is not valid DDL, so `transient` is ignored here.
+        DbtMaterialization::InteractiveTable => Some("INTERACTIVE TABLE".to_string()),
         _ => None,
     }
 }
@@ -4352,6 +4354,7 @@ fn full_refresh_blocks_model_submit(materialization: DbtMaterialization) -> bool
             | DbtMaterialization::MaterializedView
             | DbtMaterialization::DynamicTable
             | DbtMaterialization::StreamingTable
+            | DbtMaterialization::InteractiveTable
     )
 }
 
@@ -4963,11 +4966,39 @@ mod tests {
         assert!(full_refresh_blocks_model_submit(
             DbtMaterialization::Incremental
         ));
+        assert!(full_refresh_blocks_model_submit(
+            DbtMaterialization::InteractiveTable
+        ));
         assert!(!full_refresh_blocks_model_submit(DbtMaterialization::View));
         assert!(!full_refresh_blocks_model_submit(DbtMaterialization::Table));
         assert!(!full_refresh_blocks_model_submit(
             DbtMaterialization::Unknown("custom_table".to_string())
         ));
+    }
+
+    #[test]
+    fn config_derived_table_type_treats_interactive_table_as_never_transient() {
+        let mut model = make_model(
+            "model.test.orders",
+            "db",
+            "dbt_test",
+            "orders",
+            DbtMaterialization::InteractiveTable,
+        );
+        assert_eq!(
+            config_derived_table_type(model.as_ref(), AdapterType::Snowflake),
+            Some("INTERACTIVE TABLE".to_string())
+        );
+
+        Arc::get_mut(&mut model)
+            .unwrap()
+            .deprecated_config
+            .__warehouse_specific_config__
+            .transient = Some(true);
+        assert_eq!(
+            config_derived_table_type(model.as_ref(), AdapterType::Snowflake),
+            Some("INTERACTIVE TABLE".to_string())
+        );
     }
 
     #[test]

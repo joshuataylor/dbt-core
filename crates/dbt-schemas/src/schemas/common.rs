@@ -419,6 +419,8 @@ pub enum DbtMaterialization {
     StreamingTable,
     /// only for snowflake
     DynamicTable,
+    /// only for snowflake
+    InteractiveTable,
     /// for inline SQL compilation
     Inline,
     #[serde(untagged)]
@@ -441,6 +443,7 @@ impl FromStr for DbtMaterialization {
             "function" => Ok(DbtMaterialization::Function),
             "streaming_table" => Ok(DbtMaterialization::StreamingTable),
             "dynamic_table" => Ok(DbtMaterialization::DynamicTable),
+            "interactive_table" => Ok(DbtMaterialization::InteractiveTable),
             "inline" => Ok(DbtMaterialization::Inline),
             other => Ok(DbtMaterialization::Unknown(other.to_string())),
         }
@@ -465,6 +468,7 @@ impl std::fmt::Display for DbtMaterialization {
             DbtMaterialization::Unit => "unit",
             DbtMaterialization::StreamingTable => "streaming_table",
             DbtMaterialization::DynamicTable => "dynamic_table",
+            DbtMaterialization::InteractiveTable => "interactive_table",
             DbtMaterialization::Analysis => "analysis",
             DbtMaterialization::Function => "function",
             DbtMaterialization::Inline => "inline",
@@ -495,6 +499,7 @@ impl From<DbtMaterialization> for RelationType {
             DbtMaterialization::Unit => RelationType::External, // TODO Validate this
             DbtMaterialization::StreamingTable => RelationType::StreamingTable,
             DbtMaterialization::DynamicTable => RelationType::DynamicTable,
+            DbtMaterialization::InteractiveTable => RelationType::InteractiveTable,
             DbtMaterialization::Analysis => RelationType::External, // TODO Validate this
             DbtMaterialization::Inline => RelationType::Ephemeral, // Inline models don't materialize in DB
             DbtMaterialization::Unknown(_) => RelationType::External, // TODO Validate this
@@ -518,6 +523,7 @@ impl From<&DbtMaterialization> for NodeMaterialization {
             DbtMaterialization::Unit => Self::Unit,
             DbtMaterialization::StreamingTable => Self::StreamingTable,
             DbtMaterialization::DynamicTable => Self::DynamicTable,
+            DbtMaterialization::InteractiveTable => Self::InteractiveTable,
             DbtMaterialization::Analysis => Self::Analysis,
             DbtMaterialization::Inline => Self::Ephemeral, // Inline is similar to ephemeral
             DbtMaterialization::Unknown(_) => Self::Custom,
@@ -2037,6 +2043,25 @@ mod tests {
             DbtChecksum::Object(o) => (o.name.as_str(), o.checksum.as_str()),
             DbtChecksum::String(_) => panic!("expected object checksum"),
         }
+    }
+
+    #[test]
+    fn interactive_table_materialization_roundtrip() {
+        let m: DbtMaterialization = "interactive_table".parse().unwrap();
+        assert_eq!(m, DbtMaterialization::InteractiveTable);
+        assert_eq!(m.to_string(), "interactive_table");
+        assert_eq!(RelationType::from(m), RelationType::InteractiveTable);
+        assert_eq!(
+            RelationType::InteractiveTable.to_string(),
+            "interactive_table"
+        );
+    }
+
+    #[test]
+    fn interactive_table_maps_to_dedicated_node_materialization() {
+        let node_materialization = NodeMaterialization::from(&DbtMaterialization::InteractiveTable);
+        assert_eq!(node_materialization, NodeMaterialization::InteractiveTable);
+        assert_ne!(node_materialization, NodeMaterialization::Custom);
     }
 
     #[test]

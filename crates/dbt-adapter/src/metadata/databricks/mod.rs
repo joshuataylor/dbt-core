@@ -701,6 +701,7 @@ impl DatabricksMetadataAdapter {
             | RelationType::External
             | RelationType::PointerTable
             | RelationType::DynamicTable
+            | RelationType::InteractiveTable
             | RelationType::MetricView
             | RelationType::Function
             | RelationType::Dictionary => {

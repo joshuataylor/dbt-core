@@ -373,6 +373,10 @@ impl DevCloneCandidate {
                 }
                 .to_string(),
             ),
+            // Live-verified against Snowflake (account ktb38830, 2026-09-01): `CREATE
+            // INTERACTIVE TABLE ... CLONE ...` is not valid DDL in any form (bare, CREATE OR
+            // REPLACE, cross-schema/database, AT/BEFORE time travel).
+            DbtMaterialization::InteractiveTable => None,
             _ => None,
         }
     }
@@ -676,6 +680,49 @@ mod tests {
         assert_eq!(
             candidate.pre_clone_policy(),
             Some(CloneIncrementalInDev::Always)
+        );
+    }
+
+    #[test]
+    fn clone_source_table_type_returns_none_for_interactive_table_because_snowflake_cannot_clone_it()
+     {
+        // See `clone_source_table_type`: Snowflake cannot clone an interactive table.
+        let mut local = make_model(
+            "dev",
+            "analytics_dev",
+            "orders",
+            DbtMaterialization::InteractiveTable,
+        );
+        let candidate = DevCloneCandidate::Model {
+            local: Arc::new(local.clone()),
+            deferred: Arc::new(make_model(
+                "prod",
+                "analytics",
+                "orders",
+                DbtMaterialization::InteractiveTable,
+            )),
+        };
+        assert_eq!(
+            candidate.clone_source_table_type(AdapterType::Snowflake),
+            None
+        );
+
+        local
+            .deprecated_config
+            .__warehouse_specific_config__
+            .transient = Some(true);
+        let candidate = DevCloneCandidate::Model {
+            local: Arc::new(local),
+            deferred: Arc::new(make_model(
+                "prod",
+                "analytics",
+                "orders",
+                DbtMaterialization::InteractiveTable,
+            )),
+        };
+        assert_eq!(
+            candidate.clone_source_table_type(AdapterType::Snowflake),
+            None
         );
     }
 

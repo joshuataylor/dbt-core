@@ -252,7 +252,7 @@ pub fn model_hook_style(
         (Bigquery | Snowflake | Spark | Databricks, View | Table | Incremental) => {
             NodeHookStyle::Plain
         }
-        (Snowflake, DynamicTable) => NodeHookStyle::Plain,
+        (Snowflake, DynamicTable | InteractiveTable) => NodeHookStyle::Plain,
         _ => NodeHookStyle::SplitTransaction,
     }
 }
@@ -444,6 +444,13 @@ mod tests {
         assert_eq!(
             model_hook_style(AdapterType::Redshift, &DbtMaterialization::Table),
             NodeHookStyle::SplitTransaction
+        );
+        assert_eq!(
+            model_hook_style(
+                AdapterType::Snowflake,
+                &DbtMaterialization::InteractiveTable
+            ),
+            NodeHookStyle::Plain
         );
         assert_eq!(
             model_hook_style(AdapterType::Bigquery, &DbtMaterialization::MaterializedView),

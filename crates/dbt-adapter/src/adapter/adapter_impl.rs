@@ -8,6 +8,7 @@ use crate::engine::{
 use crate::errors::{
     AdapterError, AdapterErrorKind, adbc_error_to_adapter_error, arrow_error_to_adapter_error,
 };
+use crate::formatter::SqlLiteralFormatter;
 use crate::formatter::format_sql_with_bindings;
 use crate::macro_exec::{
     convert_macro_result_to_record_batch, execute_macro, execute_macro_with_package,
@@ -37,6 +38,7 @@ use crate::relation::Relation;
 use crate::relation::RelationObject;
 use crate::relation::config_v2::{ComponentConfigLoader, RelationConfig};
 use crate::relation::databricks::config::DatabricksRelationMetadata;
+use crate::relation::snowflake::config::{INTERACTIVE_TABLE_COLUMNS, INTERACTIVE_TABLE_KEY};
 use crate::render_constraint::{render_column_constraint, warn_constraint_support};
 use crate::response::AdapterResponse;
 use crate::snapshots::SnapshotStrategy;
@@ -1425,9 +1427,10 @@ impl AdapterImpl {
                     relation.database_as_str()?
                 };
 
+                let lit_fmt = SqlLiteralFormatter::new(adapter_type);
                 let show_sql = format!(
-                    "show dynamic tables like '{}' in schema {database}.{schema}",
-                    relation.identifier_as_str()?
+                    "show dynamic tables like {} in schema {database}.{schema}",
+                    lit_fmt.format_str(&relation.identifier_as_str()?)
                 );
 
                 let (_, table) = self.query(&ctx, conn, &show_sql, None, token.clone())?;
@@ -1452,8 +1455,8 @@ impl AdapterImpl {
                 // TABLES if we need to check transient
                 let table = if include_transient {
                     let show_tables_sql = format!(
-                        "show tables like '{}' in schema {database}.{schema}",
-                        relation.identifier_as_str()?
+                        "show tables like {} in schema {database}.{schema}",
+                        lit_fmt.format_str(&relation.identifier_as_str()?)
                     );
                     let (_, tables) = self.query(&ctx, conn, &show_tables_sql, None, token)?;
                     let tables = tables.rename(Some(tables.column_names()), None, false, false)?;
@@ -1497,6 +1500,73 @@ impl AdapterImpl {
             | Datafusion | Dremio | Oracle => {
                 let err = format!(
                     "describe_dynamic_table is not supported by the {} adapter",
+                    adapter_type
+                );
+                Err(minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    err,
+                ))
+            }
+        }
+    }
+
+    /// `SHOW INTERACTIVE TABLES` has no transient status, so unlike `describe_dynamic_table`
+    /// this never runs a second `SHOW TABLES` to fold `transient` in.
+    ///
+    /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/2d27c26df1a4b71144cd4585cfdefac39cd311bc/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L739-L775
+    pub fn describe_interactive_table(
+        &self,
+        state: &State,
+        conn: &'_ mut dyn Connection,
+        relation: &Arc<dyn BaseRelation>,
+        token: CancellationToken,
+    ) -> Result<Value, minijinja::Error> {
+        let adapter_type = self.adapter_type();
+        match adapter_type {
+            Snowflake => {
+                let ctx = query_ctx_from_state(state)?.with_desc("describe_interactive_table");
+
+                let quoting = relation.quote_policy();
+
+                let schema = if quoting.schema {
+                    relation.schema_as_quoted_str()?
+                } else {
+                    relation.schema_as_str()?
+                };
+
+                let database = if quoting.database {
+                    relation.database_as_quoted_str()?
+                } else {
+                    relation.database_as_str()?
+                };
+
+                let lit_fmt = SqlLiteralFormatter::new(adapter_type);
+                let show_sql = format!(
+                    "show interactive tables like {} in schema {database}.{schema}",
+                    lit_fmt.format_str(&relation.identifier_as_str()?)
+                );
+
+                let (_, table) = self.query(&ctx, conn, &show_sql, None, token)?;
+
+                let table = table
+                    .rename(Some(table.column_names()), None, false, false)?
+                    .select(
+                        &INTERACTIVE_TABLE_COLUMNS
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>(),
+                    );
+
+                Ok(Value::from(ValueMap::from([(
+                    Value::from(INTERACTIVE_TABLE_KEY),
+                    Value::from_object(table),
+                )])))
+            }
+            Postgres | Bigquery | Databricks | Redshift | Salesforce | Spark | DuckDB
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle => {
+                let err = format!(
+                    "describe_interactive_table is not supported by the {} adapter",
                     adapter_type
                 );
                 Err(minijinja::Error::new(
@@ -4778,8 +4848,41 @@ impl AdapterImpl {
         }
     }
 
-    /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L818
+    /// Return shapes deliberately differ: BigQuery returns a typed `RelationConfig`, Snowflake
+    /// returns a raw `SHOW`-query readback.
     pub fn describe_relation(
+        &self,
+        state: &State,
+        conn: &'_ mut dyn Connection,
+        relation: &Arc<dyn BaseRelation>,
+        include_transient: bool,
+        token: CancellationToken,
+    ) -> Result<Value, minijinja::Error> {
+        if self.adapter_type() == Snowflake {
+            match relation.relation_type() {
+                Some(RelationType::DynamicTable) => {
+                    self.describe_dynamic_table(state, conn, relation, include_transient, token)
+                }
+                Some(RelationType::InteractiveTable) => {
+                    self.describe_interactive_table(state, conn, relation, token)
+                }
+                other => Err(minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    format!(
+                        "describe_relation is not supported for relation type {other:?} on Snowflake"
+                    ),
+                )),
+            }
+        } else {
+            Ok(self
+                .describe_relation_bigquery(conn, relation, Some(state))?
+                .map(Value::from_object)
+                .unwrap_or_else(none_value))
+        }
+    }
+
+    /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/4a00354a497214d9043bf4122810fe2d04de17bb/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L818
+    fn describe_relation_bigquery(
         &self,
         conn: &'_ mut dyn Connection,
         relation: &Arc<dyn BaseRelation>,

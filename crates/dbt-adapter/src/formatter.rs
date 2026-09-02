@@ -275,6 +275,7 @@ mod tests {
         assert_eq!(f.format_str(""), "''");
         assert_eq!(f.format_str("hello"), "'hello'");
         assert_eq!(f.format_str("Mom\\Baby"), "'Mom\\\\Baby'");
+        assert_eq!(f.format_str("it's"), "'it''s'");
     }
 
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime};

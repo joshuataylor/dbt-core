@@ -1155,11 +1155,14 @@ fn render_unit_test(
             }
             // dict: inline YAML rows only
             schemas::common::Formats::Dict => {
-                let given_schema = get_schema_for_unit_test_relation(
-                    ctx,
-                    Arc::clone(relation),
-                    UnitTestSchemaTarget::GivenUpstream,
-                )?;
+                let given_schema = strip_pseudocolumns(
+                    &get_schema_for_unit_test_relation(
+                        ctx,
+                        Arc::clone(relation),
+                        UnitTestSchemaTarget::GivenUpstream,
+                    )?,
+                    node.node_adapter(),
+                );
                 if let Some(Rows::List(rows)) = &given.rows {
                     create_values(
                         &given_schema,
@@ -1180,11 +1183,14 @@ fn render_unit_test(
             }
             // csv: inline string or fixture file
             schemas::common::Formats::Csv => {
-                let given_schema = get_schema_for_unit_test_relation(
-                    ctx,
-                    Arc::clone(relation),
-                    UnitTestSchemaTarget::GivenUpstream,
-                )?;
+                let given_schema = strip_pseudocolumns(
+                    &get_schema_for_unit_test_relation(
+                        ctx,
+                        Arc::clone(relation),
+                        UnitTestSchemaTarget::GivenUpstream,
+                    )?,
+                    node.node_adapter(),
+                );
 
                 if let Some(Rows::String(csv_str)) = &given.rows {
                     let rows = parse_csv_rows(csv_str.as_bytes()).map_err(|e| {
@@ -1814,6 +1820,26 @@ fn known_pseudocolumns(adapter_type: AdapterType) -> &'static [&'static str] {
         AdapterType::Bigquery => &BIGQUERY_PSEUDOCOLUMNS,
         _ => &[],
     }
+}
+
+fn strip_pseudocolumns(ref_schema: &SchemaRef, adapter_type: AdapterType) -> SchemaRef {
+    let pseudocolumns = known_pseudocolumns(adapter_type);
+    if pseudocolumns.is_empty() {
+        return ref_schema.clone();
+    }
+
+    let fields: Vec<Field> = ref_schema
+        .fields()
+        .iter()
+        .filter(|f| !pseudocolumns.contains(&f.name().as_str()))
+        .map(|f| f.as_ref().clone())
+        .collect();
+
+    if fields.len() == ref_schema.fields().len() {
+        return ref_schema.clone();
+    }
+
+    Arc::new(Schema::new(fields))
 }
 
 /// Return `ref_schema` extended with any recognized pseudocolumns (see

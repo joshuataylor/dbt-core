@@ -339,6 +339,9 @@ pub struct IoArgs {
     // Flag for deps to use Fusion-compatible downloads from Package Hub
     pub use_v2_compatible_package_downloads: bool,
 
+    // Flag for deps to require a sha1-verified download from Package Hub
+    pub require_hub_verified_downloads: bool,
+
     /// Optional status reporter for reporting status messages during execution
     pub status_reporter: Option<Arc<dyn StatusReporter>>,
     pub send_anonymous_usage_stats: bool,

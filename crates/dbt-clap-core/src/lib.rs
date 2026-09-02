@@ -2430,6 +2430,10 @@ pub struct CommonArgs {
     #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, env = "DBT_USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]
     pub use_v2_compatible_package_downloads: bool,
 
+    /// When installing packages from Package Hub, require a Hub-provided sha1 checksum and verify it, failing the install if Hub offers neither
+    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, env = "DBT_REQUIRE_HUB_VERIFIED_DOWNLOADS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]
+    pub require_hub_verified_downloads: bool,
+
     /// If set, the maximum number of bytes that the ANTLR parser is allowed to
     /// allocate in its (per-dialect) global cache before it aborts with an
     /// error. USE WITH CAUTION: as setting this too low may cause parsing to
@@ -2739,6 +2743,7 @@ impl CommonArgs {
                 host: self.host.clone(),
                 port: self.port,
                 use_v2_compatible_package_downloads: self.use_v2_compatible_package_downloads,
+                require_hub_verified_downloads: self.require_hub_verified_downloads,
             },
             profiles_dir: self.profiles_dir.clone(),
             packages_install_path: self.packages_install_path.clone(),
@@ -3021,6 +3026,7 @@ impl InitArgs {
                 use_v2_compatible_package_downloads: self
                     .common_args
                     .use_v2_compatible_package_downloads,
+                require_hub_verified_downloads: self.common_args.require_hub_verified_downloads,
             },
             task_cache_url: "noop".to_string(),
             favor_state: self.common_args.favor_state,
@@ -3076,6 +3082,7 @@ pub fn from_main(cli: &Cli) -> SystemArgs {
             host: common_args.host,
             port: common_args.port,
             use_v2_compatible_package_downloads: common_args.use_v2_compatible_package_downloads,
+            require_hub_verified_downloads: common_args.require_hub_verified_downloads,
         },
         from_main: true,
         exit_process_on_panic: true,
@@ -3118,6 +3125,7 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
             host: common_args.host,
             port: common_args.port,
             use_v2_compatible_package_downloads: common_args.use_v2_compatible_package_downloads,
+            require_hub_verified_downloads: common_args.require_hub_verified_downloads,
         },
         from_main: false,
         exit_process_on_panic: true,

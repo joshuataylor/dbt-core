@@ -5241,8 +5241,7 @@ impl AdapterImpl {
         stmt_splitter: Arc<dyn StmtSplitter>,
     ) -> Self {
         let backend = crate::adapter::adapter_factory::backend_of(adapter_type);
-        let auth: Arc<dyn dbt_auth::Auth> =
-            dbt_auth::auth_for_backend(Box::new(dbt_auth::NoopAuthWarningPrinter), backend).into();
+        let auth: Arc<dyn dbt_auth::Auth> = dbt_auth::auth_for_backend(backend).into();
         let engine: Arc<dyn AdapterEngine> = Arc::new(AdbcEngine::new_mock(
             adapter_type,
             auth,
@@ -5852,7 +5851,7 @@ mod tests {
     use crate::stmt_splitter::DefaultStmtSplitter;
 
     use dbt_adapter_core::AdapterType;
-    use dbt_auth::{NoopAuthWarningPrinter, auth_for_backend};
+    use dbt_auth::auth_for_backend;
     use dbt_common::AdapterResult;
     use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
     use dbt_schemas::schemas::relations::base::ComponentName;
@@ -5920,7 +5919,7 @@ mod tests {
         config: Mapping,
         behavior_flag_overrides: BTreeMap<String, bool>,
     ) -> Arc<dyn AdapterEngine> {
-        let auth = auth_for_backend(Box::new(NoopAuthWarningPrinter), backend_of(adapter_type));
+        let auth = auth_for_backend(backend_of(adapter_type));
         let resolved_quoting = match adapter_type {
             Snowflake => SNOWFLAKE_RESOLVED_QUOTING,
             _ => DEFAULT_RESOLVED_QUOTING,

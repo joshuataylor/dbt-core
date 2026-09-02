@@ -18,12 +18,11 @@ use crate::time_machine::TimeMachine;
 use crate::value::*;
 use crate::{AdapterResponse, AdapterResult};
 
-use crate::auth::DefaultAuthWarningPrinter;
 use adbc_core::options::OptionValue;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
-use dbt_auth::{AdapterConfig, Auth, AuthWarningPrinter, auth_for_backend};
+use dbt_auth::{AdapterConfig, Auth, auth_for_backend};
 use dbt_common::behavior_flags::Behavior;
 use dbt_common::cancellation::{CancellationToken, never_cancels};
 use dbt_common::{AdapterError, AdapterErrorKind, FsResult};
@@ -183,9 +182,7 @@ impl Adapter {
     ) -> Box<ParseAdapterState> {
         let backend = backend_of(adapter_type);
 
-        let warning_printer =
-            Box::new(DefaultAuthWarningPrinter::new()) as Box<dyn AuthWarningPrinter>;
-        let auth: Arc<dyn Auth> = auth_for_backend(warning_printer, backend).into();
+        let auth: Arc<dyn Auth> = auth_for_backend(backend).into();
         let adapter_config = AdapterConfig::new(config);
         let quoting = package_quoting
             .try_into()

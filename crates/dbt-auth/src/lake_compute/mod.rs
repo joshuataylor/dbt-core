@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 
 use dbt_adbc::{Backend, database, lake_compute};
@@ -20,7 +20,11 @@ enum LakeComputeAuthIR<'a> {
 }
 
 impl<'a> LakeComputeAuthIR<'a> {
-    fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::ApiKey { api_key } => {
                 builder
@@ -56,7 +60,10 @@ impl<'a> LakeComputeAuthIR<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<LakeComputeAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<LakeComputeAuthIR<'a>, AuthError> {
     let method = config.require_str("method")?;
     match method {
         lake_compute::auth_type::API_KEY => Ok(LakeComputeAuthIR::ApiKey {
@@ -82,6 +89,7 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<LakeComputeAuthIR<'a>, Au
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     builder.with_named_option(lake_compute::BASE_URL, config.require_str("base_url")?)?;
 
@@ -92,15 +100,23 @@ fn apply_connection_args(
     Ok(builder)
 }
 
-pub struct LakeComputeAuth;
+pub struct LakeComputeAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl LakeComputeAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for LakeComputeAuth {
     fn backend(&self) -> Backend {
         Backend::LakeCompute
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -111,10 +127,9 @@ mod tests {
     use dbt_yaml::Mapping;
 
     fn configure(config: Mapping) -> DatabaseBuilder {
-        LakeComputeAuth {}
+        LakeComputeAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect("configure")
-            .builder
     }
 
     #[test]
@@ -157,7 +172,7 @@ mod tests {
 
     #[test]
     fn missing_base_url_errors() {
-        let err = LakeComputeAuth {}
+        let err = LakeComputeAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(Mapping::new()))
             .expect_err("expected missing base_url error");
         assert!(matches!(err, AuthError::YAML(_)), "got {err:?}");

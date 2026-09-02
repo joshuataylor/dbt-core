@@ -212,17 +212,11 @@ impl AdbcEngine {
         let use_cloud_credentials = config.use_dbt_cloud_credentials();
         let backend = self.auth.backend();
 
-        let (database_builder, warnings) = config
+        let database_builder = config
             .build_connection_builder(self.auth.as_ref(), |backend| {
                 self.configure_cloud_database(backend)
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
-        for warning in &warnings {
-            dbt_common::tracing::dbt_emit::emit_warn_log_message(
-                dbt_common::ErrorCode::InvalidConfig,
-                warning,
-            );
-        }
         let load_strategy = match (use_cloud_credentials, self.adapter_type) {
             (true, _) => LoadStrategy::Remote,
             (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
@@ -494,7 +488,7 @@ impl AdapterEngine for AdbcEngine {
             // Mock mode never connects, so mock configs don't need real auth data.
             EngineMode::Mock => Ok(self.fingerprint()),
             EngineMode::Live => {
-                let (builder, _warnings) = config
+                let builder = config
                     .build_connection_builder(self.auth.as_ref(), |backend| {
                         self.configure_cloud_database(backend)
                     })

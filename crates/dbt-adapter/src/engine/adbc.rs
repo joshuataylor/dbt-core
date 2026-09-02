@@ -245,11 +245,11 @@ impl AdbcEngine {
                 let database: Box<dyn Database> = database.clone();
                 Ok((database, fingerprint))
             } else {
-                let mut database = driver
+                let database = driver
                     .new_database_with_opts(opts)
                     .map_err(adbc_error_to_adapter_error)?;
                 if self.adapter_type == AdapterType::DuckDB {
-                    self.apply_duckdb_init_sql(&mut database, config)?;
+                    self.apply_duckdb_init_sql(database.as_ref(), config)?;
                 }
                 write_guard.inner.insert(fingerprint, database.clone());
                 Ok((database, fingerprint))
@@ -323,7 +323,7 @@ impl AdbcEngine {
     /// to a newly created database instance. Uses a temporary connection.
     fn apply_duckdb_init_sql(
         &self,
-        database: &mut Box<dyn Database>,
+        database: &dyn Database,
         config: &AdapterConfig,
     ) -> AdapterResult<()> {
         let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)

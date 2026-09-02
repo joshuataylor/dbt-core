@@ -909,12 +909,15 @@ impl CatalogRelation {
                 // dbt-labs/dbt-core#15427 and
                 // https://docs.snowflake.com/en/user-guide/tables-iceberg-internal-storage
 
+                // Leave `external_volume` unset (rather than defaulting it to the literal
+                // string "SNOWFLAKE_MANAGED") when the model doesn't configure one: per the
+                // docs linked above, Snowflake-managed internal storage means OMITTING
+                // `EXTERNAL_VOLUME` from the DDL entirely, not setting it to that string --
+                // `SNOWFLAKE_MANAGED` is only meaningful here as a sentinel a user might
+                // explicitly write to request internal storage, still recognized by the
+                // `base_location` check below.
                 let external_volume =
                     Self::get_model_config_value(model, "external_volume", AdapterType::Snowflake);
-                let external_volume = Some(
-                    external_volume
-                        .unwrap_or_else(|| SNOWFLAKE_MANAGED_EXTERNAL_VOLUME.to_string()),
-                );
                 let base_location_root = Self::get_model_config_value(
                     model,
                     "base_location_root",
@@ -1962,7 +1965,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_iceberg_managed_storage_templates_snowflake_managed_omits_base_location() {
+    fn legacy_iceberg_unconfigured_external_volume_omits_both_clauses() {
         let conf = json!({
             "table_format": "ICEBERG",
             "schema": "SCH",
@@ -1976,10 +1979,11 @@ mod tests {
             let r = CatalogRelation::build_without_catalogs_yml(&m).unwrap();
             assert_eq!(r.catalog_type, CatalogType::SnowflakeBuiltIn);
             assert_eq!(r.table_format, TableFormat::Iceberg);
-            assert_eq!(
-                r.external_volume.as_deref(),
-                Some(SNOWFLAKE_MANAGED_EXTERNAL_VOLUME)
-            );
+            // No `external_volume` configured -- leave it unset so the macro omits
+            // the clause entirely, rather than emitting the literal (bogus)
+            // `external_volume = 'SNOWFLAKE_MANAGED'`, which Snowflake rejects as a
+            // nonexistent/unauthorized volume.
+            assert!(r.external_volume.is_none());
             assert!(r.base_location.is_none());
         }
     }

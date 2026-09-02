@@ -629,6 +629,10 @@ impl CatalogRelation {
         let external_volume =
             Self::get_model_config_value(model, FIELD_EXTERNAL_VOLUME, AdapterType::Snowflake)
                 .or_else(|| get_yaml_str(snowflake, FIELD_EXTERNAL_VOLUME).map(|s| s.to_string()));
+        // catalogs.yml schema validation requires `external_volume` on every
+        // Horizon+Snowflake platform block, so this default never actually
+        // triggers for a valid config -- kept only so `external_volume` stays
+        // `Option<String>` consistently with the legacy (no catalogs.yml) path.
         let external_volume =
             Some(external_volume.unwrap_or_else(|| SNOWFLAKE_MANAGED_EXTERNAL_VOLUME.to_string()));
 
@@ -1492,8 +1496,7 @@ catalogs:
     }
 
     #[test]
-    fn snowflake_v2_horizon_iceberg_without_catalog_templates_snowflake_managed_and_omits_base_location()
-     {
+    fn snowflake_v2_horizon_iceberg_without_catalog_omits_external_volume_and_base_location() {
         let catalogs = load_catalogs_yaml(
             r#"
 catalogs:
@@ -1522,10 +1525,11 @@ catalogs:
             assert!(r.catalog_name.is_none());
             assert_eq!(r.table_format, TableFormat::Iceberg);
             assert_eq!(r.catalog_type, CatalogType::SnowflakeBuiltIn);
-            assert_eq!(
-                r.external_volume.as_deref(),
-                Some(SNOWFLAKE_MANAGED_EXTERNAL_VOLUME)
-            );
+            // No `+catalog_name`, so this dispatches to `build_without_catalogs_yml`
+            // (the legacy path) -- no `external_volume` configured there either,
+            // so it stays unset rather than templating the literal (bogus)
+            // `SNOWFLAKE_MANAGED` string into the DDL.
+            assert!(r.external_volume.is_none());
             assert!(r.base_location.is_none());
         }
     }

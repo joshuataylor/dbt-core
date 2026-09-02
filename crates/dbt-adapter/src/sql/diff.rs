@@ -2042,9 +2042,12 @@ fn canonicalize_query_tag(sql: &str) -> String {
 /// A lot of these are from {{ invocation_id }}. The value of the original invocation_id
 /// is available in manifest.json. We should consider using it in replay. TODO: Do this!
 fn canonicalize_uuid_literals(sql: &str) -> String {
-    // Case-insensitive UUID regex inside single quotes
+    // Case-insensitive UUID regex inside single quotes. Tolerates whitespace between the quote
+    // and the UUID (e.g. `' <uuid> '`), which some customer macros add around an
+    // `invocation_id`-derived audit-column literal. Regression: fs#14150.
     static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'").unwrap()
+        Regex::new(r"(?i)'\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*'")
+            .unwrap()
     });
     UUID_RE.replace_all(sql, "'UUID'").to_string()
 }
@@ -4588,6 +4591,26 @@ WHERE
 
         let result = compare_sql(actual, expected, AdapterType::Snowflake);
         assert!(result.is_ok(), "UUID literal differences should be ignored");
+    }
+
+    #[test]
+    fn test_compare_sql_whitespace_padded_uuid_literals_ignored() {
+        // Regression for fs#14150: some customer macros pad the UUID literal with spaces
+        // inside the quotes (e.g. an `invocation_id`-derived audit column), which the UUID
+        // regex previously required to hug the quotes with no interior whitespace.
+        let actual = r#"select * from (
+    select ' 01a050c0-a25d-75d1-bc8d-e46fde65bb69 '::varchar as idp_dbt_id
+) as __dbt_sbq where false limit 0"#;
+
+        let expected = r#"select * from (
+    select ' 66f899d8-7787-4998-8e66-ac219ca47493 '::varchar as idp_dbt_id
+) as __dbt_sbq where false limit 0"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Whitespace-padded UUID literal differences should be ignored: {result:?}"
+        );
     }
 
     #[test]

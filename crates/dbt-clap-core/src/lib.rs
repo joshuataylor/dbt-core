@@ -872,12 +872,26 @@ pub struct SourceFreshnessArgs {
 pub struct FreshnessArgs {
     #[clap(flatten)]
     pub common_args: CommonArgs,
+
+    /// Select nodes of a specific type;
+    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["resource-types"], env = "DBT_RESOURCE_TYPES")]
+    pub resource_type: Option<Vec<ClapResourceType>>,
+
+    /// Exclude nodes of a specific type;
+    #[arg(long, num_args(1..), value_delimiter = ' ', aliases = ["exclude-resource-types"], env = "DBT_EXCLUDE_RESOURCE_TYPES")]
+    pub exclude_resource_type: Option<Vec<ClapResourceType>>,
 }
 
 impl FreshnessArgs {
     pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
         let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
         eval_args.phase = Phases::Freshness;
+        if let Some(resource_type) = &self.resource_type {
+            eval_args.resource_types = resource_type.clone();
+        }
+        if let Some(exclude_resource_type) = &self.exclude_resource_type {
+            eval_args.exclude_resource_types = exclude_resource_type.clone();
+        }
         eval_args
     }
 }
@@ -3697,6 +3711,37 @@ mod tests {
         );
         assert!(!cmd.as_command().is_sources_only_freshness());
         assert_eq!(cmd.as_command(), FsCommand::Freshness);
+    }
+
+    #[test]
+    fn top_level_freshness_command_supports_resource_type_filters() {
+        let cmd = parse_core_command(&[
+            "freshness",
+            "--resource-type",
+            "source",
+            "--exclude-resource-type",
+            "model",
+        ]);
+
+        let CoreCommand::Freshness(args) = &cmd else {
+            panic!("expected CoreCommand::Freshness, got {cmd:?}");
+        };
+        assert_eq!(args.resource_type, Some(vec![ClapResourceType::Source]));
+        assert_eq!(
+            args.exclude_resource_type,
+            Some(vec![ClapResourceType::Model])
+        );
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Freshness),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(eval_args.resource_types, vec![ClapResourceType::Source]);
+        assert_eq!(
+            eval_args.exclude_resource_types,
+            vec![ClapResourceType::Model]
+        );
     }
 
     #[test]

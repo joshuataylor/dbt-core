@@ -59,7 +59,7 @@ createRoot(root).render(
         keeps `document.baseURI` stable for resolving `data/` URLs.
       */}
       <HashRouter>
-        <LinkPrefixProvider prefix="#/">
+        <LinkPrefixProvider prefix="/">
           <ReactFlowProvider>
             <BootstrapProvider value={bootstrapData}>
               <MetadataDataProvider source={wrapDataSource(dataSource, queryClient)}>

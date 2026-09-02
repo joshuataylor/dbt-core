@@ -25,8 +25,11 @@
 //! data at parse is not published at all, since an empty table is indistinguishable from
 //! a passing check. [`VIEWS`] lists what is left out and why.
 //!
-//! Two views have no information-schema counterpart at all ([`graph_nodes`](VIEWS) and
-//! `checks`); they borrow the vocabulary of `models`.
+//! Every view name is a table name in the information schema, with no exceptions. A view
+//! with no counterpart would mean a check author learning a vocabulary that the published
+//! artifact does not use, which is the whole thing this file exists to prevent — so the
+//! answer to "checks need a view for X" is to publish X in
+//! [`INFO_SCHEMA`](super::schema::INFO_SCHEMA) first, then mirror it here.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -34,7 +37,7 @@ use std::fmt::Write;
 use crate::IndexError;
 use crate::parquet::schema_for;
 
-use super::schema::spec_for;
+use super::schema::{DAG_RESOURCE_TYPES, spec_for};
 use super::spec::{Filter, Ns, Src};
 
 /// Schema the views are created in — the one the information schema publishes under, so
@@ -50,6 +53,18 @@ pub const VIEW_SCHEMA: &str = "dbt";
 /// since check SQL is free to name any relation it likes.
 pub const BASE_SCHEMA: &str = "dbt_internal";
 
+/// The node set, which most views project.
+const NODES: &str = "nodes";
+
+/// The tables holding DAG-participating resource types that are not in the node set,
+/// with the `resource_type` each one stands for. `write_to_nodes` does not admit them,
+/// so `dbt.dag_nodes` unions them in.
+const DAG_SIDE_TABLES: &[(&str, &str)] = &[
+    ("exposures", "exposure"),
+    ("metrics", "metric"),
+    ("unit_tests", "unit_test"),
+];
+
 /// Alias for the single source table of a projected view.
 const T: &str = "t";
 /// Aliases for the two sides of a joined view.
@@ -60,16 +75,16 @@ const R: &str = "r";
 pub struct ParseSafeView {
     /// View name: `dbt.<name>`, and the argument `info_schema('<name>')` takes.
     pub name: &'static str,
-    /// Information-schema table this view borrows its column names from. Equal to
-    /// [`name`](Self::name) except for the views the information schema has no
-    /// counterpart for.
+    /// Information-schema table this view mirrors, and where its column names come from.
+    /// Always equal to [`name`](Self::name) — the field stays because the lookup reads
+    /// better named, and because a mismatch is a test failure rather than a silent
+    /// divergence.
     pub vocabulary: &'static str,
     /// Index table(s) the view reads. Restated rather than taken from the
     /// information-schema table because the two can differ: the information schema
     /// assembles some tables in code ([`Src::Own`]) where a view has to project one.
     pub src: Src,
-    /// Rows to keep. Also restated: `graph_nodes` and `checks` filter differently from
-    /// the table whose vocabulary they borrow.
+    /// Rows to keep. Restated for the same reason as [`src`](Self::src).
     pub filter: Filter,
     /// Output columns, named as the information schema names them.
     pub cols: &'static [&'static str],
@@ -126,7 +141,7 @@ macro_rules! node_cols {
 }
 
 /// Every view a parse-time check may read: one per information-schema table in the `dbt`
-/// namespace that holds data at parse, plus the two checks-only views.
+/// namespace that holds data at parse.
 ///
 /// The information-schema tables deliberately absent, and why:
 ///
@@ -134,12 +149,6 @@ macro_rules! node_cols {
 /// - `classifiers` — the information schema publishes the shape, but nothing writes the
 ///   taxonomy yet.
 /// - `semantic_relationships` — same: a table in the schema with no writer behind it.
-/// - `dag_nodes` — the only omission that is not about missing data. It is a union of the
-///   node set with `exposures`, `metrics` and `unit_tests`, keeping only enabled DAG
-///   participants, and `enabled` is a column the information schema does not publish on
-///   those three. Reproducing it faithfully means reading columns from under the views
-///   rather than projecting one table, which nothing else here needs. Its rows are
-///   reachable through `graph_nodes` and those three views in the meantime.
 ///
 /// Absent for reasons unrelated to the information schema:
 ///
@@ -321,22 +330,11 @@ pub const VIEWS: &[ParseSafeView] = &[
             "ingested_at",
         ],
     },
-    // ── views with no information-schema counterpart ────────────────────
-    // Every node, whatever its type. `dag_nodes` is a different thing (three columns,
-    // enabled DAG participants only, unioned across four tables), so reusing that name
-    // for this would be exactly the drift the rest of this file exists to prevent.
-    ParseSafeView {
-        name: "graph_nodes",
-        vocabulary: "models",
-        src: Src::Table("nodes"),
-        filter: Filter::All,
-        cols: node_cols![],
-    },
-    // Checks are node rows like any other, so a check about checks is possible. The
-    // information schema does not publish them yet; when it does, this borrows its name.
+    // Checks are node rows like any other, so a check can assert something about the
+    // checks themselves.
     ParseSafeView {
         name: "checks",
-        vocabulary: "models",
+        vocabulary: "checks",
         src: Src::Table("nodes"),
         filter: Filter::ResourceTypeIn(&["check"]),
         cols: node_cols![],
@@ -562,6 +560,17 @@ pub const VIEWS: &[ParseSafeView] = &[
         ],
     },
     // ── graph ───────────────────────────────────────────────────────────
+    // Every enabled resource that participates in the DAG. Assembled rather than
+    // projected: the node set holds only the types `write_to_nodes` admits, so
+    // exposures, metrics and unit tests come from their own tables. Three columns — a
+    // membership list, not a cross-type node surface. See [`Self::dag_nodes_sql`].
+    ParseSafeView {
+        name: "dag_nodes",
+        vocabulary: "dag_nodes",
+        src: Src::Own,
+        filter: Filter::All,
+        cols: &["unique_id", "resource_type", "ingested_at"],
+    },
     ParseSafeView {
         name: "edges",
         vocabulary: "edges",
@@ -599,7 +608,13 @@ impl ParseSafeView {
         match self.src {
             Src::Table(table) => vec![table],
             Src::Join { left, right, .. } => vec![left, right],
-            Src::Own => Vec::new(),
+            // The one assembled view. Returning its tables rather than nothing is what
+            // keeps the caller's "create it only if every table registered" check honest.
+            Src::Own => {
+                let mut tables = vec![NODES];
+                tables.extend(DAG_SIDE_TABLES.iter().map(|(table, _)| *table));
+                tables
+            }
         }
     }
 
@@ -609,6 +624,13 @@ impl ParseSafeView {
     /// the tests in this module are what should catch them; they are returned rather than
     /// panicked so a bad entry takes down one check, not the process.
     pub fn create_view_sql(&self) -> Result<String, IndexError> {
+        // Assembled rather than projected. `info_schema::build_own` and
+        // `epoch_views::own_sql` special-case the same table by name; this is the third
+        // place that has to, for the same reason.
+        if matches!(self.src, Src::Own) {
+            return self.dag_nodes_sql();
+        }
+
         let spec = spec_for(Ns::Dbt, self.vocabulary).ok_or_else(|| {
             self.err(format!(
                 "no information-schema table named '{}'",
@@ -660,6 +682,59 @@ impl ParseSafeView {
                 .expect("writing to a String cannot fail");
         }
         Ok(sql)
+    }
+
+    /// `dbt.dag_nodes`: the node set unioned with the tables holding the DAG-participating
+    /// resource types that are not in it.
+    ///
+    /// Mirrors `info_schema::build_dag_nodes` rather than inventing a rule: keep the node
+    /// rows whose `resource_type` is a DAG type, keep every row of the side tables (their
+    /// type is one by definition), and treat a missing `enabled` as enabled, matching the
+    /// config default. The side tables' `enabled` is in the index even though the
+    /// information schema does not publish it — a view reads the table, not the artifact.
+    fn dag_nodes_sql(&self) -> Result<String, IndexError> {
+        // Written per output column so a column added to the information schema's
+        // `dag_nodes` fails here instead of silently not appearing.
+        let expr = |col: &str, resource_type: Option<&str>| -> Result<String, IndexError> {
+            Ok(match (col, resource_type) {
+                ("resource_type", Some(literal)) => format!("'{literal}'"),
+                ("unique_id" | "resource_type" | "ingested_at", _) => {
+                    format!("{T}.{}", quote(col))
+                }
+                _ => return Err(self.err(format!("no expression for '{col}'"))),
+            })
+        };
+        let select = |table: &str, resource_type: Option<&str>| -> Result<String, IndexError> {
+            let cols = self
+                .cols
+                .iter()
+                .map(|col| Ok(format!("{} AS {}", expr(col, resource_type)?, quote(col))))
+                .collect::<Result<Vec<_>, IndexError>>()?
+                .join(", ");
+            Ok(format!(
+                "SELECT {cols} FROM {BASE_SCHEMA}.{} AS {T} WHERE COALESCE({T}.\"enabled\", TRUE)",
+                quote(table),
+            ))
+        };
+
+        let types = DAG_RESOURCE_TYPES
+            .iter()
+            .map(|t| format!("'{t}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut arms = vec![format!(
+            "{} AND {T}.\"resource_type\" IN ({types})",
+            select(NODES, None)?
+        )];
+        for (table, resource_type) in DAG_SIDE_TABLES {
+            arms.push(select(table, Some(resource_type))?);
+        }
+
+        Ok(format!(
+            "CREATE OR REPLACE VIEW {VIEW_SCHEMA}.{} AS {}",
+            quote(self.name),
+            arms.join(" UNION ALL "),
+        ))
     }
 
     /// Qualify a source column with the alias of the table it comes from. For a join the

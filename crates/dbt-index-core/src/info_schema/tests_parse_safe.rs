@@ -277,32 +277,58 @@ fn views_read_only_the_base_schema() {
     }
 }
 
-/// Views the information schema has no table for are the exception, so they should stay
-/// countable: two, both borrowing `models`' vocabulary because they are node rows too.
+/// The invariant the whole surface rests on: a check author and someone querying
+/// `target/info_schema/` use one vocabulary. Every view name is a table in the
+/// information schema — no checks-only views, no exceptions. A view for something the
+/// information schema does not publish has to be published there first.
 #[test]
-fn only_the_checks_only_views_have_no_counterpart() {
-    let unmatched: Vec<_> = VIEWS
-        .iter()
-        .filter(|v| v.name != v.vocabulary)
-        .map(|v| v.name)
-        .collect();
-    assert_eq!(unmatched, vec!["graph_nodes", "checks"]);
-    for name in unmatched {
+fn every_view_mirrors_an_information_schema_table() {
+    for view in VIEWS {
+        assert_eq!(
+            view.name, view.vocabulary,
+            "{} borrows another table's columns; give it its own",
+            view.name,
+        );
         assert!(
-            spec_for(Ns::Dbt, name).is_none(),
-            "the information schema now publishes '{name}'; point the view at it",
+            spec_for(Ns::Dbt, view.name).is_some(),
+            "the information schema has no '{}' table",
+            view.name,
         );
     }
 }
 
-/// Nothing in the table is assembled in code: a view has to be projectable from the index.
+/// `dag_nodes` is the one view assembled rather than projected, and the two name-keyed
+/// places that know it (`create_view_sql`, `base_tables`) are only correct while that
+/// holds. A second assembled view would silently get `dag_nodes`' SQL.
 #[test]
-fn no_view_is_assembled() {
-    for view in VIEWS {
-        assert!(
-            !matches!(view.src, Src::Own),
-            "{}: a view must project an index table",
-            view.name,
-        );
+fn dag_nodes_is_the_only_assembled_view() {
+    let assembled: Vec<_> = VIEWS
+        .iter()
+        .filter(|v| matches!(v.src, Src::Own))
+        .map(|v| v.name)
+        .collect();
+    assert_eq!(assembled, vec!["dag_nodes"]);
+}
+
+/// The union, pinned: node rows filtered to DAG types, then one arm per side table with
+/// its resource type as a literal. `enabled` is read from each table, with NULL meaning
+/// enabled — the config default, and what `info_schema::build_dag_nodes` does.
+#[test]
+fn assembled_view_sql() {
+    let dag = VIEWS.iter().find(|v| v.name == "dag_nodes").unwrap();
+    let sql = dag.create_view_sql().unwrap();
+    for expected in [
+        r#"CREATE OR REPLACE VIEW dbt."dag_nodes" AS"#,
+        r#"FROM dbt_internal."nodes" AS t WHERE COALESCE(t."enabled", TRUE) AND t."resource_type" IN ("#,
+        r#"UNION ALL SELECT t."unique_id" AS "unique_id", 'exposure' AS "resource_type""#,
+        r#"FROM dbt_internal."exposures" AS t WHERE COALESCE(t."enabled", TRUE)"#,
+        r#"'metric' AS "resource_type""#,
+        r#"'unit_test' AS "resource_type""#,
+    ] {
+        assert!(sql.contains(expected), "missing {expected}\nin: {sql}");
+    }
+    // Every DAG resource type reaches the filter, or rows go missing silently.
+    for ty in super::schema::DAG_RESOURCE_TYPES {
+        assert!(sql.contains(&format!("'{ty}'")), "{ty} not in: {sql}");
     }
 }

@@ -17,9 +17,9 @@ use minijinja::Value;
 /// a check filtering on one quietly reports nothing rather than failing. Such columns are left
 /// out rather than nulled, so naming one is a DuckDB binder error.
 ///
-/// `dbt.nodes` and `dbt.node_columns` — the index tables these views are projected from — are
-/// deliberately absent. `dbt.graph_nodes` and `dbt.node_columns` are their parse-safe
-/// projections; the tables themselves are registered under `dbt_internal`, out of reach.
+/// Every name here is a table in the information schema: one vocabulary, whether a query is
+/// run by a check or against `target/info_schema/`. `dbt.nodes` is deliberately absent — the
+/// index's own tables are registered under `dbt_internal`, out of reach of a check.
 ///
 /// Defined once, in `dbt_index_core::info_schema::parse_safe::VIEWS`, and registered from
 /// there by the check adapter — this list only has to name them, not redefine their columns.
@@ -28,9 +28,8 @@ use minijinja::Value;
 ///
 /// The list is the information schema's `dbt` tables minus the ones that hold nothing at parse
 /// (`column_lineage` needs static analysis; `classifiers` and `semantic_relationships` have no
-/// writer yet) and minus `dag_nodes`, plus `graph_nodes` and `checks`, which the information
-/// schema has no table for. `dbt_rt` is absent entirely: it is written from run artifacts, so
-/// at parse it does not exist.
+/// writer yet). `dbt_rt` is absent entirely: it is written from run artifacts, so at parse it
+/// does not exist.
 pub const PARSE_SAFE_VIEWS: &[&str] = &[
     "project",
     "packages",
@@ -45,7 +44,6 @@ pub const PARSE_SAFE_VIEWS: &[&str] = &[
     "sources",
     "data_tests",
     "unit_tests",
-    "graph_nodes",
     "checks",
     "macros",
     "groups",
@@ -58,6 +56,7 @@ pub const PARSE_SAFE_VIEWS: &[&str] = &[
     "semantic_measures",
     "semantic_dimensions",
     "time_spines",
+    "dag_nodes",
     "edges",
     "node_columns",
 ];
@@ -118,10 +117,10 @@ mod tests {
 
     #[test]
     fn rejects_the_raw_tables_the_parse_safe_views_are_projected_from() {
-        // `dbt.nodes` mixes parse-safe columns with compile-filled and never-populated ones.
-        // `dbt.graph_nodes` is its safe projection; the table itself must stay unreachable.
-        // (`node_columns` is not in this list: the information schema publishes a table by
-        // that name, so the view carrying its name is the safe projection.)
+        // `dbt.nodes` mixes parse-safe columns with compile-filled and never-populated ones,
+        // and the per-resource-type views are its safe projections; the table itself must stay
+        // unreachable. (`node_columns` is not in this list: the information schema publishes a
+        // table by that name, so the view carrying its name is the safe projection.)
         for raw in ["nodes", "test_metadata", "generation"] {
             let err = call(raw).expect_err("the raw table must be refused");
             assert!(
@@ -135,7 +134,7 @@ mod tests {
     fn rejects_the_names_these_views_had_before_they_took_the_information_schema_s() {
         // A check written against the old names must fail loudly at render, naming what is
         // available now, rather than resolving to a relation that no longer exists.
-        for renamed in ["tests", "operations", "columns", "docs"] {
+        for renamed in ["tests", "operations", "columns", "docs", "graph_nodes"] {
             let err = call(renamed).expect_err("the old name must be refused");
             assert!(
                 err.contains("not available to a parse-time check"),
@@ -157,7 +156,6 @@ mod tests {
             "generation",
             "classifiers",
             "semantic_relationships",
-            "dag_nodes",
         ] {
             let err = call(later).expect_err("a later-phase view must be refused");
             assert!(
@@ -188,11 +186,11 @@ mod tests {
     fn error_names_the_available_views() {
         let err = call("nope").expect_err("unknown view");
         assert!(
-            err.contains("graph_nodes"),
+            err.contains("models"),
             "should list what is available: {err}"
         );
         assert!(
-            err.contains("models"),
+            err.contains("data_tests"),
             "should list what is available: {err}"
         );
     }

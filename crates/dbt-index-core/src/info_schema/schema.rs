@@ -183,6 +183,16 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
         filter: Filter::ResourceTypeIn(&["operation", "sql_operation"]),
         cols: node_cols![],
     },
+    // Project quality checks. A check is a node row like any other, so it is
+    // published like any other resource type -- which is also what lets a check
+    // read `dbt.checks` and assert something about the checks themselves.
+    TableSpec {
+        ns: Ns::Dbt,
+        name: "checks",
+        src: Src::Table("nodes"),
+        filter: Filter::ResourceTypeIn(&["check"]),
+        cols: node_cols![],
+    },
     // The source-specific columns live here and nowhere else.
     TableSpec {
         ns: Ns::Dbt,

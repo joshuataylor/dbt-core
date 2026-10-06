@@ -200,7 +200,9 @@ async fn checkout_revision(
         .await;
     }
 
-    run_git(&["fetch", "--depth=1", repo, revision], Some(clone_dir))
+    // `--` ends git option parsing so a `repo`/`revision` beginning with `-`
+    // (e.g. `--upload-pack=...`) can only be an operand, never an option.
+    run_git(&["fetch", "--depth=1", "--", repo, revision], Some(clone_dir))
         .await
         .map_err(|e| match e {
             GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
@@ -239,7 +241,8 @@ async fn checkout_revision(
 /// Resolve a ref to its 40-char SHA via `git ls-remote`. No rate limit.
 async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
     let sanitized = crate::utils::sanitize_git_url(repo_url);
-    let stdout = run_git(&["ls-remote", repo_url, revision], None)
+    // `--` ends git option parsing so `repo_url`/`revision` are always operands.
+    let stdout = run_git(&["ls-remote", "--", repo_url, revision], None)
         .await
         .map_err(|e| match e {
             GitErr::Io(e) => fs_err!(ErrorCode::GitError, "git ls-remote failed: {e}"),

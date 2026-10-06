@@ -218,6 +218,25 @@ fn is_unpinned_git_revision(revision: &str, warn_unpinned: bool) -> bool {
     warn_unpinned && ["HEAD", "main", "master"].contains(&revision)
 }
 
+/// Reject a git URL or revision that begins with `-`.
+///
+/// Even with `--` separating operands from options at every `git` call site
+/// (see `generic.rs`), we refuse leading-dash values at the boundary as defence
+/// in depth: it stops a malicious `packages.yml`/lockfile entry such as
+/// `revision: "--upload-pack=<cmd>"` from ever reaching git, and guards any
+/// future call site that might forget the `--`. The URL is sanitized in the
+/// message to avoid leaking inline credentials.
+fn reject_dash_leading(label: &str, value: &str) -> FsResult<()> {
+    if value.trim_start().starts_with('-') {
+        return Err(fs_err!(
+            ErrorCode::InvalidConfig,
+            "Invalid git package {label} '{}': must not start with '-'",
+            sanitize_git_url(value)
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that a subdirectory path contains only normal components.
 fn validate_subdirectory(subdir: &str) -> Result<&str, String> {
     for component in Path::new(subdir).components() {
@@ -265,6 +284,9 @@ pub async fn download_git_like_package(
         .map(|r| r.trim().to_string())
         .unwrap_or_else(|| "HEAD".to_string());
 
+    reject_dash_leading("URL", repo_url)?;
+    reject_dash_leading("revision", &revision)?;
+
     let parsed = parse_git_url(repo_url);
     let outcome = get_git_client(&context.git_client, &parsed)
         .resolve_with_cache(&parsed, &revision, download_dir, subdirectory.as_deref())
@@ -306,6 +328,10 @@ pub async fn install_git_like_package(
     // Trim: lockfile SHAs written as YAML block scalars (`revision: |`) carry
     // a trailing newline that `git fetch` rejects as an invalid refspec.
     let sha = sha.trim();
+
+    reject_dash_leading("URL", repo_url)?;
+    reject_dash_leading("revision", sha)?;
+
     let parsed = parse_git_url(repo_url);
     let outcome = get_git_client(&context.git_client, &parsed)
         .install(&parsed, sha, download_dir, subdirectory.as_deref())
@@ -561,6 +587,34 @@ mod tests {
         assert!(is_commit("1234567890abcdef1234567890abcdef12345678"));
         assert!(!is_commit("v1.0.0"));
         assert!(!is_commit("main"));
+    }
+
+    #[test]
+    fn reject_dash_leading_blocks_argument_injection() {
+        // The argument-injection RCE vector and bare short options.
+        assert!(reject_dash_leading("revision", "--upload-pack=touch /tmp/pwn;false").is_err());
+        assert!(reject_dash_leading("revision", "-x").is_err());
+        assert!(reject_dash_leading("URL", "--output=/etc/passwd").is_err());
+        // Leading whitespace must not smuggle a dash past the check.
+        assert!(reject_dash_leading("revision", "  --upload-pack=x").is_err());
+    }
+
+    #[test]
+    fn reject_dash_leading_accepts_legitimate_values() {
+        assert!(reject_dash_leading("URL", "https://github.com/dbt-labs/dbt-utils.git").is_ok());
+        assert!(reject_dash_leading("URL", "git@github.com:dbt-labs/dbt-utils.git").is_ok());
+        assert!(reject_dash_leading("URL", "file:///srv/repos/pkg.git").is_ok());
+        assert!(reject_dash_leading("revision", "main").is_ok());
+        assert!(reject_dash_leading("revision", "v1.0.0").is_ok());
+        assert!(
+            reject_dash_leading("revision", "abcdef1234567890abcdef1234567890abcdef12").is_ok()
+        );
+    }
+
+    #[test]
+    fn reject_dash_leading_error_is_invalid_config() {
+        let err = reject_dash_leading("revision", "--upload-pack=x").unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidConfig);
     }
 
     #[test]

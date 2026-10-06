@@ -1,0 +1,7 @@
+kind: Security
+body: 'dbt deps: pass -- before git URL/revision and reject leading-dash values to prevent argument-injection RCE'
+time: 2026-10-06T18:21:31.58825+08:00
+custom:
+    author: joshuataylorx
+    issue: ""
+    project: dbt-core

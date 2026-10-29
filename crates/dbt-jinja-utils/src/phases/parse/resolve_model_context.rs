@@ -37,7 +37,7 @@ use dbt_schemas::{
 use minijinja::{
     Error as MinijinjaError, ErrorKind as MinijinjaErrorKind, State,
     arg_utils::ArgParser,
-    constants::{CURRENT_PATH, CURRENT_SPAN, TARGET_UNIQUE_ID},
+    constants::{CURRENT_PATH, CURRENT_SPAN, DIALECT, TARGET_UNIQUE_ID},
     listener::RenderingEventListener,
     machinery::Span,
     value::{
@@ -54,7 +54,7 @@ use crate::{
     invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
 };
 
-use super::sql_resource::SqlResource;
+use super::{adapter_scope::ParseAdapterScope, sql_resource::SqlResource};
 
 /// Builds a context for resolving models
 #[allow(clippy::too_many_arguments)]
@@ -64,6 +64,9 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
+    // The node's dialect and starting relation, when known before rendering.
+    node_scope: Option<&ParseAdapterScope>,
+    // Picks the alias table the in-SQL config() applies.
     config_aliasing: InlineConfigAliasing,
     model_name: &str,
     fqn: Vec<String>,
@@ -79,6 +82,19 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     global_static_analysis: Option<StaticAnalysisKind>,
     resource_type: Option<NodeType>,
 ) -> BTreeMap<String, MinijinjaValue> {
+    let config_yml = dbt_yaml::to_value(config)
+        .expect("Failed to serialize merged node config for parse model.config");
+    // Upstream relations are unknown here. Keep their existing placeholders.
+    let (default_adapter, default_database, default_schema) = (adapter_type, database, schema);
+    let (adapter_type, database, schema) =
+        node_scope.map_or((adapter_type, database, schema), |scope| {
+            (
+                scope.adapter_type,
+                scope.database.as_str(),
+                scope.schema.as_str(),
+            )
+        });
+
     // Create a relation for 'this' using config values
     let sql_resources_clone = sql_resources.clone();
     let this_relation = ResolveThisFunction {
@@ -106,9 +122,9 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // Create ref function
     let sql_resources_clone = sql_resources.clone();
     let ref_function = ResolveRefFunction {
-        database: database.to_string(),
-        schema: schema.to_string(),
-        adapter_type,
+        database: default_database.to_string(),
+        schema: default_schema.to_string(),
+        adapter_type: default_adapter,
         sql_resources: sql_resources_clone,
         root_runtime_config: root_runtime_config.clone(),
         package_quoting,
@@ -118,11 +134,11 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
 
     // Create source function
     let source_function = ResolveSourceFunction {
-        database: database.to_string(),
-        schema: schema.to_string(),
+        database: default_database.to_string(),
+        schema: default_schema.to_string(),
         sql_resources: sql_resources.clone(),
         root_runtime_config: root_runtime_config.clone(),
-        adapter_type,
+        adapter_type: default_adapter,
         package_quoting,
     };
     let source_value = MinijinjaValue::from_object(source_function);
@@ -130,11 +146,11 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
 
     // Create function function
     let function_function = ResolveFunctionFunction {
-        database: database.to_string(),
-        schema: schema.to_string(),
+        database: default_database.to_string(),
+        schema: default_schema.to_string(),
         sql_resources: sql_resources.clone(),
         root_runtime_config: root_runtime_config.clone(),
-        adapter_type,
+        adapter_type: default_adapter,
         package_quoting,
     };
     let function_value = MinijinjaValue::from_object(function_function);
@@ -190,8 +206,8 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         database: database.to_string(),
         schema: schema.to_string(),
         alias: model_name.to_string(),
-        // A placeholder node built during parse, before `+adapter` is resolved;
-        // the target default is the only answer available here.
+        // A placeholder node built during parse, before the inline `config()` is merged;
+        // `adapter_type` is the adapter known up front.
         adapter: adapter_type,
         materialized: ModelConfig::default_materialized(),
         static_analysis: global_static_analysis.unwrap_or_default().into(),
@@ -252,8 +268,6 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // `DbtModel::serialized_config()` — not `MinijinjaValue::from_serialize`, so later
     // `dbt_yaml::to_value(model)` → `InternalDbtNodeWrapper::deserialize` in adapter helpers
     // (`get_view_options`, `get_config_from_model`, …) round-trips correctly.
-    let config_yml = dbt_yaml::to_value(config)
-        .expect("Failed to serialize merged node config to dbt_yaml::Value for parse model.config");
     model_map.insert(
         MinijinjaValue::from("config"),
         yml_value_to_minijinja(&config_yml),
@@ -310,7 +324,43 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     debug_assert_eq!(CURRENT_PATH, "__minijinja_current_path");
     debug_assert_eq!(CURRENT_SPAN, "__minijinja_current_span");
 
-    to_jinja_btreemap(&ctx)
+    let mut ctx = to_jinja_btreemap(&ctx);
+    // Only the scope's dialect: target and env stay the default's, as at compile.
+    if let Some(dialect) = node_scope.and_then(ParseAdapterScope::dialect) {
+        ctx.insert(DIALECT.to_string(), dialect.clone());
+    }
+    ctx
+}
+
+/// Replaces the node's own relation without changing upstream placeholders.
+pub fn update_resolve_model_relation<T: ResolvableConfig<T> + 'static>(
+    context: &mut BTreeMap<String, MinijinjaValue>,
+    relation: MinijinjaValue,
+) {
+    let this = context["this"]
+        .downcast_object_ref::<ResolveThisFunction<T>>()
+        .expect("parse this object");
+    let resources = this.sql_resources.clone();
+    let model = context["model"]
+        .downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>()
+        .expect("parse model object");
+    for (field, attribute) in [
+        ("database", "database"),
+        ("schema", "schema"),
+        ("alias", "identifier"),
+    ] {
+        model.insert(
+            MinijinjaValue::from(field),
+            relation.get_attr(attribute).expect("relation attribute"),
+        );
+    }
+    context.insert(
+        "this".to_string(),
+        MinijinjaValue::from_object(ResolveThisFunction::<T> {
+            relation,
+            sql_resources: resources,
+        }),
+    );
 }
 
 /// Batch Context (stubbing this on the fly for now. We'll need to implement this in the future)

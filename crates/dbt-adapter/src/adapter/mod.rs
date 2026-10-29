@@ -595,12 +595,12 @@ impl Adapter {
     /// ) -> str
     /// ```
     #[tracing::instrument(skip_all, level = "trace")]
-    pub fn quote(&self, _state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
+    pub fn quote(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
         let iter = ArgsIter::new("quote", &["identifier"], args);
         let identifier = iter.next_arg::<&str>()?;
         iter.finish()?;
 
-        let quoted = quote_ident(self.adapter_type(), identifier);
+        let quoted = quote_ident(self.effective_adapter_type(state), identifier);
         Ok(Value::from(quoted))
     }
 

@@ -636,6 +636,7 @@ async fn resolve_given_seed(
         adapter_type,
         database,
         schema,
+        None,
         InlineConfigAliasing::fixed(adapter_type),
         model_name,
         fqn.to_vec(),

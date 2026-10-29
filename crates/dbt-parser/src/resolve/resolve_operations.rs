@@ -181,6 +181,7 @@ fn new_operation(
                 adapter_type,
                 database,
                 schema,
+                None,
                 InlineConfigAliasing::fixed(adapter_type),
                 &operation.__common_attr__.name,
                 vec![

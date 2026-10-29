@@ -276,6 +276,7 @@ pub fn resolve_yaml_depends_on<T: ResolvableConfig<T> + Serialize + 'static>(
             adapter_type,
             database,
             schema,
+            None,
             InlineConfigAliasing::fixed(adapter_type),
             &fqn.join("."),
             fqn.clone(),

@@ -29,11 +29,17 @@ use dbt_jinja_utils::phases::build_operation_context_btreemap;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
-use dbt_jinja_utils::phases::parse::build_resolve_model_context;
+use dbt_jinja_utils::phases::parse::{
+    ParseAdapterScopes, build_resolve_model_context, update_resolve_model_relation,
+};
 use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
-use dbt_jinja_utils::utils::{render_sql, render_sql_with_listeners};
-use dbt_schemas::schemas::common::{DbtChecksum, DbtQuoting, Hooks, normalize_sql};
+use dbt_jinja_utils::utils::{
+    generate_component_name_value, render_sql, render_sql_with_listeners,
+};
+use dbt_schemas::schemas::common::{
+    DbtChecksum, DbtQuoting, Hooks, ResolvedQuoting, normalize_quoting, normalize_sql,
+};
 use dbt_schemas::schemas::project::{
     ResolvableConfig, ResolvedConfig, WarningEmission, resolved_surface_key_status,
     warn_and_strip_deprecated_warehouse_keys,
@@ -43,6 +49,7 @@ use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, Nodes};
 use dbt_schemas::state::{DbtAsset, DbtRuntimeConfig, ModelStatus};
 use dbt_telemetry::AssetParsed;
+use indexmap::IndexMap;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
@@ -73,7 +80,7 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     /// Fully resolved config for this node (project + properties + inline + root overlay).
     pub config: T::Resolved,
     /// `--adapter`, else the layers' `+adapter`, else the inherited one; `None` means the default.
-    /// Always `None` for analyses and checks.
+    /// Always `None` for checks.
     pub adapter: Option<AdapterType>,
     /// The adapter whose alias table read `config`.
     pub alias_adapter: AdapterType,
@@ -243,6 +250,102 @@ fn augment_sql_resources_with_static_sources<T: ResolvableConfig<T>>(
     }
 }
 
+fn preview_node_relation<T: ResolvableConfig<T> + 'static>(
+    render_ctx: &RenderCtx<T>,
+    context: &mut BTreeMap<String, MinijinjaValue>,
+    config: &dbt_yaml::Value,
+    adapter: AdapterType,
+) -> FsResult<()> {
+    let inner = &render_ctx.inner;
+    let model = &context["model"];
+    let mut node = BTreeMap::new();
+    for key in model.try_iter().expect("parse model keys") {
+        let name = key.as_str().expect("model field name");
+        node.insert(name.to_string(), model.get_attr(name).expect("model field"));
+    }
+    let name = node["name"].as_str().expect("node name").to_string();
+    let resource = match inner.resource_type {
+        Some(NodeType::Snapshot) => "snapshot",
+        Some(NodeType::Analysis) => "analysis",
+        Some(NodeType::Test) => "test",
+        Some(NodeType::Function) => "function",
+        _ => "model",
+    };
+    node.insert(
+        "unique_id".to_string(),
+        MinijinjaValue::from(format!("{resource}.{}.{name}", inner.package_name)),
+    );
+    let custom = |field: &str| {
+        config
+            .get(field)
+            .and_then(dbt_yaml::Value::as_str)
+            .map(str::to_owned)
+    };
+    let legacy_database = custom("target_database");
+    let legacy_schema = custom("target_schema");
+    let database = custom("database");
+    let schema = custom("schema");
+    let authored_quoting = config
+        .get("quoting")
+        .and_then(|value| dbt_yaml::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let quoting = crate::resolve::resolve_utils::resolve_node_quoting(
+        authored_quoting,
+        &inner.adapter_quoting,
+        adapter,
+    );
+    let mut naming_config = config.clone();
+    naming_config["quoting"] = dbt_yaml::to_value(quoting).expect("resolved node quoting config");
+    node.insert(
+        "config".to_string(),
+        dbt_schemas::schemas::serde::yml_value_to_minijinja(&naming_config),
+    );
+    let quoting: ResolvedQuoting = quoting.try_into().expect("resolved node quoting");
+    let (database, schema) = {
+        let scopes = inner
+            .parse_adapter_scopes
+            .as_ref()
+            .expect("node adapter scopes");
+        let naming_context = scopes.ctx_for(adapter, &inner.base_ctx)?;
+        let generate = |component, custom| {
+            generate_component_name_value(
+                &render_ctx.jinja_env,
+                component,
+                &inner.root_project_name,
+                &inner.package_name,
+                &naming_context,
+                custom,
+                MinijinjaValue::from_object(node.clone()),
+            )
+        };
+        let database = match legacy_database {
+            Some(database) => database,
+            None => generate("database", database)?,
+        };
+        let schema = match legacy_schema {
+            Some(schema) => schema,
+            None => generate("schema", schema)?,
+        };
+        (database, schema)
+    };
+    let (database, schema, alias, quoting) =
+        normalize_quoting(&quoting, adapter, &database, &schema, &name);
+    let relation = dbt_adapter::relation::do_create_relation(
+        adapter,
+        database,
+        schema,
+        Some(alias),
+        None,
+        quoting,
+    )
+    .map_err(|error| FsError::from_jinja_err(error, "Failed to preview node relation"))?;
+    update_resolve_model_relation::<T>(
+        context,
+        dbt_adapter::relation::RelationObject::new(Arc::from(relation)).into_value(),
+    );
+    Ok(())
+}
+
 async fn render_sql_file<T, S>(
     render_ctx: &RenderCtx<T>,
     dbt_asset: &DbtAsset,
@@ -253,6 +356,7 @@ async fn render_sql_file<T, S>(
 ) -> FsResult<Option<SqlFileRenderResult<T, S>>>
 where
     T: ResolvableConfig<T> + 'static,
+    T::Resolved: Into<T>,
     S: GetConfig<T> + Debug,
 {
     let RenderCtx { inner, .. } = render_ctx;
@@ -326,6 +430,7 @@ async fn render_sql_file_inner<T, S>(
 ) -> FsResult<Option<SqlFileRenderResult<T, S>>>
 where
     T: ResolvableConfig<T> + 'static,
+    T::Resolved: Into<T>,
     S: GetConfig<T> + Debug,
 {
     let RenderCtx {
@@ -345,6 +450,8 @@ where
         schema,
         config_resolver,
         adapter_hint,
+        parse_adapter_scopes,
+        adapter_quoting,
         resource_paths,
         package_quoting,
         uses_snapshot_fqn,
@@ -415,7 +522,9 @@ where
         configs: properties_configs,
         inherited_adapter,
     };
-    let properties_config = config_resolver.with_node_configs(&pre_render_layers).config;
+    let pre_render = config_resolver.with_node_configs(&pre_render_layers);
+    let properties_config = pre_render.config;
+    let pre_render_adapter = pre_render.adapter;
 
     // Early exit: the root overlay has the highest precedence for dependency packages, so if it
     // explicitly disables this node no inline `{{ config(...) }}` call can re-enable it.
@@ -462,6 +571,16 @@ where
     // root project re-enables the node; the overlay outranks it.
     let root_overlay_forces_enabled = config_resolver.is_enabled_by_root_overlay(&fqn);
 
+    // Only a declared non-default adapter known before the render has a scope.
+    let scope = match (pre_render_adapter, parse_adapter_scopes.as_deref()) {
+        // The node-build lookup reports an unusable connection for the node's final adapter.
+        (Some(adapter), Some(scopes)) => scopes.declared(adapter).ok().flatten(),
+        _ => None,
+    };
+    let render_adapter = scope
+        .filter(|scope| scope.dialect().is_some())
+        .map_or(*adapter_type, |scope| scope.adapter_type);
+
     let mut resolve_model_context = base_ctx.clone();
     resolve_model_context.extend(build_resolve_model_context(
         &properties_config,
@@ -469,6 +588,7 @@ where
         *adapter_type,
         database,
         schema,
+        scope,
         config_resolver.inline_config_aliasing(&pre_render_layers),
         &model_name,
         fqn.clone(),
@@ -484,6 +604,32 @@ where
         args.static_analysis,
         *resource_type,
     ));
+    if let Some(scope) = scope {
+        let quoting = crate::resolve::resolve_utils::resolve_node_quoting(
+            DbtQuoting::default(),
+            adapter_quoting,
+            scope.adapter_type,
+        );
+        resolve_model_context.insert(
+            "api".to_string(),
+            dbt_jinja_utils::jinja_environment::adapter_api_value_for_type(
+                scope.adapter_type,
+                quoting.try_into().expect("resolved adapter quoting"),
+            ),
+        );
+        let config: T = config_resolver
+            .resolve_node(&pre_render_layers)
+            .config
+            .into();
+        let config = dbt_yaml::to_value(config).expect("serialized resolved node config");
+        // Inline config can change or disable the node. Final naming reports its errors.
+        let _ = preview_node_relation(
+            render_ctx,
+            &mut resolve_model_context,
+            &config,
+            scope.adapter_type,
+        );
+    }
 
     if let Some(status_reporter) = &args.io.status_reporter {
         status_reporter.show_progress(PARSING, &display_path_str, None);
@@ -503,15 +649,16 @@ where
             jinja_env.clone(),
             &HashMap::new(),
             jinja_type_checking_event_listener_factory.clone(),
-            None,
+            Some(package_name.clone()),
             &jinja_env.env.get_root_package_name(),
             MinijinjaValue::from_dyn_object(jinja_env.env.get_dbt_and_adapters_namespaces()),
             &display_path,
             &sql,
             &dbt_common::CodeLocationWithFile::new(1, 1, 0, display_path.clone()),
             unique_id,
-            *adapter_type,
+            render_adapter,
             true,
+            resolve_model_context.get(minijinja::constants::MACRO_DISPATCH_ORDER),
         );
     }
 
@@ -582,7 +729,7 @@ where
                 collect_hook_dependencies_from_config(
                     &temp_config,
                     jinja_env.clone(),
-                    *adapter_type,
+                    render_adapter,
                     &display_path,
                     args.io.clone(),
                     &resolve_model_context,
@@ -711,6 +858,23 @@ where
     let (status, render_error_deferred) = status;
     let raw_config_call_dict = raw_config_call_dict_cell.into_inner();
 
+    // An adapter set only by the inline `config()` takes effect after the render that sets it.
+    if sql_file_info
+        .config_calls
+        .iter()
+        .any(|call| call.get_adapter().is_some())
+    {
+        let known_before = pre_render_adapter.unwrap_or(*adapter_type);
+        let resolved_to = resolved.adapter.unwrap_or(*adapter_type);
+        if known_before != resolved_to {
+            emit_debug_log_message(format!(
+                "{}: adapter '{resolved_to}' from an inline config() differs from \
+                 '{known_before}', known before the render",
+                display_path.display()
+            ));
+        }
+    }
+
     // Only check for duplicate resource definitions for enabled models to match dbt-core behavior.
     if status == ModelStatus::Enabled
         && has_duplicate_paths
@@ -768,6 +932,10 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     pub config_resolver: ProjectConfigResolver<T>,
     /// The adapter each node file inherits when none of its config layers sets one.
     pub adapter_hint: Option<HashMap<PathBuf, AdapterType>>,
+    /// Per-adapter parse identity of the active target. `None` renders every node as the default.
+    pub parse_adapter_scopes: Option<Arc<ParseAdapterScopes>>,
+    /// Quoting policies authored for the target's adapters.
+    pub adapter_quoting: IndexMap<AdapterType, DbtQuoting>,
     /// The resource paths
     pub resource_paths: Vec<String>,
     /// The quoting for the package
@@ -813,7 +981,10 @@ pub async fn render_unresolved_sql_files<
     node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
-) -> FsResult<Vec<SqlFileRenderResult<T, S>>> {
+) -> FsResult<Vec<SqlFileRenderResult<T, S>>>
+where
+    T::Resolved: Into<T>,
+{
     if model_sql_files.is_empty() {
         return Ok(Vec::new());
     }
@@ -1143,6 +1314,7 @@ pub fn collect_hook_dependencies_from_config(
                 unique_id,
                 adapter_type,
                 true,
+                hook_context.get(minijinja::constants::MACRO_DISPATCH_ORDER),
             );
         }
         let listener_factory = DefaultRenderingEventListenerFactory::default();

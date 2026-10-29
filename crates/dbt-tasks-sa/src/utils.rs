@@ -741,6 +741,7 @@ pub fn typecheck_macros(
             &m.unique_id.clone(),
             resolver_state.adapter_type,
             false,
+            None,
         );
     }
     Ok(())

@@ -62,6 +62,7 @@ struct CapturedOverload {
     refs: Vec<DbtRef>,
     functions: Vec<DbtRef>,
     sources: Vec<DbtSourceWrapper>,
+    macros: Vec<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -74,7 +75,7 @@ pub async fn resolve_functions(
     function_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     package_name: &str,
@@ -109,6 +110,8 @@ pub async fn resolve_functions(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: false,
@@ -233,6 +236,7 @@ pub async fn resolve_functions(
         status,
         patch_path,
         raw_config_call_dict,
+        macro_dependencies,
         ..
     } in function_sql_resources_map.into_iter()
     {
@@ -283,6 +287,7 @@ pub async fn resolve_functions(
                     refs,
                     functions: function_refs,
                     sources,
+                    macros: macro_dependencies,
                 },
             );
             continue;
@@ -350,7 +355,11 @@ pub async fn resolve_functions(
         };
 
         let depends_on = NodeDependsOn {
-            macros: vec![],
+            macros: if selected_adapter != default_adapter {
+                macro_dependencies
+            } else {
+                vec![]
+            },
             nodes: vec![],
             nodes_with_ref_location: vec![],
         };
@@ -527,6 +536,7 @@ pub async fn resolve_functions(
     for (root_uid, overload_defs) in pending_overloads {
         let mut absorbed = Vec::new();
         let mut merged_refs: Vec<DbtRef> = Vec::new();
+        let mut merged_macros = Vec::new();
         let mut merged_functions: Vec<DbtRef> = Vec::new();
         let mut merged_sources: Vec<DbtSourceWrapper> = Vec::new();
         let root_name = functions
@@ -585,6 +595,7 @@ pub async fn resolve_functions(
             merged_refs.extend(captured.refs.iter().cloned());
             merged_functions.extend(captured.functions.iter().cloned());
             merged_sources.extend(captured.sources.iter().cloned());
+            merged_macros.extend(captured.macros.iter().cloned());
 
             absorbed.push(AbsorbedOverload {
                 defined_in: overload_def.defined_in.clone(),
@@ -605,6 +616,15 @@ pub async fn resolve_functions(
         root_mut.__base_attr__.refs.extend(merged_refs);
         root_mut.__base_attr__.functions.extend(merged_functions);
         root_mut.__base_attr__.sources.extend(merged_sources);
+        if root_mut.__base_attr__.adapter != default_adapter {
+            root_mut
+                .__base_attr__
+                .depends_on
+                .macros
+                .extend(merged_macros);
+            root_mut.__base_attr__.depends_on.macros.sort();
+            root_mut.__base_attr__.depends_on.macros.dedup();
+        }
     }
 
     Ok((functions, rendering_results))

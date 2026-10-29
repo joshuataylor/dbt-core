@@ -49,6 +49,7 @@ mod tests {
             AdapterType::Postgres,
             "db",
             "schema",
+            None,
             InlineConfigAliasing::fixed(AdapterType::Postgres),
             "my_model",
             get_node_fqn(
@@ -1641,6 +1642,7 @@ mod tests {
             AdapterType::Snowflake,
             "db",
             "schema",
+            None,
             aliasing,
             "my_model",
             vec!["common".to_string(), "my_model".to_string()],

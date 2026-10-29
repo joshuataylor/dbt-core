@@ -73,7 +73,7 @@ pub async fn resolve_snapshots(
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     jinja_env: Arc<JinjaEnv>,
@@ -127,6 +127,11 @@ pub async fn resolve_snapshots(
     for (macro_uid, macro_node) in macros {
         if macro_node.package_name == package_name && macro_uid.starts_with("snapshot.") {
             synthetic_snapshot_macro_uids.insert(macro_uid.clone());
+            // Render listeners report template names for synthetic snapshot macros.
+            synthetic_snapshot_macro_uids.insert(format!(
+                "macro.{}.{}",
+                macro_node.package_name, macro_node.name
+            ));
             // Write the macro call to the `snapshots` directory
             let macro_call = format!("{{{{ {}() }}}}", macro_node.name);
             let macro_name = macro_node.name.clone();
@@ -307,6 +312,8 @@ pub async fn resolve_snapshots(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint: None,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: true,
             defer_render_errors_to_compile: true,
@@ -361,6 +368,7 @@ pub async fn resolve_snapshots(
         adapter,
         alias_adapter,
         raw_code,
+        macro_dependencies,
         macro_spans: _macro_spans,
         properties: maybe_properties,
         status,
@@ -469,10 +477,14 @@ pub async fn resolve_snapshots(
                 })?;
             }
 
-            let macro_depends_on = all_depends_on
+            let mut macro_depends_on = all_depends_on
                 .get(&format!("{package_name}.{snapshot_name}"))
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default();
+            if selected_adapter != default_adapter {
+                macro_depends_on.extend(macro_dependencies);
+            }
+            let macro_depends_on = macro_depends_on
                 .into_iter()
                 .filter(|uid| !synthetic_snapshot_macro_uids.contains(uid.as_str()))
                 .collect();

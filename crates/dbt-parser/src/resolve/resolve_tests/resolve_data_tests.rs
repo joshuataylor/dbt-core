@@ -374,7 +374,7 @@ pub async fn resolve_data_tests(
     test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
-    parse_adapter_scopes: &ParseAdapterScopes,
+    parse_adapter_scopes: &Arc<ParseAdapterScopes>,
     default_adapter: AdapterType,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
@@ -462,6 +462,8 @@ pub async fn resolve_data_tests(
             root_project_name: root_package.dbt_project.name.clone(),
             config_resolver,
             adapter_hint,
+            parse_adapter_scopes: Some(parse_adapter_scopes.clone()),
+            adapter_quoting: root_project_configs.adapter_quoting.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: true,
@@ -516,6 +518,7 @@ pub async fn resolve_data_tests(
         render_error_deferred,
         patch_path: _,
         raw_config_call_dict: rendered_raw_config_call_dict,
+        macro_dependencies,
         ..
     } in test_sql_resources_map.into_iter()
     {
@@ -579,6 +582,11 @@ pub async fn resolve_data_tests(
             .update_unique_id(&format!("{package_name}.{renderer_name}"), &unique_id);
         let mut macro_depends_on =
             jinja_type_checking_event_listener_factory.get_macro_depends_on(&unique_id);
+        if adapter.unwrap_or(default_adapter) != default_adapter {
+            macro_depends_on.extend(macro_dependencies);
+            macro_depends_on.sort();
+            macro_depends_on.dedup();
+        }
         filter_core_builtin_test_macro_dependencies(
             test_path_to_test_asset.get(&dbt_asset.path).copied(),
             &mut macro_depends_on,

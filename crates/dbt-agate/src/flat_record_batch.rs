@@ -531,6 +531,11 @@ impl FlatRecordBatch {
         Self::_from_flattened_record_batch(flat, Some(batch))
     }
 
+    pub(crate) fn with_original(mut self, original: Arc<RecordBatch>) -> Self {
+        self.original = Some(original);
+        self
+    }
+
     pub(crate) fn _from_flattened_record_batch(
         flat: Arc<RecordBatch>,
         original: Option<Arc<RecordBatch>>,

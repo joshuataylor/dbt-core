@@ -162,6 +162,9 @@ pub trait TypeOps: Send + Sync {
 
                 is_struct || is_geography
             }
+            // String fixtures for ARRAY/STRUCT/MAP columns are SQL expressions injected verbatim,
+            // e.g. `named_struct(...)`. Data types: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-datatypes
+            Databricks => databricks::is_complex_type(data_type),
             _ => false,
         }
     }
@@ -854,6 +857,19 @@ pub mod bigquery {
     }
 }
 
+pub mod databricks {
+    use arrow_schema::DataType;
+
+    /// ARRAY, STRUCT and MAP. Excludes the `FixedSizeList(_, 1)` encoding of logical
+    /// types such as TIMESTAMP_NTZ.
+    pub fn is_complex_type(data_type: &DataType) -> bool {
+        matches!(
+            data_type,
+            DataType::List(_) | DataType::Struct(_) | DataType::Map(_, _)
+        )
+    }
+}
+
 pub mod postgres {
     use arrow_schema::{DataType, TimeUnit};
 
@@ -1363,6 +1379,28 @@ pub fn numeric_precision_scale(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_databricks_is_complex_type() {
+        use super::databricks::is_complex_type;
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        assert!(is_complex_type(&DataType::List(item.clone())));
+        assert!(is_complex_type(&DataType::Struct(Default::default())));
+        assert!(is_complex_type(&DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Default::default()),
+                false
+            )),
+            false
+        )));
+        let ntz = DataType::FixedSizeList(
+            Arc::new(Field::new("timestamp_ntz", DataType::Int64, true)),
+            1,
+        );
+        assert!(!is_complex_type(&ntz));
+        assert!(!is_complex_type(&DataType::LargeList(item)));
+    }
+
     use super::*;
     use dbt_adapter_core::AdapterType::*;
 

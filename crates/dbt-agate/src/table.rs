@@ -528,6 +528,18 @@ impl AgateTable {
         Self::new(batch, None)
     }
 
+    /// Keep typed query values alongside a separate display representation.
+    pub fn from_record_batch_with_original(
+        batch: Arc<RecordBatch>,
+        original: Arc<RecordBatch>,
+    ) -> Self {
+        let flat = FlatRecordBatch::try_new(batch)
+            .unwrap()
+            .with_original(original);
+        let repr = TableRepr::new(Arc::new(flat), None, None);
+        Self::from_repr(Arc::new(repr))
+    }
+
     /// Create an [AgateTable] from an Arrow [RecordBatch] using a single row name for all rows.
     ///
     /// This is one of the possible ways to create row names for the table
@@ -1529,6 +1541,46 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(schema, vec![id_array, country_array]).unwrap();
         Arc::new(batch)
+    }
+
+    #[test]
+    fn retain_original_values_with_separate_display_batch() {
+        let original = simple_record_batch();
+        let display = Arc::new(
+            RecordBatch::try_from_iter(vec![
+                (
+                    "id",
+                    Arc::new(StringArray::from(vec!["42", "43", "44"])) as ArrayRef,
+                ),
+                ("country", original.column(1).clone()),
+            ])
+            .unwrap(),
+        );
+        let table = AgateTable::from_record_batch_with_original(display.clone(), original.clone());
+        assert!(Arc::ptr_eq(&table.original_record_batch(), &original));
+        assert_eq!(table.to_record_batch().column(0), display.column(0));
+        assert_eq!(
+            table
+                .to_record_batch()
+                .schema()
+                .field(0)
+                .metadata()
+                .get("AGATE:dtype")
+                .map(String::as_str),
+            Some("Text")
+        );
+        let native_display =
+            AgateTable::from_record_batch_with_original(original.clone(), original);
+        assert_eq!(
+            native_display
+                .to_record_batch()
+                .schema()
+                .field(0)
+                .metadata()
+                .get("AGATE:dtype")
+                .map(String::as_str),
+            Some("Number")
+        );
     }
 
     /// End-to-end regression test for dbt-labs/fs#15412.

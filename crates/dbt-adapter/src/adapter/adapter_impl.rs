@@ -912,13 +912,15 @@ impl AdapterImpl {
             }
         };
 
-        // Flatten nested struct fields as JSON-strings (some Core adapters do that)
-        let last_batch = match self.adapter_type() {
-            Databricks => last_batch.jsonify_nested_columns(),
-            _ => last_batch,
+        // Keep native query values when the display uses JSON strings.
+        let table = match self.adapter_type() {
+            Databricks => {
+                let original = Arc::new(last_batch);
+                let display = original.as_ref().clone().jsonify_nested_columns();
+                AgateTable::from_record_batch_with_original(Arc::new(display), original)
+            }
+            _ => AgateTable::from_record_batch(Arc::new(last_batch)),
         };
-
-        let table = AgateTable::from_record_batch(Arc::new(last_batch));
 
         Ok((response, table))
     }

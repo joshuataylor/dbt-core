@@ -18,7 +18,7 @@ use arrow::{
         Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Decimal128Array,
         Decimal256Array, DictionaryArray, FixedSizeBinaryArray, Float64Array, Int8Array,
         Int16Array, Int32Array, Int64Array, IntervalDayTimeArray, IntervalMonthDayNanoArray,
-        IntervalYearMonthArray, LargeBinaryArray, RecordBatch, StringArray,
+        IntervalYearMonthArray, LargeBinaryArray, MapArray, RecordBatch, StringArray,
         TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
         TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
@@ -1405,7 +1405,7 @@ pub fn materialize_unit_test_fast_pass(
         diff_batch,
         actual_rows,
         expected_rows,
-    } = compare_record_batches(table.to_record_batch().as_ref())?;
+    } = compare_record_batches(table.original_record_batch().as_ref())?;
     let diff_num_rows = diff_batch.num_rows();
 
     Ok((!has_differences, diff_num_rows, {
@@ -1836,56 +1836,46 @@ pub fn compare_record_batches_with_json_columns(
         .map(|column| column.logical_nulls())
         .collect::<Vec<_>>();
 
-    // BigQuery cannot order ARRAY/STRUCT columns. JSON spellings can also sort
-    // differently in SQL. Align both cases with keys that preserve equality.
-    let needs_alignment = !json_columns.is_empty()
-        || schema
-            .fields()
-            .iter()
-            .any(|field| field.data_type().is_nested());
-    let comparison_rows = if !needs_alignment {
-        None
-    } else {
-        let rows = (0..batch.num_rows())
-            .map(|row| {
-                batch
-                    .columns()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, column)| {
-                        if index == label_col_index
-                            || logical_nulls[index]
-                                .as_ref()
-                                .is_some_and(|nulls| nulls.is_null(row))
-                        {
-                            return Ok(None);
-                        }
-                        let value = if json_columns.contains(&index) {
-                            value_as_string(
-                                column,
-                                row,
-                                schema.field(index).data_type(),
-                                &formatters[index],
-                            )?
-                        } else {
-                            format_unit_test_value(&formatters[index], row)?
-                        };
-                        Ok(Some(if json_columns.contains(&index) {
-                            serde_json::from_str::<&RawValue>(&value)
-                                .and_then(canonicalize_json_object_keys)
-                                .map(|value| value.get().to_owned())
-                                .unwrap_or(value)
-                        } else {
-                            value
-                        }))
-                    })
-                    .collect::<arrow::error::Result<Vec<_>>>()
-            })
-            .collect::<arrow::error::Result<Vec<_>>>()?;
-        actual_rows.sort_by(|a, b| rows[*a].cmp(&rows[*b]));
-        expected_rows.sort_by(|a, b| rows[*a].cmp(&rows[*b]));
-        Some(rows)
-    };
+    // Adapters can encode nested columns as strings before comparison. Align
+    // every result by complete row keys, including duplicate occurrences.
+    let comparison_rows = (0..batch.num_rows())
+        .map(|row| {
+            batch
+                .columns()
+                .iter()
+                .enumerate()
+                .map(|(index, column)| {
+                    if index == label_col_index
+                        || logical_nulls[index]
+                            .as_ref()
+                            .is_some_and(|nulls| nulls.is_null(row))
+                    {
+                        return Ok(None);
+                    }
+                    let value = if json_columns.contains(&index) {
+                        value_as_string(
+                            column,
+                            row,
+                            schema.field(index).data_type(),
+                            &formatters[index],
+                        )?
+                    } else {
+                        format_unit_test_value(&formatters[index], row)?
+                    };
+                    Ok(Some(if json_columns.contains(&index) {
+                        serde_json::from_str::<&RawValue>(&value)
+                            .and_then(canonicalize_json_object_keys)
+                            .map(|value| value.get().to_owned())
+                            .unwrap_or(value)
+                    } else {
+                        value
+                    }))
+                })
+                .collect::<arrow::error::Result<Vec<_>>>()
+        })
+        .collect::<arrow::error::Result<Vec<_>>>()?;
+    actual_rows.sort_by(|a, b| comparison_rows[*a].cmp(&comparison_rows[*b]));
+    expected_rows.sort_by(|a, b| comparison_rows[*a].cmp(&comparison_rows[*b]));
 
     // Prepare new columns - include all data columns in output
     let mut new_columns: Vec<ArrayRef> = vec![];
@@ -1915,16 +1905,17 @@ pub fn compare_record_batches_with_json_columns(
                     // JSON object key order is not meaningful. Other columns
                     // use native equality or the canonical fallback, independent
                     // of the display text in the diff table.
-                    let equal = match (&comparison_rows, compare_json) {
-                        (Some(rows), true) => rows[*a][col_index] == rows[*e][col_index],
-                        _ => values_equal(
+                    let equal = if compare_json {
+                        comparison_rows[*a][col_index] == comparison_rows[*e][col_index]
+                    } else {
+                        values_equal(
                             col,
                             *a,
                             *e,
                             data_type,
                             &formatters[col_index],
                             logical_nulls[col_index].as_ref(),
-                        )?,
+                        )?
                     };
                     let expected_val = value_as_string(col, *e, data_type, &formatters[col_index])?;
                     if equal {
@@ -2075,6 +2066,20 @@ impl ArrayFormatterFactory for UnitTestFormatters {
         _field: Option<&'a Field>,
     ) -> arrow::error::Result<Option<ArrayFormatter<'a>>> {
         match array.data_type() {
+            DataType::Map(_, _) => {
+                let array = array.as_any().downcast_ref::<MapArray>().unwrap();
+                let keys = unit_test_formatter(array.keys().as_ref(), options)?;
+                let values = unit_test_formatter(array.values().as_ref(), options)?;
+                Ok(Some(ArrayFormatter::new(
+                    Box::new(UnitTestMapDisplay {
+                        array,
+                        keys,
+                        values,
+                        null: options.null(),
+                    }),
+                    options.safe(),
+                )))
+            }
             DataType::Interval(_)
             | DataType::Float32
             | DataType::Float64
@@ -2102,6 +2107,41 @@ impl ArrayFormatterFactory for UnitTestFormatters {
             ),
             _ => Ok(None),
         }
+    }
+}
+
+struct UnitTestMapDisplay<'a> {
+    array: &'a MapArray,
+    keys: ArrayFormatter<'a>,
+    values: ArrayFormatter<'a>,
+    null: &'a str,
+}
+
+impl DisplayIndex for UnitTestMapDisplay<'_> {
+    fn write(&self, index: usize, out: &mut dyn std::fmt::Write) -> FormatResult {
+        if self.array.is_null(index) {
+            write!(out, "{}", self.null)?;
+            return Ok(());
+        }
+        let offsets = self.array.value_offsets();
+        let mut entries = (offsets[index] as usize..offsets[index + 1] as usize)
+            .map(|index| {
+                Ok((
+                    format_unit_test_value(&self.keys, index)?,
+                    format_unit_test_value(&self.values, index)?,
+                ))
+            })
+            .collect::<arrow::error::Result<Vec<_>>>()?;
+        entries.sort_unstable();
+        write!(out, "{{")?;
+        for (index, (key, value)) in entries.iter().enumerate() {
+            if index > 0 {
+                write!(out, ", ")?;
+            }
+            write!(out, "{key}: {value}")?;
+        }
+        write!(out, "}}")?;
+        Ok(())
     }
 }
 
@@ -2362,9 +2402,9 @@ mod compare_record_batches_tests {
     };
     use arrow::array::{
         Array, ArrayRef, BinaryArray, BinaryViewArray, Decimal128Array, DictionaryArray,
-        Float64Array, Int8Array, Int32Array, Int64Array, IntervalDayTimeArray,
-        IntervalMonthDayNanoArray, LargeBinaryArray, ListArray, ListBuilder, StringArray,
-        StringBuilder, StringViewArray, StructArray, TimestampMicrosecondArray,
+        Float64Array, Int8Array, Int32Array, Int32Builder, Int64Array, IntervalDayTimeArray,
+        IntervalMonthDayNanoArray, LargeBinaryArray, ListArray, ListBuilder, MapBuilder,
+        StringArray, StringBuilder, StringViewArray, StructArray, TimestampMicrosecondArray,
         TimestampMicrosecondBuilder, TimestampMillisecondArray, TimestampNanosecondArray,
     };
     use arrow::datatypes::{
@@ -2372,10 +2412,198 @@ mod compare_record_batches_tests {
         Schema, TimeUnit,
     };
     use arrow::util::pretty::pretty_format_batches;
+    use dbt_adapter::record_batch::RecordBatchExt;
+    use dbt_agate::AgateTable;
     use std::sync::Arc;
 
     fn compare_column(column: ArrayRef) -> arrow::error::Result<CompareRecordBatchResult> {
         compare_record_batches(&typed_batch(column.data_type().clone(), column))
+    }
+
+    fn databricks_table(batch: arrow::array::RecordBatch) -> AgateTable {
+        let display = batch.clone().jsonify_nested_columns();
+        AgateTable::from_record_batch_with_original(Arc::new(display), Arc::new(batch))
+    }
+
+    #[test]
+    fn databricks_nonfinite_map_values_remain_distinct() {
+        for (expected, actual, differs) in [
+            (Some(f64::NAN), Some(f64::INFINITY), true),
+            (Some(f64::INFINITY), Some(f64::NEG_INFINITY), true),
+            (Some(f64::NAN), Some(-f64::NAN), false),
+            (Some(-0.0), Some(0.0), false),
+            (None, Some(f64::NAN), true),
+            (None, None, false),
+        ] {
+            let mut doubles = MapBuilder::new(
+                None,
+                StringBuilder::new(),
+                arrow::array::Float64Builder::new(),
+            );
+            let mut floats = MapBuilder::new(
+                None,
+                StringBuilder::new(),
+                arrow::array::Float32Builder::new(),
+            );
+            for value in [expected, actual] {
+                doubles.keys().append_value("k");
+                doubles.values().append_option(value);
+                doubles.append(true).unwrap();
+                floats.keys().append_value("k");
+                floats
+                    .values()
+                    .append_option(value.map(|value| value as f32));
+                floats.append(true).unwrap();
+            }
+            for column in [
+                Arc::new(doubles.finish()) as ArrayRef,
+                Arc::new(floats.finish()),
+            ] {
+                let table = databricks_table(typed_batch(column.data_type().clone(), column));
+                let result =
+                    compare_record_batches(table.original_record_batch().as_ref()).unwrap();
+                assert_eq!(
+                    result.has_differences, differs,
+                    "{expected:?} vs {actual:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn databricks_maps_keep_null_empty_and_null_entries_distinct() {
+        for (expected, actual, differs) in [
+            (0, 1, true),
+            (1, 1, false),
+            (1, 2, true),
+            (0, 2, true),
+            (2, 2, false),
+        ] {
+            let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+            for kind in [expected, actual] {
+                if kind == 2 {
+                    maps.keys().append_value("k");
+                    maps.values().append_null();
+                }
+                maps.append(kind != 0).unwrap();
+            }
+            let maps = Arc::new(maps.finish()) as ArrayRef;
+            let table = databricks_table(typed_batch(maps.data_type().clone(), maps));
+            let result = compare_record_batches(table.original_record_batch().as_ref()).unwrap();
+            assert_eq!(result.has_differences, differs);
+        }
+    }
+
+    #[test]
+    fn databricks_duplicate_struct_fields_preserve_every_value() {
+        for (first_field, differs) in [([1, 3], true), ([1, 1], false)] {
+            let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+            for entries in [[("x", 1), ("y", 2)], [("y", 2), ("x", 1)]] {
+                for (key, value) in entries {
+                    maps.keys().append_value(key);
+                    maps.values().append_value(value);
+                }
+                maps.append(true).unwrap();
+            }
+            let maps = Arc::new(maps.finish()) as ArrayRef;
+            let structs = Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("a", DataType::Int32, false)),
+                    Arc::new(Int32Array::from(first_field.to_vec())) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("a", DataType::Int32, false)),
+                    Arc::new(Int32Array::from(vec![2, 2])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("m", maps.data_type().clone(), false)),
+                    maps,
+                ),
+            ])) as ArrayRef;
+            let lists = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", structs.data_type().clone(), false)),
+                arrow::buffer::OffsetBuffer::new(vec![0, 1, 2].into()),
+                structs.clone(),
+                None,
+            )) as ArrayRef;
+            for column in [structs, lists] {
+                let table = databricks_table(typed_batch(column.data_type().clone(), column));
+                let result =
+                    compare_record_batches(table.original_record_batch().as_ref()).unwrap();
+                assert_eq!(result.has_differences, differs);
+            }
+        }
+    }
+
+    #[test]
+    fn databricks_map_rows_align_after_json_encoding() {
+        let expected = [Some(1), Some(2), Some(1), None];
+        for (actual, differs) in [
+            (vec![None, Some(1), Some(1), Some(2)], false),
+            (vec![None, Some(1), Some(2), Some(2)], true),
+            (vec![None, Some(1), Some(1), Some(3)], true),
+            (vec![None, Some(1), Some(2)], true),
+            (vec![Some(1), Some(1), Some(2), Some(2)], true),
+        ] {
+            let mut maps = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+            for (index, value) in expected.iter().chain(&actual).enumerate() {
+                if let Some(value) = value {
+                    let entries = if index < expected.len() {
+                        [("a", 0), ("k", *value)]
+                    } else {
+                        [("k", *value), ("a", 0)]
+                    };
+                    for (key, value) in entries {
+                        maps.keys().append_value(key);
+                        maps.values().append_value(value);
+                    }
+                }
+                maps.append(value.is_some()).unwrap();
+            }
+            let maps = Arc::new(maps.finish()) as ArrayRef;
+            let structs = Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("m", maps.data_type().clone(), true)),
+                maps.clone(),
+            )])) as ArrayRef;
+            let lists = Arc::new(ListArray::new(
+                Arc::new(Field::new("item", maps.data_type().clone(), true)),
+                arrow::buffer::OffsetBuffer::new(
+                    (0..=maps.len() as i32).collect::<Vec<_>>().into(),
+                ),
+                maps.clone(),
+                None,
+            )) as ArrayRef;
+            for column in [maps, structs, lists] {
+                let batch = arrow::array::RecordBatch::try_from_iter(vec![
+                    (
+                        "actual_or_expected",
+                        Arc::new(StringArray::from(
+                            std::iter::repeat_n("expected", expected.len())
+                                .chain(std::iter::repeat_n("actual", actual.len()))
+                                .collect::<Vec<_>>(),
+                        )) as ArrayRef,
+                    ),
+                    ("value", column),
+                    (
+                        "scalar_sort_key",
+                        Arc::new(Int32Array::from(vec![1; expected.len() + actual.len()])),
+                    ),
+                ])
+                .unwrap();
+                let table = databricks_table(batch);
+                assert_eq!(
+                    table.to_record_batch().schema().field(1).data_type(),
+                    &DataType::Utf8
+                );
+                let result =
+                    compare_record_batches(table.original_record_batch().as_ref()).unwrap();
+                assert_eq!(result.has_differences, differs, "actual: {actual:?}");
+                assert_eq!(
+                    (result.expected_rows, result.actual_rows),
+                    (expected.len(), actual.len())
+                );
+            }
+        }
     }
 
     #[test]

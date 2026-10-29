@@ -1819,13 +1819,9 @@ impl AdapterImpl {
     ) -> Result<Value, minijinja::Error> {
         // Validate excluded_schemas if provided
         if let Some(ref schemas) = excluded_schemas {
-            let _ =
-                minijinja_value_to_typed_struct::<Vec<String>>(schemas.clone()).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        e.to_string(),
-                    )
-                })?;
+            let _ = minijinja_value_to_typed_struct::<Vec<String>>(schemas).map_err(|e| {
+                minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
+            })?;
         }
 
         // Get default database from state if not provided
@@ -3111,12 +3107,14 @@ impl AdapterImpl {
             Column::vec_from_jinja_value(Databricks, existing_columns).map_err(|e| {
                 minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
             })?;
-        let model_columns = minijinja_value_to_typed_struct::<IndexMap<String, DbtColumnRef>>(
-            model_columns.clone(),
-        )
-        .map_err(|e| {
-            minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
-        })?;
+        let model_columns =
+            minijinja_value_to_typed_struct::<IndexMap<String, DbtColumnRef>>(model_columns)
+                .map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::SerdeDeserializeError,
+                        e.to_string(),
+                    )
+                })?;
 
         let persist_doc_columns =
             self.do_get_persist_doc_columns(existing_columns, model_columns)?;
@@ -3406,14 +3404,10 @@ impl AdapterImpl {
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L323
     pub fn nest_column_data_types(&self, columns: &Value) -> Result<Value, minijinja::Error> {
         // TODO: 'constraints' arg are ignored; didn't find an usage example, implement later
-        let columns =
-            minijinja_value_to_typed_struct::<IndexMap<String, DbtColumn>>(columns.clone())
-                .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        e.to_string(),
-                    )
-                })?;
+        let columns = minijinja_value_to_typed_struct::<IndexMap<String, DbtColumn>>(columns)
+            .map_err(|e| {
+                minijinja::Error::new(minijinja::ErrorKind::SerdeDeserializeError, e.to_string())
+            })?;
 
         let nested_columns = self.do_nest_column_data_types(columns, None)?;
         let result = IndexMap::<String, Value>::from_iter(
@@ -4142,9 +4136,8 @@ impl AdapterImpl {
 
                 // Lowercase all string values to match dbt-core behavior
                 let normalized = if let Ok(partition_by_map) =
-                    minijinja_value_to_typed_struct::<IndexMap<String, Value>>(
-                        raw_partition_by.clone(),
-                    ) {
+                    minijinja_value_to_typed_struct::<IndexMap<String, Value>>(&raw_partition_by)
+                {
                     let new_map: IndexMap<String, Value> = partition_by_map
                         .into_iter()
                         .map(|(key, value)| {
@@ -4161,13 +4154,15 @@ impl AdapterImpl {
                     raw_partition_by.clone()
                 };
 
-                let partition_by = minijinja_value_to_typed_struct::<PartitionConfig>(normalized)
+                let partition_by = minijinja_value_to_typed_struct::<PartitionConfig>(&normalized)
                     .map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        format!("adapter.parse_partition_by failed on {raw_partition_by:?}: {e}"),
-                    )
-                })?;
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::SerdeDeserializeError,
+                            format!(
+                                "adapter.parse_partition_by failed on {raw_partition_by:?}: {e}"
+                            ),
+                        )
+                    })?;
 
                 let validated_config = partition_by.into_bigquery().ok_or_else(|| {
                     minijinja::Error::new(
@@ -5016,7 +5011,7 @@ impl AdapterImpl {
             .collect::<Result<Vec<_>, _>>()?;
 
         let model_columns_map: BTreeMap<String, DbtColumn> =
-            minijinja_value_to_typed_struct(model_columns.clone()).map_err(|e| {
+            minijinja_value_to_typed_struct(model_columns).map_err(|e| {
                 minijinja::Error::new(
                     minijinja::ErrorKind::SerdeDeserializeError,
                     format!("model_columns: {e}"),
@@ -5024,7 +5019,7 @@ impl AdapterImpl {
             })?;
 
         let model_constraints_vec: Vec<ModelConstraint> =
-            minijinja_value_to_typed_struct(model_constraints.clone()).map_err(|e| {
+            minijinja_value_to_typed_struct(model_constraints).map_err(|e| {
                 minijinja::Error::new(
                     minijinja::ErrorKind::SerdeDeserializeError,
                     format!("model_constraints: {e}"),

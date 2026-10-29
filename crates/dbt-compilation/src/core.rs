@@ -616,7 +616,7 @@ impl DbtLoadedProject {
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
         connection_mode: AdapterConnectionMode,
-    ) -> FsResult<Arc<AdapterStore>> {
+    ) -> FsResult<AdapterStore> {
         // Each declared adapter's `DbConfig`, cloned because the builder closure has
         // to be `'static` and so cannot hold `resolved_state`. Cloned rather than
         // *rendered* to a mapping here: rendering is fallible, and doing it up front
@@ -694,11 +694,7 @@ impl DbtLoadedProject {
             )
         });
 
-        Ok(Arc::new(AdapterStore::new(
-            declared,
-            default_adapter,
-            build,
-        )?))
+        AdapterStore::new(declared, default_adapter, build)
     }
 
     /// The target's default adapter.

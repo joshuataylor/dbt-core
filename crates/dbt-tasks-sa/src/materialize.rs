@@ -140,13 +140,14 @@ fn execute_materialization_macro(
 
 fn apply_node_overrides(
     adapter: &Adapter,
-    adapter_type: AdapterType,
     custom_warehouse: Option<String>,
     target_database: &str,
     unique_id: &str,
 ) -> FsResult<Vec<NodeOverride>> {
     let mut node_overrides = Vec::new();
-    if let Some(warehouse) = custom_warehouse
+    let adapter_type = adapter.adapter_type();
+    if adapter_type == AdapterType::Snowflake
+        && let Some(warehouse) = custom_warehouse
         && let Some(node_override) = adapter.use_warehouse(Some(warehouse), unique_id)?
     {
         node_overrides.push(node_override);
@@ -369,6 +370,22 @@ mod tests {
     use minijinja::Value;
     use std::collections::BTreeMap;
 
+    /// Pins no `use warehouse` connection borrow on a non-Snowflake adapter. Without the gate the
+    /// mock trips `use_warehouse`'s debug assert, so the test only fails in debug builds.
+    #[dbt_runtime::worker_test]
+    fn node_overrides_skip_use_warehouse_off_snowflake() {
+        let store = dbt_adapter::AdapterStore::new_mock(
+            vec![AdapterType::Snowflake, AdapterType::Bigquery],
+            AdapterType::Snowflake,
+        )
+        .expect("valid store");
+        let adapter = store.get(AdapterType::Bigquery).expect("bigquery adapter");
+        let overrides =
+            super::apply_node_overrides(&adapter, Some("NODE_WH".to_string()), "db", "model.pkg.m")
+                .expect("no override");
+        assert!(overrides.is_empty());
+    }
+
     fn body(sql: &str, language: Option<&str>) -> String {
         body_for_materialization(sql, language, &DefaultStmtSplitter, AdapterType::DuckDB)
             .to_string()
@@ -538,7 +555,7 @@ mod tests {
 pub fn materialize_clone<S: serde::Serialize>(
     node: &dyn InternalDbtNode,
     deprecated_config: &S,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     runtime_config: &DbtRuntimeConfig,
     defer_nodes: Option<&Nodes>,
     materialization_resolver: &Arc<MaterializationResolver>,
@@ -547,6 +564,7 @@ pub fn materialize_clone<S: serde::Serialize>(
     io_args: &IoArgs,
     custom_warehouse: Option<String>,
 ) -> FsResult<Value> {
+    let adapter_type = adapter.adapter_type();
     let (mut context, _result_store) = build_run_node_context(
         node,
         &deprecated_config,
@@ -559,9 +577,6 @@ pub fn materialize_clone<S: serde::Serialize>(
         runtime_config.dependencies.keys().cloned().collect(),
     );
 
-    // `dbt clone` takes the target default: this path is typed `&dyn InternalDbtNode`,
-    // which does not expose the node's `+adapter`. Cloning a node on a non-default
-    // adapter is not supported yet.
     let macro_name =
         materialization_resolver.find_materialization_macro_by_name("clone", adapter_type)?;
 
@@ -594,22 +609,14 @@ pub fn materialize_clone<S: serde::Serialize>(
         context.insert("compiled_code".to_string(), Value::from(&sql));
     }
 
-    let adapter = jinja_env
-        .get_base_adapter()
-        .ok_or_else(|| unexpected_fs_err!("No adapter found for model {}", &unique_id))?;
     let node_alias = node.base().alias.clone();
     // Runtime-phase errors report the run/Executable path per the path-requirements matrix.
     let run_path = node
         .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
         .into_owned();
 
-    let node_overrides = apply_node_overrides(
-        &adapter,
-        adapter_type,
-        custom_warehouse,
-        &node.base().database,
-        &unique_id,
-    )?;
+    let node_overrides =
+        apply_node_overrides(adapter, custom_warehouse, &node.base().database, &unique_id)?;
 
     let res = execute_materialization_macro(
         jinja_env,
@@ -621,13 +628,13 @@ pub fn materialize_clone<S: serde::Serialize>(
         run_path,
     );
 
-    reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
+    reset_node_overrides(adapter, &unique_id, &node_overrides)?;
     res
 }
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_seed(
     seed: &DbtSeed,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
@@ -635,8 +642,9 @@ pub fn materialize_seed(
     agate_table: AgateTable,
     io_args: &IoArgs,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
+    let adapter_type = adapter.adapter_type();
     let macro_name =
-        materialization_resolver.find_materialization_macro_by_name("seed", seed.node_adapter())?;
+        materialization_resolver.find_materialization_macro_by_name("seed", adapter_type)?;
 
     let (mut context, result_store) = build_run_node_context(
         seed,
@@ -657,12 +665,8 @@ pub fn materialize_seed(
 
     let unique_id = seed.__common_attr__.unique_id.clone();
     let node_alias = seed.__base_attr__.alias.clone();
-    let adapter = jinja_env
-        .get_base_adapter()
-        .ok_or_else(|| unexpected_fs_err!("No adapter found for seed {}", &unique_id))?;
     let node_overrides = apply_node_overrides(
-        &adapter,
-        adapter_type,
+        adapter,
         seed.deprecated_config
             .__warehouse_specific_config__
             .snowflake_warehouse
@@ -685,7 +689,7 @@ pub fn materialize_seed(
     // already drops the poisoned connection, and a seed error is far more actionable than the
     // restore error it would otherwise mask. It also keeps the CSV-column hint that
     // `chain_materialize_seed_error_with_pending_hint` appends attached to a real seed error.
-    let reset = reset_node_overrides(&adapter, &unique_id, &node_overrides);
+    let reset = reset_node_overrides(adapter, &unique_id, &node_overrides);
     let value = result?;
     reset?;
     Ok((value, result_store.main_adapter_response()))
@@ -709,7 +713,7 @@ fn body_for_materialization<'a>(
 pub fn materialize_model(
     sql: &str,
     node: Arc<dyn InternalDbtNode>,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
@@ -721,6 +725,7 @@ pub fn materialize_model(
         .as_any()
         .downcast_ref::<DbtModel>()
         .expect("model materialization requires a model node");
+    let adapter_type = adapter.adapter_type();
     // get materialization
     let (mut context, result_store) = dbt_jinja_utils::phases::run::build_run_node_context_from_arc(
         node.clone(),
@@ -736,13 +741,7 @@ pub fn materialize_model(
     let materialization = model.__base_attr__.materialized.clone();
 
     let macro_name = materialization_resolver
-        .find_materialization_macro_by_name(&materialization.to_string(), model.node_adapter())?;
-    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        unexpected_fs_err!(
-            "No adapter found for model {}",
-            model.__common_attr__.unique_id
-        )
-    })?;
+        .find_materialization_macro_by_name(&materialization.to_string(), adapter_type)?;
 
     let sql = body_for_materialization(
         sql,
@@ -773,8 +772,7 @@ pub fn materialize_model(
     };
 
     let node_overrides = apply_node_overrides(
-        &adapter,
-        adapter_type,
+        adapter,
         custom_warehouse,
         &model.__base_attr__.database,
         &unique_id,
@@ -790,7 +788,7 @@ pub fn materialize_model(
         run_path,
     );
 
-    reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
+    reset_node_overrides(adapter, &unique_id, &node_overrides)?;
     result.map(|value| (value, result_store.main_adapter_response()))
 }
 
@@ -1088,11 +1086,12 @@ pub fn materialize_microbatch_model(
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
     batch_ctx: &BatchContext,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     mut run_node_context: BTreeMap<String, Value>,
     event_time_mapping: Arc<BTreeMap<String, String>>,
     io_args: &IoArgs,
 ) -> FsResult<Value> {
+    let adapter_type = adapter.adapter_type();
     // Microbatch base context is shared
     extend_microbatch_node_context(
         batch_ctx,
@@ -1112,14 +1111,6 @@ pub fn materialize_microbatch_model(
         &run_node_context,
         &io_args.out_dir,
     )?;
-
-    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        fs_err!(
-            ErrorCode::Generic,
-            "No adapter found for microbatch model {}",
-            batch_ctx.id,
-        )
-    })?;
 
     let batch_sql = Value::from(body_for_materialization(
         &batch_sql,
@@ -1145,7 +1136,7 @@ pub fn materialize_microbatch_model(
     // Get the incremental materialization macro
     let macro_name = materialization_resolver.find_materialization_macro_by_name(
         &DbtMaterialization::Incremental.to_string(),
-        model.node_adapter(),
+        adapter_type,
     )?;
 
     let custom_warehouse = if let Some(snowflake_attr) = &model.__adapter_attr__.snowflake_attr {
@@ -1162,8 +1153,7 @@ pub fn materialize_microbatch_model(
     let unique_id = model.__common_attr__.unique_id.clone();
 
     let node_overrides = apply_node_overrides(
-        &adapter,
-        adapter_type,
+        adapter,
         custom_warehouse,
         &model.__base_attr__.database,
         &unique_id,
@@ -1179,7 +1169,7 @@ pub fn materialize_microbatch_model(
         run_path,
     );
 
-    reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
+    reset_node_overrides(adapter, &unique_id, &node_overrides)?;
     result
 }
 
@@ -1187,13 +1177,14 @@ pub fn materialize_microbatch_model(
 pub fn materialize_snapshot(
     sql: &str,
     snapshot: &DbtSnapshot,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
+    let adapter_type = adapter.adapter_type();
     // get materialization
     let mut snapshot = snapshot.clone();
     snapshot.compiled = Some(true);
@@ -1214,8 +1205,8 @@ pub fn materialize_snapshot(
     context.insert("sql".to_string(), Value::from(sql));
     context.insert("compiled_code".to_string(), Value::from(sql));
 
-    let macro_name = materialization_resolver
-        .find_materialization_macro_by_name("snapshot", snapshot.node_adapter())?;
+    let macro_name =
+        materialization_resolver.find_materialization_macro_by_name("snapshot", adapter_type)?;
 
     let unique_id = snapshot.__common_attr__.unique_id.clone();
     let node_alias = snapshot.__base_attr__.alias.clone();
@@ -1224,13 +1215,6 @@ pub fn materialize_snapshot(
         .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
         .into_owned();
 
-    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        unexpected_fs_err!(
-            "No adapter found for snapshot {}",
-            snapshot.__common_attr__.unique_id
-        )
-    })?;
-
     let custom_warehouse = if let Some(snowflake_attr) = &snapshot.__adapter_attr__.snowflake_attr {
         snowflake_attr.snowflake_warehouse.clone()
     } else {
@@ -1238,8 +1222,7 @@ pub fn materialize_snapshot(
     };
 
     let node_overrides = apply_node_overrides(
-        &adapter,
-        adapter_type,
+        adapter,
         custom_warehouse,
         &snapshot.__base_attr__.database,
         &unique_id,
@@ -1255,7 +1238,7 @@ pub fn materialize_snapshot(
         run_path,
     );
 
-    reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
+    reset_node_overrides(adapter, &unique_id, &node_overrides)?;
     result.map(|value| (value, result_store.main_adapter_response()))
 }
 
@@ -1572,7 +1555,7 @@ pub fn materialize_test(
     sql: &str,
     test: &DbtTest,
     relationships: &GenericTestRelationships,
-    adapter_type: AdapterType,
+    adapter: &Adapter,
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
     jinja_env: Arc<JinjaEnv>,
@@ -1583,6 +1566,7 @@ pub fn materialize_test(
     Option<RecordBatch>,
     Option<AdapterResponse>,
 )> {
+    let adapter_type = adapter.adapter_type();
     let packages = runtime_config.dependencies.keys().cloned().collect();
     let (mut context, result_store) = build_run_node_context(
         test,
@@ -1603,7 +1587,7 @@ pub fn materialize_test(
         "test"
     };
     let macro_name = materialization_resolver
-        .find_materialization_macro_by_name(materialization_name, test.node_adapter())?;
+        .find_materialization_macro_by_name(materialization_name, adapter_type)?;
 
     context.insert("sql".to_string(), Value::from(sql));
 
@@ -1614,13 +1598,6 @@ pub fn materialize_test(
         &test.__common_attr__.path,
         &test.__common_attr__.original_file_path,
     );
-
-    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        unexpected_fs_err!(
-            "No adapter found for test {}",
-            test.__common_attr__.unique_id
-        )
-    })?;
 
     let custom_warehouse = if let Some(snowflake_attr) = &test.__adapter_attr__.snowflake_attr {
         snowflake_attr.snowflake_warehouse.clone()
@@ -1637,8 +1614,7 @@ pub fn materialize_test(
         .to_string();
 
     let node_overrides = apply_node_overrides(
-        &adapter,
-        adapter_type,
+        adapter,
         custom_warehouse,
         &test.__base_attr__.database,
         &unique_id,
@@ -1675,7 +1651,7 @@ pub fn materialize_test(
             })
     });
 
-    reset_node_overrides(&adapter, &unique_id, &node_overrides)?;
+    reset_node_overrides(adapter, &unique_id, &node_overrides)?;
 
     // Any render/execution error (including database errors) is a hard error,
     // independent of severity. Severity only governs successfully-returned test
@@ -3209,13 +3185,6 @@ pub fn materialize_function(
     let run_path = function
         .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
         .into_owned();
-
-    let _adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        unexpected_fs_err!(
-            "No adapter found for function {}",
-            function.__common_attr__.unique_id
-        )
-    })?;
 
     let result = execute_materialization_macro(
         jinja_env,

@@ -283,11 +283,8 @@ impl Adapter {
     /// answer for the adapter the node runs on rather than the target's default.
     /// Falls back to this adapter's own type when the node selected nothing.
     ///
-    /// Note this deliberately does *not* swap the adapter object itself — the
-    /// engine and connection remain the default adapter's. Only the type-derived
-    /// answers change. Methods whose behaviour comes from the connection rather
-    /// than the type (`external_root`, `external_read_location`) are therefore
-    /// unaffected and remain a known gap.
+    /// A node render's context carries its adapter object and dialect; a state
+    /// built without a node context answers the env's dialect.
     pub fn effective_adapter_type(&self, state: &State) -> AdapterType {
         // `try_resolve_dialect`, not `resolve_dialect`: the latter defaults to
         // "postgres", which parses successfully, so this adapter's own type would

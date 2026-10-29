@@ -13,6 +13,7 @@ use dbt_adapter::metadata::BIGQUERY_PSEUDOCOLUMNS;
 use dbt_adapter::relation::{RelationObject, create_relation_from_node};
 use dbt_adapter::sql_types::DefaultTypeOps;
 use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
+use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 use dbt_adapter::{Adapter, Column};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
@@ -63,6 +64,13 @@ use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 type YmlValue = dbt_yaml::Value;
 
 const COMPILED_INCREMENTAL_SCHEMA_MARKER: &str = ".compiled_incremental_unit_test_schema_v1";
+const UNIT_TEST_SCHEMA_PROBE_MARKER: &str = ".unit_test_schema_probe_v2";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnitTestSchemaPolicy {
+    use_compiled_incremental: bool,
+    preserve_recorded_probe_sql: bool,
+}
 
 /// Identifies which unit test relation schema is being resolved for error reporting.
 #[derive(Clone, Copy)]
@@ -91,11 +99,14 @@ struct UnitTestSchemaProbe {
     query_sql: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ExpectedSchemaInferenceOptions {
     use_query_schema_fallback: bool,
     try_structural_inference: bool,
     cache_result: bool,
+    preserve_recorded_probe_sql: bool,
+    /// Match the relation resolved for `this`, including its version and quoting.
+    mock_self_relation: Option<String>,
 }
 
 fn should_use_query_schema_fallback(
@@ -108,7 +119,7 @@ fn should_use_query_schema_fallback(
     is_tested_model_ephemeral || (!effective_execute.is_default() && !replay_active)
 }
 
-fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
+fn is_incremental_override(unit_test: &DbtUnitTest) -> Option<bool> {
     unit_test
         .__unit_test_attr__
         .overrides
@@ -116,11 +127,14 @@ fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
         .and_then(|overrides| overrides.macros.as_ref().as_ref())
         .and_then(|macros| macros.get("is_incremental"))
         .and_then(YmlValue::as_bool)
-        == Some(false)
 }
 
-fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<bool> {
-    let marker_path = match ctx.inner.arg.replay.as_ref() {
+fn unit_test_schema_policy(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+) -> FsResult<UnitTestSchemaPolicy> {
+    let override_value = is_incremental_override(unit_test);
+    let recording = match ctx.inner.arg.replay.as_ref() {
         Some(ReplayMode::FsRecord(path)) => Some((path.clone(), true)),
         Some(ReplayMode::FsReplay(path)) => Some((path.clone(), false)),
         Some(ReplayMode::FsTimeMachine(TimeMachineMode::Record(config))) => Some((
@@ -130,31 +144,52 @@ fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<b
         Some(ReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) => {
             Some((config.artifact_path.clone(), false))
         }
-        Some(ReplayMode::MantleReplay(_)) => None,
-        None => return Ok(true),
+        Some(ReplayMode::MantleReplay(_)) => {
+            return Ok(UnitTestSchemaPolicy {
+                use_compiled_incremental: false,
+                preserve_recorded_probe_sql: true,
+            });
+        }
+        None => None,
     };
-
-    let Some((recording_path, is_recording)) = marker_path else {
-        return Ok(false);
-    };
-    let marker = recording_path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER);
-    if is_recording {
-        stdfs::create_dir_all(&recording_path)?;
-        stdfs::write(marker, b"1\n")?;
-        Ok(true)
-    } else {
-        Ok(marker.is_file())
-    }
+    schema_policy_for_recording(
+        override_value,
+        recording
+            .as_ref()
+            .map(|(path, record)| (path.as_path(), *record)),
+    )
 }
 
-fn use_compiled_schema_for_incremental(
-    ctx: &TaskRunnerCtx,
-    unit_test: &DbtUnitTest,
-) -> FsResult<bool> {
-    if !has_is_incremental_false_override(unit_test) {
-        return Ok(false);
+fn schema_policy_for_recording(
+    override_value: Option<bool>,
+    recording: Option<(&Path, bool)>,
+) -> FsResult<UnitTestSchemaPolicy> {
+    let Some((path, is_recording)) = recording else {
+        return Ok(UnitTestSchemaPolicy {
+            use_compiled_incremental: override_value.is_some(),
+            preserve_recorded_probe_sql: false,
+        });
+    };
+    let marker = path.join(UNIT_TEST_SCHEMA_PROBE_MARKER);
+    if is_recording {
+        stdfs::create_dir_all(path)?;
+        stdfs::write(marker, b"1\n")?;
+        Ok(UnitTestSchemaPolicy {
+            use_compiled_incremental: override_value.is_some(),
+            preserve_recorded_probe_sql: false,
+        })
+    } else {
+        let current = marker.is_file();
+        Ok(UnitTestSchemaPolicy {
+            // v1 enabled compiled inference only for false overrides. A mixed
+            // recording can carry its marker while true still used DESCRIBE.
+            use_compiled_incremental: override_value.is_some()
+                && (current
+                    || (override_value == Some(false)
+                        && path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER).is_file())),
+            preserve_recorded_probe_sql: !current,
+        })
     }
-    recording_uses_compiled_incremental_schema(ctx)
 }
 
 fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
@@ -557,6 +592,7 @@ fn build_unit_test_schema_probe(
     type_ops: &dyn TypeOps,
     compiled_model_sql: &str,
     rewrite_targets: &[(String, String)],
+    preserve_recorded_sql: bool,
 ) -> UnitTestSchemaProbe {
     let schema_sql = replace_subquery_refs_with_cte_names(
         adapter_type,
@@ -568,16 +604,26 @@ fn build_unit_test_schema_probe(
         .iter()
         .filter_map(|(id, query)| {
             let cte_name = create_cte_name_from_fqn(adapter_type, type_ops, id);
-            schema_sql
-                .contains(&cte_name)
-                .then(|| format!("{cte_name} as ({query})"))
+            schema_sql.contains(&cte_name).then(|| {
+                if preserve_recorded_sql {
+                    format!("{cte_name} as ({query})")
+                } else {
+                    format_unit_test_subquery(adapter_type, &cte_name, query)
+                }
+            })
         })
         .collect::<Vec<_>>()
         .join(",");
     let query_sql = if ctes.is_empty() {
         schema_sql.clone()
-    } else {
+    } else if preserve_recorded_sql {
         format!("WITH {ctes} {schema_sql}")
+    } else {
+        let body =
+            DefaultStmtSplitter.strip_trailing_statement_terminator(&schema_sql, adapter_type);
+        // A nested query keeps the model's WITH clause in its own scope.
+        // Newlines keep trailing comments from consuming generated delimiters.
+        format!("WITH {ctes} SELECT * FROM (\n{body}\n) AS __dbt_schema_probe")
     };
     UnitTestSchemaProbe {
         schema_sql,
@@ -680,12 +726,15 @@ fn infer_unit_test_expected_schema(
     // query. When it runs against the real warehouse, only rewrite ephemerals —
     // non-ephemeral upstreams must remain real relation refs so the warehouse
     // provides their schemas (e.g. for type-checking expect-row literals).
+    let rewrite_as_cte = |id: &str| {
+        id.starts_with(DBT_CTE_PREFIX) || options.mock_self_relation.as_deref() == Some(id)
+    };
     let fallback_rewrite_targets: Vec<(String, String)> = if options.use_query_schema_fallback {
         subqueries.to_vec()
     } else {
         subqueries
             .iter()
-            .filter(|(id, _)| id.starts_with(DBT_CTE_PREFIX))
+            .filter(|(id, _)| rewrite_as_cte(id))
             .cloned()
             .collect()
     };
@@ -695,6 +744,7 @@ fn infer_unit_test_expected_schema(
         type_ops.as_ref(),
         compiled_model_sql,
         &fallback_rewrite_targets,
+        options.preserve_recorded_probe_sql,
     );
     let local_probe_sql = if options.try_structural_inference {
         if options.use_query_schema_fallback {
@@ -706,6 +756,7 @@ fn infer_unit_test_expected_schema(
                     type_ops.as_ref(),
                     compiled_model_sql,
                     subqueries,
+                    options.preserve_recorded_probe_sql,
                 )
                 .query_sql,
             )
@@ -721,7 +772,7 @@ fn infer_unit_test_expected_schema(
             } else {
                 fixture_shape_subqueries
                     .iter()
-                    .filter(|(id, _)| id.starts_with(DBT_CTE_PREFIX))
+                    .filter(|(id, _)| rewrite_as_cte(id))
                     .cloned()
                     .collect()
             };
@@ -730,6 +781,7 @@ fn infer_unit_test_expected_schema(
             type_ops.as_ref(),
             compiled_model_sql,
             &fallback_shape_rewrite_targets,
+            options.preserve_recorded_probe_sql,
         )
         .query_sql;
         let distinct_local_probe_shape_sql =
@@ -739,6 +791,7 @@ fn infer_unit_test_expected_schema(
                     type_ops.as_ref(),
                     compiled_model_sql,
                     fixture_shape_subqueries,
+                    options.preserve_recorded_probe_sql,
                 )
                 .query_sql
             });
@@ -1293,7 +1346,7 @@ fn discover_given_relations(
     }
 
     // Incremental tests read the existing model relation's schema; fetch it if uncached.
-    // An `is_incremental: false` override instead uses compiled SQL.
+    // An `is_incremental` override instead uses compiled SQL, either value.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1304,7 +1357,8 @@ fn discover_given_relations(
         "model",
     );
     let resolver_state = ctx.resolver_state();
-    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
+    let use_compiled_schema_for_incremental =
+        unit_test_schema_policy(ctx, ut)?.use_compiled_incremental;
     let tested_model = resolver_state.nodes.get_node(&model_unique_id);
     let should_fetch_expected_schema = tested_model.is_some_and(|node| {
         node.materialized() == DbtMaterialization::Incremental
@@ -1647,7 +1701,8 @@ fn render_unit_test(
     });
     let model_materialization = tested_model.map(|node| node.materialized());
     let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
-    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, node)?;
+    let schema_policy = unit_test_schema_policy(ctx, node)?;
+    let use_compiled_schema_for_incremental = schema_policy.use_compiled_incremental;
 
     // Ephemeral models have no registered dataset, so the temp-table fallback in
     // `infer_unit_test_expected_schema` fails with "Dataset not found".
@@ -1663,6 +1718,19 @@ fn render_unit_test(
         use_query_schema_fallback,
         try_structural_inference: use_query_schema_fallback,
         cache_result: cache_expected_schema,
+        preserve_recorded_probe_sql: schema_policy.preserve_recorded_probe_sql,
+        // Use the same identity as fixture discovery and model rendering.
+        // A model-config FQN can differ for versioned or deferred relations.
+        mock_self_relation: (use_compiled_schema_for_incremental
+            && !schema_policy.preserve_recorded_probe_sql)
+            .then(|| {
+                compile_context
+                    .get("this")
+                    .and_then(Value::as_object)
+                    .and_then(|object| object.downcast_ref::<RelationObject>())
+                    .map(|relation| relation.render_self_as_str())
+            })
+            .flatten(),
     };
     let infer_compiled_schema = || {
         infer_schema_from_compiled_sql(
@@ -1673,13 +1741,13 @@ fn render_unit_test(
             original_file_path,
             &subqueries,
             &fixture_shape_subqueries,
-            schema_inference_options,
+            schema_inference_options.clone(),
             task_hooks,
         )
     };
 
-    // Keep the existing analyzed/hydrated schema paths unless an explicit
-    // override changes an incremental model into its full-refresh SQL branch.
+    // An explicit override selects the model branch used to type expect rows.
+    // Historical recordings retain the schema source they recorded.
     let fetched_expect_schema = match (model_static_analysis_off, is_incremental) {
         (_, true) if use_compiled_schema_for_incremental => infer_compiled_schema()?,
         // (static analysis is off) + (incremental model): use prod relation from defer
@@ -2790,6 +2858,126 @@ mod tests {
     use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
+
+    #[test]
+    fn schema_policy_preserves_old_mixed_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (legacy, current, override_value, compiled, preserve) in [
+            (false, false, None, false, true),
+            (false, false, Some(false), false, true),
+            (false, false, Some(true), false, true),
+            (true, false, None, false, true),
+            (true, false, Some(false), true, true),
+            (true, false, Some(true), false, true),
+            (false, true, None, false, false),
+            (false, true, Some(false), true, false),
+            (false, true, Some(true), true, false),
+            (true, true, Some(true), true, false),
+        ] {
+            let path = dir
+                .path()
+                .join(format!("{legacy}-{current}-{override_value:?}"));
+            stdfs::create_dir_all(&path).unwrap();
+            if legacy {
+                stdfs::write(path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER), b"1\n").unwrap();
+            }
+            if current {
+                stdfs::write(path.join(UNIT_TEST_SCHEMA_PROBE_MARKER), b"1\n").unwrap();
+            }
+            assert_eq!(
+                schema_policy_for_recording(override_value, Some((&path, false))).unwrap(),
+                UnitTestSchemaPolicy {
+                    use_compiled_incremental: compiled,
+                    preserve_recorded_probe_sql: preserve,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn schema_policy_versions_all_new_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recording");
+        let policy = schema_policy_for_recording(None, Some((&path, true))).unwrap();
+        assert!(!policy.preserve_recorded_probe_sql);
+        assert!(path.join(UNIT_TEST_SCHEMA_PROBE_MARKER).is_file());
+        assert!(!path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER).exists());
+        for override_value in [None, Some(false), Some(true)] {
+            let recorded =
+                schema_policy_for_recording(override_value, Some((&path, true))).unwrap();
+            let replayed =
+                schema_policy_for_recording(override_value, Some((&path, false))).unwrap();
+            assert_eq!(recorded, replayed);
+            assert_eq!(
+                recorded,
+                schema_policy_for_recording(override_value, None).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn schema_probe_preserves_model_cte_scope_and_comments() {
+        for adapter in [
+            AdapterType::Snowflake,
+            AdapterType::Bigquery,
+            AdapterType::DuckDB,
+        ] {
+            let type_ops = DefaultTypeOps::new(adapter);
+            for suffix in ["", ";", ";;", " -- model comment", "; -- model comment"] {
+                let sql = format!(
+                    "WITH staged AS (SELECT * FROM raw.events) SELECT id FROM staged{suffix}"
+                );
+                let probe = build_unit_test_schema_probe(
+                    adapter,
+                    &type_ops,
+                    &sql,
+                    &[(
+                        "raw.events".to_string(),
+                        "SELECT 1 AS id -- fixture comment".to_string(),
+                    )],
+                    false,
+                );
+                sqlparser::parser::Parser::parse_sql(
+                    sqlparser_dialect_for(adapter),
+                    &probe.query_sql,
+                )
+                .unwrap_or_else(|error| panic!("{adapter:?}: {error}: {}", probe.query_sql));
+                let wrapped = format!(
+                    "WITH {} SELECT * FROM (\n{}\n) AS probe WHERE false",
+                    probe.ctes,
+                    DefaultStmtSplitter
+                        .strip_trailing_statement_terminator(&probe.schema_sql, adapter)
+                );
+                sqlparser::parser::Parser::parse_sql(sqlparser_dialect_for(adapter), &wrapped)
+                    .expect("the warehouse header and wrapped model must remain valid SQL");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_probe_keeps_historical_sql_exactly() {
+        let adapter = AdapterType::Snowflake;
+        let type_ops = DefaultTypeOps::new(adapter);
+        let model = "WITH staged AS (SELECT * FROM raw.events) SELECT id FROM staged; -- trailing";
+        let fixture = "SELECT 1 AS id -- fixture comment";
+        let probe = build_unit_test_schema_probe(
+            adapter,
+            &type_ops,
+            model,
+            &[("raw.events".to_string(), fixture.to_string())],
+            true,
+        );
+        let name = create_cte_name_from_fqn(adapter, &type_ops, "raw.events");
+        assert_eq!(probe.ctes, format!("{name} as ({fixture})"));
+        assert_eq!(
+            probe.schema_sql,
+            format!("WITH staged AS (SELECT * FROM {name}) SELECT id FROM staged; -- trailing")
+        );
+        assert_eq!(
+            probe.query_sql,
+            format!("WITH {} {}", probe.ctes, probe.schema_sql)
+        );
+    }
 
     #[test]
     fn configured_local_unit_test_uses_query_schema_fallback() {
